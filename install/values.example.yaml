@@ -1,5 +1,8 @@
-# Example values. Copy this file, name who may create sandboxes, and pass it
-# to helm with --values.
+# Example values. Copy this file, set the zone URL, name who may create
+# sandboxes, and pass it to helm with --values.
+
+# The URL of the zone that decides every token exchange.
+zoneURL: https://acme.keycard.cloud
 
 rbac:
   subjects:

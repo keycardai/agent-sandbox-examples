@@ -4,6 +4,10 @@ The once-per-cluster Helm chart for Keycard agent sandboxes. It installs:
 
 - the sandbox namespace, which is the release namespace, labeled with the
   `privileged` Pod Security level and kept when the release is deleted
+- the `SandboxTemplate` with the reference sandbox pod: the netsetup init
+  container, the proxy sidecar and the agent. It sets
+  `networkPolicyManagement: Unmanaged`, so agent-sandbox adds no
+  NetworkPolicy of its own. `zoneURL` is required.
 - the sandbox-admin Role in that namespace, and a RoleBinding to
   `rbac.subjects` when that list is not empty
 - a NetworkPolicy on every pod in the namespace that denies ingress and allows

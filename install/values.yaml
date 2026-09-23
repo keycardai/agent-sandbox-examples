@@ -1,5 +1,52 @@
 # Values for the keycard-sandbox chart.
 
+# The URL of the zone that decides every token exchange. It is also the
+# audience of the proxy's ServiceAccount token. Required.
+zoneURL: ""
+
+# The sandbox pod's images. Nothing publishes these tags. Build the images
+# from the egress-proxy repository and set them here.
+images:
+  netsetup: ghcr.io/keycardai/egress-netsetup:0.1.0
+  proxy: ghcr.io/keycardai/egress-proxy:0.1.0
+  # The agent image, built FROM ghcr.io/keycardai/sandbox-base. The default
+  # is the base image itself, as a placeholder agent.
+  agent: ghcr.io/keycardai/sandbox-base:0.1.0
+
+proxy:
+  # The proxy's uid. The redirect and the DROP exempt it, so the proxy's own
+  # traffic leaves the pod. It must match --proxy-uid in netsetup.args.
+  uid: 1337
+  # The ConfigMap that holds the proxy's configuration document, and the path
+  # the proxy reads it from. Only the proxy mounts it.
+  configMap: egress-proxy-config
+  configPath: /etc/egress/config.yaml
+  # The directory of the proxy's ServiceAccount token. Set
+  # identity.workload_token_file in the document to <tokenPath>/token.
+  tokenPath: /var/run/secrets/keycard
+  tokenExpirationSeconds: 3600
+  # The startup probe runs the proxy binary against the admin socket. The
+  # agent does not mount the admin socket.
+  startupProbe:
+    command: ["/ko-app/egress-proxy", "probe", "--admin-socket=/run/egress/admin.sock"]
+    periodSeconds: 1
+    failureThreshold: 60
+
+netsetup:
+  # Arguments of the egress-netsetup init container. It redirects tcp/80 and
+  # tcp/443 from every uid except the proxy's to the redirect port, and DNS
+  # to the proxy's resolver. It drops all other traffic except the proxy's,
+  # loopback and established connections.
+  args:
+    - --proxy-uid=1337
+    - --redirect-port=1001
+    - --capture-ports=80,443
+    - --ipv6=auto
+
+agent:
+  # The agent's uid. It must differ from proxy.uid.
+  uid: 1000
+
 rbac:
   # Who is bound to the sandbox-admin Role. Empty renders the Role and no
   # RoleBinding.
