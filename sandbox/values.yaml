@@ -1,0 +1,74 @@
+# Values for the keycard-sandbox-user chart: one sandbox for one user.
+# new-sandbox sets every identity key from the zone-setup outputs. An admin
+# edits the rest.
+
+# The URL of the zone that decides every token exchange. It is also the
+# audience of the proxy's ServiceAccount token. It must be the zoneURL the
+# install chart was given, or the zone refuses the client assertion.
+zoneURL: ""
+
+# The zone-setup outputs for one user, under their output names. The
+# k8s_sandbox ids go in annotations on every object, to record the zone
+# entities the sandbox depends on.
+providerID: ""
+applicationID: ""
+applicationIdentifier: ""
+# The sandbox_user_access outputs. userID is the IAM user public id. The
+# ServiceAccount takes it as its name, and the proxy impersonates that user.
+userID: ""
+userEmail: ""
+# The ServiceAccount subject the workload-identity credential is bound to,
+# as zone-setup printed it. Rendering fails unless it is
+# system:serviceaccount:<namespace>:<userID>.
+serviceAccount: ""
+# The id of the workload-identity credential. The proxy sends it as
+# client_id in the token exchange.
+clientID: ""
+
+policy:
+  # This cluster's pod and service ranges. The proxy adds them to its
+  # built-in deny list. Use the same ranges as the install chart's
+  # network.clusterCIDRs.
+  clusterCIDRs: []
+  # Ranges to remove from the deny list. Leave it empty. The proxy logs every
+  # exception as a warning at start-up. NEVER list a range that includes
+  # 169.254.169.254. The proxy refuses to start with one.
+  denyListExceptions: []
+
+# The destinations the sandbox can reach. The proxy refuses every other
+# connection. Each entry is one endpoint of the proxy's configuration
+# document, with the same keys: host, port, path_prefix, resource, and
+# credential with its placement and env. The proxy forwards to an entry
+# without a credential and does not call the zone. `resource` defaults to
+# https://<host>/. The token exchange sends it as the resource parameter. It
+# must be a Resource in the zone and a dependency of the Application.
+endpoints: []
+
+# The keys below describe the pod. Each one has the same meaning and default
+# as in install/values.yaml, which documents them. The tests in
+# internal/chart check that the two charts render the same pod.
+images:
+  netsetup: ghcr.io/keycardai/egress-netsetup:0.1.0
+  proxy: ghcr.io/keycardai/egress-proxy:0.1.0
+  agent: ghcr.io/keycardai/sandbox-base:0.1.0
+
+proxy:
+  uid: 1337
+  configPath: /etc/egress/config.yaml
+  tokenPath: /var/run/secrets/keycard
+  tokenExpirationSeconds: 3600
+  startupProbe:
+    command: ["/ko-app/egress-proxy", "probe", "--admin-socket=/run/egress/admin.sock"]
+    periodSeconds: 1
+    failureThreshold: 60
+
+netsetup:
+  args:
+    - --proxy-uid=1337
+    - --redirect-port=1001
+    - --capture-ports=80,443
+    - --ipv6=auto
+
+agent:
+  uid: 1000
+  configPath: /etc/egress/config.yaml

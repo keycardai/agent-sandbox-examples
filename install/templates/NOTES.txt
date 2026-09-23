@@ -4,5 +4,10 @@ Next, create the zone entities for each user:
 
     go run ./cmd/zone-setup --values zone-setup.yaml
 
+Then create one sandbox per user from the ids zone-setup prints:
+
+    go run ./cmd/new-sandbox --namespace {{ .Release.Namespace }} --values my-sandbox.yaml \
+      --user-id ... --user-email ... --service-account ... --client-id ...
+
 The namespace runs at the privileged Pod Security level, which the
 egress-netsetup init container needs.

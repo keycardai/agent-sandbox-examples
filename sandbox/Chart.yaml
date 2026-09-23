@@ -1,0 +1,10 @@
+apiVersion: v2
+name: keycard-sandbox-user
+description: >-
+  One sandbox for one user: the ServiceAccount the workload-identity
+  credential is bound to, the proxy's configuration document and the agent's
+  view of it, and the Sandbox that runs the pod the install chart defined.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/keycardai/agent-sandbox-poc

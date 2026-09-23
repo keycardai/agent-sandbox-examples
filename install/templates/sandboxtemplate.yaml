@@ -1,5 +1,7 @@
 # The reference sandbox pod. The tests in internal/chart check every field.
-# Update them with any change here.
+# Update them with any change here. The sandbox chart renders the same pod
+# for each user, and the tests in internal/chart check that the two match.
+# Change both charts together.
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
@@ -126,6 +128,10 @@ spec:
             - name: shared-ca
               mountPath: /shared-ca
               readOnly: true
+            # The configuration document without the identity section.
+            - name: agent-config
+              mountPath: {{ dir .Values.agent.configPath }}
+              readOnly: true
       volumes:
         # The admin socket. Memory-backed, mounted in the proxy only.
         - name: egress-run
@@ -147,6 +153,11 @@ spec:
         - name: egress-config
           configMap:
             name: {{ .Values.proxy.configMap }}
+        # The agent's copy of the document, without the identity section.
+        # NEVER point this at the proxy's ConfigMap.
+        - name: agent-config
+          configMap:
+            name: {{ .Values.agent.configMap }}
         # The token's audience is the zone, and it expires after
         # proxy.tokenExpirationSeconds. Only the proxy mounts it, so the agent
         # cannot present itself as the proxy.

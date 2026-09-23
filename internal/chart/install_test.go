@@ -28,6 +28,13 @@ func render(t *testing.T, extraValues ...string) map[string][]byte {
 		t.Fatal(err)
 	}
 	values := append([]string{filepath.Join(dir, "values.example.yaml")}, extraValues...)
+	return renderChart(t, dir, release, values...)
+}
+
+// renderChart renders the chart at dir into the agents namespace, keyed by
+// "Kind/name".
+func renderChart(t *testing.T, dir, release string, values ...string) map[string][]byte {
+	t.Helper()
 	docs, err := chart.Render(t.Context(), dir, release, "agents", values...)
 	if err != nil {
 		t.Fatal(err)

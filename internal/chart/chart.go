@@ -21,34 +21,20 @@ import (
 // ErrHelm is a `helm` invocation that failed.
 var ErrHelm = errors.New("helm")
 
+var errRepository = errors.New("repository")
+
 // Render runs `helm template` on the chart at dir with the release namespace
 // and values files given, and returns every non-empty YAML document it
-// produced, in output order. It runs helm through this repository's
-// scripts/pinned, which refuses any helm but the one this repository's
-// mise.toml pins, wherever the chart lives.
+// produced, in output order.
 func Render(ctx context.Context, dir, release, namespace string, valuesFiles ...string) ([][]byte, error) {
-	root, err := repoRoot()
-	if err != nil {
-		return nil, err
-	}
 	values := make([]string, 0, len(valuesFiles))
 	for _, file := range valuesFiles {
 		values = append(values, "--values="+file)
 	}
-	args := slices.Concat([]string{"helm", "template", "--namespace=" + namespace}, values, []string{"--", release, dir})
-	//nolint:gosec // G204: the script is this repository's and the caller chooses the chart and values paths.
-	cmd := exec.CommandContext(ctx, filepath.Join(root, "scripts", "pinned"), args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	args := slices.Concat([]string{"template", "--namespace=" + namespace}, values, []string{"--", release, dir})
+	out, err := Pinned(ctx, nil, "helm", args...)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"%w %s: %w: %s",
-			ErrHelm,
-			strings.Join(args[1:], " "),
-			err,
-			strings.TrimSpace(stderr.String()),
-		)
+		return nil, fmt.Errorf("%w: %w", ErrHelm, err)
 	}
 	reader := k8syaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(out)))
 	var docs [][]byte
@@ -66,14 +52,36 @@ func Render(ctx context.Context, dir, release, namespace string, valuesFiles ...
 	}
 }
 
+// Pinned runs tool with args and stdin through scripts/pinned and returns its
+// standard output. scripts/pinned refuses any version of tool other than the
+// one mise.toml pins.
+func Pinned(ctx context.Context, stdin []byte, tool string, args ...string) ([]byte, error) {
+	root, err := repoRoot()
+	if err != nil {
+		return nil, err
+	}
+	//nolint:gosec // G204: the script is this repository's and the caller chooses the tool and its arguments.
+	cmd := exec.CommandContext(ctx, filepath.Join(root, "scripts", "pinned"), slices.Concat([]string{tool}, args)...)
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w: %s", tool, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return out, nil
+}
+
 // repoRoot returns the repository that holds this package, from the path the
 // build records for this file. A chart elsewhere therefore cannot supply the
 // launcher. The path holds only where the source tree is, as in the tests
-// that use Render. A shipped binary would need another anchor.
+// and under `go run`. A shipped binary would need another anchor.
 func repoRoot() (string, error) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok || !filepath.IsAbs(file) {
-		return "", fmt.Errorf("%w: cannot locate the repository from %q", ErrHelm, file)
+		return "", fmt.Errorf("%w: cannot locate the repository from %q", errRepository, file)
 	}
 	return filepath.Dir(filepath.Dir(filepath.Dir(file))), nil
 }

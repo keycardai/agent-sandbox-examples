@@ -15,6 +15,9 @@ The once-per-cluster Helm chart for Keycard agent sandboxes. It installs:
 
 `values.yaml` documents every key. `values.example.yaml` is a starting point.
 
+`new-sandbox` renders the same pod into one `Sandbox` per user. See
+`sandbox/README.md`.
+
 ## Install
 
 `install.sh` applies the agent-sandbox controller, then installs the chart. It
