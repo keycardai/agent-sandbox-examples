@@ -54,8 +54,8 @@ lane_require_cluster "$cluster"
 lane_use_pinned kubectl go
 context=k3d-$cluster
 out=$here/out/oidc/$cluster
-# kubectl's kuberc can override the cluster that --context names, so it does not
-# apply here.
+# Turn off kuberc. A kuberc default for --server, --cluster, --user or --token
+# would override the cluster and credentials of the --context context.
 export KUBERC=off
 
 mkdir -p "$out"

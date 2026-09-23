@@ -119,7 +119,7 @@ func TestInstallSandboxTemplate(t *testing.T) {
 			},
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: "egress-run", MountPath: "/run/egress"},
-				{Name: "egress-config", MountPath: "/etc/egress", ReadOnly: true},
+				{Name: egressConfig, MountPath: "/etc/egress", ReadOnly: true},
 				{Name: "keycard-token", MountPath: "/var/run/secrets/keycard", ReadOnly: true},
 				{Name: "ca-key", MountPath: "/var/lib/egress/ca"},
 				{Name: sharedCA, MountPath: "/shared-ca"},
@@ -138,7 +138,10 @@ func TestInstallSandboxTemplate(t *testing.T) {
 				Capabilities:             &corev1.Capabilities{Drop: dropAll},
 				SeccompProfile:           runtimeDefault,
 			},
-			VolumeMounts: []corev1.VolumeMount{{Name: sharedCA, MountPath: "/shared-ca", ReadOnly: true}},
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: sharedCA, MountPath: "/shared-ca", ReadOnly: true},
+				{Name: agentConfig, MountPath: "/etc/egress", ReadOnly: true},
+			},
 		},
 	}
 	for _, tc := range []struct {
@@ -159,7 +162,8 @@ func TestInstallSandboxTemplate(t *testing.T) {
 		{Name: "ca-key", EmptyDir: memory},
 		{Name: sharedCA, EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		{Name: "xtables-run", EmptyDir: memory},
-		{Name: "egress-config", ConfigMap: &corev1.ConfigMapVolumeSource{Name: "egress-proxy-config"}},
+		{Name: egressConfig, ConfigMap: &corev1.ConfigMapVolumeSource{Name: "egress-proxy-config"}},
+		{Name: agentConfig, ConfigMap: &corev1.ConfigMapVolumeSource{Name: "egress-agent-config"}},
 		{Name: "keycard-token", Projected: &corev1.ProjectedVolumeSource{
 			Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
 				Path:              "token",

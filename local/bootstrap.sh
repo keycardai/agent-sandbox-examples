@@ -90,8 +90,8 @@ fi
 lane_require_tools docker
 lane_use_pinned jq k3d kubectl
 context=k3d-$cluster
-# kubectl's kuberc can override the cluster that --context names, so it does not
-# apply here.
+# Turn off kuberc. A kuberc default for --server, --cluster, --user or --token
+# would override the cluster and credentials of the --context context.
 export KUBERC=off
 kube() { kubectl --context "$context" "$@"; }
 

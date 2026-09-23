@@ -44,8 +44,8 @@ lane_require_cluster "$cluster"
 [[ -f $devcert ]] || die "$devcert does not exist, so the localdev root CA is unknown. Is localdev set up?"
 lane_use_pinned kubectl jq go
 context=k3d-$cluster
-# kubectl's kuberc can override the cluster that --context names, so it does not
-# apply here.
+# Turn off kuberc. A kuberc default for --server, --cluster, --user or --token
+# would override the cluster and credentials of the --context context.
 export KUBERC=off
 
 ca=$(mktemp)
