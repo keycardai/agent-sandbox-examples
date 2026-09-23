@@ -1,0 +1,155 @@
+# The reference sandbox pod. The tests in internal/chart check every field.
+# Update them with any change here.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ include "keycard-sandbox.namespace" . }}
+  labels:
+    {{- include "keycard-sandbox.labels" . | nindent 4 }}
+spec:
+  # agent-sandbox does not write a NetworkPolicy for sandboxes from this
+  # template. A managed policy would add to the chart's NetworkPolicy and
+  # widen what a sandbox can reach.
+  networkPolicyManagement: Unmanaged
+  podTemplate:
+    metadata:
+      annotations:
+        # Disable common mesh sidecars, which conflict with the network capture
+        # set up here.
+        sidecar.istio.io/inject: "false"
+        linkerd.io/inject: disabled
+        kuma.io/sidecar-injection: disabled
+        appmesh.k8s.aws/sidecarInjectorWebhook: disabled
+    spec:
+      # Each Sandbox sets its user's ServiceAccount here. The service account
+      # name set here is just a placeholder.
+      serviceAccountName: {{ .Release.Name }}
+      automountServiceAccountToken: false
+      # A shared PID namespace would show the agent the proxy's processes and
+      # command line.
+      shareProcessNamespace: false
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      # The agent does not restart. A sandbox that loses its agent is
+      # replaced. The proxy sidecar has its own restartPolicy and does restart.
+      restartPolicy: Never
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        # NEVER set fsGroup. Kubernetes adds every container to that group,
+        # including the agent, and gives that group read and write on each
+        # volume.
+      initContainers:
+        # egress-netsetup programs the redirect and the DROP before any other
+        # container starts. The DROP holds even if the proxy never becomes
+        # ready. iptables needs NET_ADMIN and NET_RAW. SETPCAP lets netsetup
+        # drop NET_ADMIN from its bounding set when it is done. The namespace
+        # runs at the privileged Pod Security level to admit these.
+        - name: egress-netsetup
+          image: {{ .Values.images.netsetup }}
+          args:
+            {{- toYaml .Values.netsetup.args | nindent 12 }}
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_ADMIN", "NET_RAW", "SETPCAP"]
+          volumeMounts:
+            # iptables writes its lock to /run/xtables.lock, and the root
+            # filesystem is read-only.
+            - name: xtables-run
+              mountPath: /run
+        # The proxy runs as a native sidecar. An init container with
+        # restartPolicy Always starts before the agent and stops after it.
+        - name: egress-proxy
+          image: {{ .Values.images.proxy }}
+          restartPolicy: Always
+          args:
+            - --config={{ .Values.proxy.configPath }}
+          securityContext:
+            runAsUser: {{ .Values.proxy.uid }}
+            runAsGroup: {{ .Values.proxy.uid }}
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              # The redirect port is below 1024.
+              add: ["NET_BIND_SERVICE"]
+          # Kubernetes starts the agent after this probe first passes, so the
+          # proxy is already listening when the agent starts.
+          startupProbe:
+            exec:
+              command:
+                {{- toYaml .Values.proxy.startupProbe.command | nindent 16 }}
+            periodSeconds: {{ .Values.proxy.startupProbe.periodSeconds }}
+            failureThreshold: {{ .Values.proxy.startupProbe.failureThreshold }}
+          volumeMounts:
+            - name: egress-run
+              mountPath: /run/egress
+            - name: egress-config
+              mountPath: {{ dir .Values.proxy.configPath }}
+              readOnly: true
+            - name: keycard-token
+              mountPath: {{ .Values.proxy.tokenPath }}
+              readOnly: true
+            - name: ca-key
+              mountPath: /var/lib/egress/ca
+            - name: shared-ca
+              mountPath: /shared-ca
+      containers:
+        - name: agent
+          image: {{ .Values.images.agent }}
+          securityContext:
+            # Without CAP_SETUID the agent cannot switch to the proxy's uid,
+            # which the redirect and the DROP exempt.
+            runAsNonRoot: true
+            runAsUser: {{ .Values.agent.uid }}
+            runAsGroup: {{ .Values.agent.uid }}
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            # The only volume the agent shares with the proxy. It holds the
+            # CA certificate and nothing else.
+            - name: shared-ca
+              mountPath: /shared-ca
+              readOnly: true
+      volumes:
+        # The admin socket. Memory-backed, mounted in the proxy only.
+        - name: egress-run
+          emptyDir:
+            medium: Memory
+        # The CA private key, mounted in the proxy only. It outlives a proxy
+        # restart, so the agent keeps trusting the same CA. It is deleted
+        # with the pod.
+        - name: ca-key
+          emptyDir:
+            medium: Memory
+        # The proxy writes the CA certificate here and the agent reads it.
+        - name: shared-ca
+          emptyDir: {}
+        # The xtables lock. Only egress-netsetup mounts it.
+        - name: xtables-run
+          emptyDir:
+            medium: Memory
+        - name: egress-config
+          configMap:
+            name: {{ .Values.proxy.configMap }}
+        # The token's audience is the zone, and it expires after
+        # proxy.tokenExpirationSeconds. Only the proxy mounts it, so the agent
+        # cannot present itself as the proxy.
+        - name: keycard-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: {{ required "zoneURL is required: the zone that decides every token exchange" .Values.zoneURL | quote }}
+                  expirationSeconds: {{ .Values.proxy.tokenExpirationSeconds }}

@@ -1,7 +1,7 @@
 # NetworkPolicies add up, and agent-sandbox writes its own wider policy for a
 # SandboxTemplate left at networkPolicyManagement: Managed.
-# TODO(ACC-1090): set networkPolicyManagement: Unmanaged on the SandboxTemplate
-# so this is the only policy.
+# The install SandboxTemplate sets networkPolicyManagement: Unmanaged, so this
+# is the only policy.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

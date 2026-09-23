@@ -70,6 +70,7 @@ func TestInstall(t *testing.T) {
 		"NetworkPolicy/keycard-sandbox-egress": true,
 		"Role/keycard-sandbox-admin":           true,
 		"RoleBinding/keycard-sandbox-admin":    true,
+		"SandboxTemplate/keycard-sandbox":      true,
 	}
 	if got := keys(objects); !reflect.DeepEqual(got, want) {
 		t.Errorf("objects = %v, want %v", got, want)
