@@ -115,9 +115,28 @@ func checkFreshZonePolicy(t *testing.T, f *zoneAPI) {
 		t.Errorf("credential body = %v, want %v", cred, wantCred)
 	}
 	pv := f.bodyOf("POST /zones/zone-1/policies/pol-1/versions")
-	if pv["cedar_raw"] != zonesetup.ImpersonationPolicy(zonesetup.DefaultNamespace, "usr-1") ||
-		pv["schema_version"] != testSchemaVersion {
-		t.Errorf("policy version body = %v", pv)
+	// Every optional context attribute is guarded with `has` before it is
+	// read. The zone refuses to publish a version that reads one unguarded.
+	wantPolicy := `permit (
+  principal is Keycard::Application,
+  action,
+  resource
+) when {
+  context has impersonate && context.impersonate == true &&
+  context has subject &&
+  context.subject.identifier == "usr-1" &&
+  context has actor_claims &&
+  context.actor_claims has issuer_claims &&
+  context.actor_claims.issuer_claims.contains({
+    "key": "sub", "value": "system:serviceaccount:agents:usr-1"
+  })
+};
+`
+	if got := pv["cedar_raw"]; got != wantPolicy {
+		t.Errorf("policy text =\n%v\nwant\n%s", got, wantPolicy)
+	}
+	if pv["schema_version"] != testSchemaVersion {
+		t.Errorf("policy schema_version = %v, want %s", pv["schema_version"], testSchemaVersion)
 	}
 	set := f.bodyOf("POST /zones/zone-1/policy-sets")
 	if set["name"] != zonesetup.DefaultPolicySetName || set["target_type"] != "zone" {
