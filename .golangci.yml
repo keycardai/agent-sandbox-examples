@@ -1,0 +1,76 @@
+# The lint gate. golangci-lint is a tool directive in go.mod, which pins its
+# version. `make lint` runs it, and CI runs that same target.
+
+version: "2"
+
+run:
+  tests: true
+
+linters:
+  default: all
+  disable:
+    - depguard
+    - exhaustruct
+    - exhaustruct_v5
+    - godox
+    - gomodguard
+    - nlreturn
+    - noinlineerr
+    - tagliatelle
+    - wsl
+    - wsl_v5
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        # Struct field order is chosen for readability, not for padding.
+        - fieldalignment
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    varnamelen:
+      min-name-length: 3
+      ignore-names:
+        - i
+        - j
+        - k
+        - ok
+        - err
+        - w
+        - r
+        - tc
+        - tt
+  exclusions:
+    generated: lax
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - gofumpt
+    - golines
+  settings:
+    # Imports are three blank-line-separated groups in this order: standard
+    # library, third-party, this module. Each group is sorted.
+    gci:
+      custom-order: true
+      sections:
+        - standard
+        - default
+        - localmodule
+    gofmt:
+      rewrite-rules:
+        - pattern: interface{}
+          replacement: any
+    gofumpt:
+      module-path: github.com/keycardai/agent-sandbox-poc
+      extra:
+        group-params: true
+        balance-calls: true
+    golines:
+      max-len: 120
+      tab-len: 2

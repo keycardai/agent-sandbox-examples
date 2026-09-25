@@ -1,0 +1,21 @@
+# Dependency updates as PRs. Each PR runs the same gates as any other change,
+# so a vulnerability regression in an update fails CI.
+#
+# Dependabot does not move the `go` directive. Bump the Go toolchain by hand
+# in go.mod.
+version: 2
+updates:
+  # Covers the dependencies and the tool directives alike.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "daily"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
