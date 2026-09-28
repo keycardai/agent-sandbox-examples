@@ -83,7 +83,8 @@ if [[ $dry_run == true ]]; then
 	exit 0
 fi
 
-lane_require_tools docker k3d kubectl jq
+lane_require_tools docker
+lane_use_pinned jq k3d kubectl
 context=k3d-$cluster
 kube() { kubectl --context "$context" "$@"; }
 

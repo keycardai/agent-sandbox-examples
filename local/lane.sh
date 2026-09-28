@@ -3,6 +3,9 @@
 #
 # NEVER let any of these scripts write to the `localdev` cluster. It is the
 # user's Keycard stack, and this lane is a client of it.
+#
+# The scripts run the k3d, kubectl and jq that mise.toml pins, whatever else
+# is on PATH. They stop when mise does not provide one.
 
 # lane_load_env reads the settings file, local/local.env unless the first
 # argument names another. It reads the file as data and executes nothing.
@@ -53,4 +56,24 @@ lane_require_tools() {
 			exit 1
 		}
 	done
+}
+
+# lane_use_pinned puts the directory of each named tool that mise resolves
+# from the repository's mise.toml first on PATH. The answer is the same from
+# any working directory.
+lane_use_pinned() {
+	local root tool path
+	root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+	command -v mise >/dev/null 2>&1 || {
+		echo "$(basename "$0"): mise is not installed. See README.md." >&2
+		exit 1
+	}
+	for tool in "$@"; do
+		path=$(mise -C "$root" which "$tool" 2>/dev/null) || {
+			echo "$(basename "$0"): mise does not provide $tool. Run mise install." >&2
+			exit 1
+		}
+		PATH=$(dirname "$path"):$PATH
+	done
+	export PATH
 }
