@@ -1,4 +1,5 @@
 /bin/
+/zone-setup.yaml
 
 # From https://github.com/github/gitignore/blob/main/community/Golang/Go.gitignore
 #

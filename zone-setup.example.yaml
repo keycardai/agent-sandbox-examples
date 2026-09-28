@@ -1,0 +1,59 @@
+# The zone-setup values file. Copy it to zone-setup.yaml (gitignored) and
+# fill it in. localdev and production differ only in the URLs and the
+# service account.
+#
+# The file holds no credential. Every secret is named by the environment
+# variable or file that holds it. Every URL uses https. Only a loopback host
+# may use http.
+
+# The management API. It is a separate host from the zone.
+#
+#   production  https://api.keycard.ai
+#   localdev    https://api.localdev.keycard.sh
+management_api_url: https://api.keycard.ai
+
+# The zone, by its issuer URL, by its id, or by both. At least one is set.
+zone_url: https://acme.keycard.cloud
+# zone_id: replace-me
+
+# The organization service account zone-setup authenticates with. It is
+# NEVER the sidecar's identity.
+#
+# The secret comes from KEYCARD_MANAGEMENT_CLIENT_SECRET, or from the
+# variable client_secret_env names, or from the file client_secret_file
+# names. A named file is the only source read.
+service_account:
+  client_id: replace-me
+  # client_secret_env: KEYCARD_MANAGEMENT_CLIENT_SECRET
+  # client_secret_file: /run/secrets/keycard-management-client-secret
+
+# The cluster's OIDC issuer, kept exactly as written. Copy it from the
+# cluster, including any trailing slash.
+#
+#   EKS   https://oidc.eks.<region>.amazonaws.com/id/<id>
+#   AKS   https://<region>.oic.prod-aks.azure.com/<tenant>/<id>/
+issuer_url: https://oidc.eks.us-west-2.amazonaws.com/id/EXAMPLE
+
+# The namespace the sandboxes run in, a DNS-1123 label. Defaults to agents.
+namespace: agents
+
+# The sandbox users, one per email.
+users:
+  - email: someone@example.com
+
+# The destinations the proxy mints credentials for. The identifier is what
+# the proxy sends as the exchange's `resource` parameter, verbatim. name
+# defaults to the identifier.
+#
+# Exactly one of credential_provider and secret_env is set per resource:
+#   credential_provider  the identifier of an existing provider in the zone
+#   secret_env           the environment variable holding a static token
+resources:
+  - identifier: https://api.github.com/
+    name: GitHub
+    prefix: true
+    credential_provider: github
+  - identifier: https://openrouter.ai/api/v1
+    name: OpenRouter
+    prefix: true
+    secret_env: OPENROUTER_API_KEY
