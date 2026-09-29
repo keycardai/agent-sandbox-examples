@@ -80,8 +80,9 @@ func TestBootstrapDryRun(t *testing.T) {
 // dryRun runs bootstrap.sh --dry-run with only bin on its PATH and a settings
 // file holding file. An empty cluster passes no --cluster flag, and env is a
 // KEY=value added to the run's environment when it is not empty. MARKER in
-// file stands for a path the run must never create. A settings file per run keeps the host's local.env out of it.
-// It reports whether the run failed and logs why.
+// file stands for a path the run must never create. A settings file per run
+// keeps the host's local.env out of it. It reports whether the run failed and
+// logs why.
 func dryRun(t *testing.T, bin, cluster, issuer, file, env string) ([]byte, bool) {
 	t.Helper()
 

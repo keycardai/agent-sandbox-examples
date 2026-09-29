@@ -10,8 +10,8 @@
 # KEYCARD_LOCAL_ISSUER. The value is the rest of the line, taken literally.
 # Any other line stops the run. A script's flag wins over an exported
 # variable of the same name, and an exported variable that is not empty wins
-# over the file. A missing default
-# file is skipped. A missing named file stops the run.
+# over the file. A missing default file is skipped. A missing named file
+# stops the run.
 lane_load_env() {
 	local file=${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/local.env}
 	local line n=0
