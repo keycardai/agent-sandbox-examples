@@ -63,6 +63,7 @@ esac
 `
 	kubectl := `#!/bin/bash
 printf 'kubectl %s\n' "$*" >>"$CALLS"
+[[ ${KUBERC-} == off ]] || { echo "kubectl read KUBERC=${KUBERC-unset}" >&2; exit 1; }
 [[ $FAIL == apply && $* == *" apply "* ]] && exit 1
 [[ $FAIL == rollout && $* == *" rollout "* ]] && exit 1
 if [[ $* == *" get namespace "* ]]; then
@@ -168,10 +169,12 @@ exit 0
 			wantCalls: upTo(3),
 		},
 		{
-			name:      "keeps helm on the requested cluster",
-			context:   cluster,
-			enforce:   privileged,
-			env:       []string{"HELM_KUBEAPISERVER=https://elsewhere", "HELM_KUBETOKEN=secret"},
+			name:    "keeps kubectl and helm on the requested cluster",
+			context: cluster,
+			enforce: privileged,
+			env: []string{
+				"HELM_KUBEAPISERVER=https://elsewhere", "HELM_KUBETOKEN=secret", "KUBERC=/elsewhere/kuberc",
+			},
 			wantOut:   "install.sh: installed keycard-sandbox into namespace agents on " + cluster,
 			wantCalls: all,
 		},

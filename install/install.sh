@@ -66,7 +66,9 @@ fi
 kubectl=$(pinned_path kubectl) || exit 1
 helm=$(pinned_path helm) || exit 1
 kube() { "$kubectl" --context "$context" "$@"; }
-# These helm variables override the cluster or identity that --kube-context names.
+# kubectl's kuberc and these helm variables can override the cluster or identity
+# that --context names, so none of them applies here.
+export KUBERC=off
 unset HELM_KUBEAPISERVER HELM_KUBEASGROUPS HELM_KUBEASUSER HELM_KUBECAFILE HELM_KUBECONTEXT \
 	HELM_KUBEINSECURE_SKIP_TLS_VERIFY HELM_KUBETLS_SERVER_NAME HELM_KUBETOKEN HELM_NAMESPACE
 
