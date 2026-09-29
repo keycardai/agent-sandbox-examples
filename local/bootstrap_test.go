@@ -68,6 +68,7 @@ func TestBootstrapDryRun(t *testing.T) {
 			"k3d\ncluster\ncreate\nasp\n--image\nrancher/k3s:v1.36.4-k3s1\n",
 			"--k3s-arg\n--kube-apiserver-arg=service-account-issuer=" + valid + "@server:*\n",
 			"--k3s-arg\n--kube-apiserver-arg=service-account-jwks-uri=" + valid + "/openid/v1/jwks@server:*\n",
+			"--k3s-arg\n--disable=traefik@server:*\n--k3s-arg\n--disable=servicelb@server:*\n",
 		}, ""},
 		{"environment beats file", noFlag, valid, "KEYCARD_LOCAL_CLUSTER=from-file\n", false, []string{
 			"k3d\ncluster\ncreate\nfrom-env\n",

@@ -68,7 +68,9 @@ jwks_uri=$issuer/openid/v1/jwks
 
 # `@server:*` sends each flag to every server node, and k3s forwards
 # --kube-apiserver-arg to kube-apiserver. The public issuer replaces k3s's
-# default, so kube-apiserver mints tokens with it.
+# default, so kube-apiserver mints tokens with it. The lane serves nothing
+# through an ingress or a LoadBalancer Service, so k3s's Traefik and servicelb
+# stay off.
 create=(
 	k3d cluster create "$cluster"
 	--image "$k3s_image"
@@ -76,6 +78,8 @@ create=(
 	--kubeconfig-switch-context=false
 	--k3s-arg "--kube-apiserver-arg=service-account-issuer=$issuer@server:*"
 	--k3s-arg "--kube-apiserver-arg=service-account-jwks-uri=$jwks_uri@server:*"
+	--k3s-arg "--disable=traefik@server:*"
+	--k3s-arg "--disable=servicelb@server:*"
 )
 if [[ $dry_run == true ]]; then
 	echo "bootstrap.sh: would run:"
