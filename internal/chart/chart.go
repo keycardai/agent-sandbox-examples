@@ -9,9 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -23,10 +23,10 @@ var ErrHelm = errors.New("helm")
 
 // Render runs `helm template` on the chart at dir with the values files and
 // returns every non-empty YAML document it produced, in output order. It runs
-// helm through scripts/pinned in the repository that holds dir, which refuses
-// any helm but the one that repository's mise.toml pins.
+// helm through this repository's scripts/pinned, which refuses any helm but
+// the one this repository's mise.toml pins, wherever the chart lives.
 func Render(ctx context.Context, dir, release string, valuesFiles ...string) ([][]byte, error) {
-	root, err := repoRoot(dir)
+	root, err := repoRoot()
 	if err != nil {
 		return nil, err
 	}
@@ -65,22 +65,14 @@ func Render(ctx context.Context, dir, release string, valuesFiles ...string) ([]
 	}
 }
 
-// repoRoot returns the nearest directory at or above dir that holds a
-// mise.toml, with symlinks resolved.
-func repoRoot(dir string) (string, error) {
-	resolved, err := filepath.Abs(dir)
-	if err == nil {
-		resolved, err = filepath.EvalSymlinks(resolved)
+// repoRoot returns the repository that holds this package, from the path the
+// build records for this file. A chart elsewhere therefore cannot supply the
+// launcher. The path holds only where the source tree is, as in the tests
+// that use Render. A shipped binary would need another anchor.
+func repoRoot() (string, error) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok || !filepath.IsAbs(file) {
+		return "", fmt.Errorf("%w: cannot locate the repository from %q", ErrHelm, file)
 	}
-	if err != nil {
-		return "", fmt.Errorf("%w: resolving chart directory %s: %w", ErrHelm, dir, err)
-	}
-	for d := resolved; ; d = filepath.Dir(d) {
-		if _, err := os.Stat(filepath.Join(d, "mise.toml")); err == nil {
-			return d, nil
-		}
-		if d == filepath.Dir(d) {
-			return "", fmt.Errorf("%w: no mise.toml at or above %s", ErrHelm, resolved)
-		}
-	}
+	return filepath.Dir(filepath.Dir(filepath.Dir(file))), nil
 }
