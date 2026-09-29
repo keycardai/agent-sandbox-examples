@@ -30,9 +30,9 @@ done
 lane_load_env "$env_file"
 cluster=${cluster:-${KEYCARD_LOCAL_CLUSTER:-}}
 lane_require_cluster "$cluster"
-lane_require_tools docker k3d
+lane_require_tools docker k3d jq
 
-if ! k3d cluster get "$cluster" >/dev/null 2>&1; then
+if ! lane_cluster_exists "$cluster"; then
 	echo "down.sh: there is no k3d cluster named $cluster"
 	exit 0
 fi

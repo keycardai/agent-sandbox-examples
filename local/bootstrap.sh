@@ -87,7 +87,7 @@ lane_require_tools docker k3d kubectl jq
 context=k3d-$cluster
 kube() { kubectl --context "$context" "$@"; }
 
-if k3d cluster get "$cluster" >/dev/null 2>&1; then
+if lane_cluster_exists "$cluster"; then
 	echo "bootstrap.sh: reusing the k3d cluster $cluster"
 	discovery=$(kube get --raw /.well-known/openid-configuration) ||
 		die "cannot read the discovery document from $context, so its issuer cannot be confirmed"
