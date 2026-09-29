@@ -36,10 +36,11 @@ func TestControllerManifest(t *testing.T) {
 // mise answers only against the repository root, as scripts/pinned asks it
 // to, and resolves kubectl and helm to fakes that append their arguments to
 // $CALLS. The fake kubectl prints $ENFORCE as the namespace's enforce label,
-// or fails when it is FAIL.
+// or fails when it is FAIL. Each fake fails when $FAIL names its call. The
+// fake helm records any HELM_KUBE variable it sees.
 func TestInstallScript(t *testing.T) {
 	t.Parallel()
-	const cluster = "asp"
+	const cluster, privileged = "asp", "privileged"
 	root := installRoot(t)
 	decoys, miseDir, pinned := t.TempDir(), t.TempDir(), t.TempDir()
 	mise := `#!/bin/bash
@@ -62,16 +63,24 @@ esac
 `
 	kubectl := `#!/bin/bash
 printf 'kubectl %s\n' "$*" >>"$CALLS"
+[[ $FAIL == apply && $* == *" apply "* ]] && exit 1
+[[ $FAIL == rollout && $* == *" rollout "* ]] && exit 1
 if [[ $* == *" get namespace "* ]]; then
 	[[ $ENFORCE == FAIL ]] && exit 1
 	printf '%s' "$ENFORCE"
 fi
 `
+	helm := `#!/bin/bash
+printf 'helm %s\n' "$*" >>"$CALLS"
+env | grep '^HELM_' >>"$CALLS"
+[[ $FAIL == helm ]] && exit 1
+exit 0
+`
 	for path, body := range map[string]string{
 		filepath.Join(decoys, "helm"):    "#!/bin/bash\nprintf 'decoy helm %s\\n' \"$*\" >>\"$CALLS\"\n",
 		filepath.Join(decoys, "kubectl"): "#!/bin/bash\nprintf 'decoy kubectl %s\\n' \"$*\" >>\"$CALLS\"\n",
 		filepath.Join(miseDir, "mise"):   mise,
-		filepath.Join(pinned, "helm"):    "#!/bin/bash\nprintf 'helm %s\\n' \"$*\" >>\"$CALLS\"\n",
+		filepath.Join(pinned, "helm"):    helm,
 		filepath.Join(pinned, "kubectl"): kubectl,
 	} {
 		//nolint:gosec // The fakes must be executable.
@@ -86,23 +95,26 @@ fi
 
 	install := filepath.Join(root, "install")
 	kube := "kubectl --context " + cluster
-	all := strings.Join([]string{
+	calls := []string{
 		kube + " apply --server-side -f " + install + "/agent-sandbox/sandbox-with-extensions.yaml",
 		kube + " -n agent-sandbox-system rollout status deployment/agent-sandbox-controller --timeout=180s",
 		"helm upgrade --install keycard-sandbox " + install + " --kube-context " + cluster + " --namespace agents" +
 			" --create-namespace --take-ownership --values " + values + " --set-string namespace=agents --wait",
 		kube + ` get namespace agents -o jsonpath={.metadata.labels.pod-security\.kubernetes\.io/enforce}`,
-	}, "\n") + "\n"
+	}
+	upTo := func(n int) string { return strings.Join(calls[:n], "\n") + "\n" }
+	all := upTo(len(calls))
 
 	tests := []struct {
-		name, context, enforce string
-		wantErr                bool
-		wantOut, wantCalls     string
+		name, context, enforce, fail string
+		env                          []string
+		wantErr                      bool
+		wantOut, wantCalls           string
 	}{
 		{
 			name:      "installs the controller, then the chart",
 			context:   cluster,
-			enforce:   "privileged",
+			enforce:   privileged,
 			wantOut:   "install.sh: installed keycard-sandbox into namespace agents on " + cluster,
 			wantCalls: all,
 		},
@@ -134,6 +146,35 @@ fi
 			wantOut:   "install.sh: cannot read the labels of namespace agents",
 			wantCalls: all,
 		},
+		{
+			name:      "stops when the controller apply fails",
+			context:   cluster,
+			fail:      "apply",
+			wantErr:   true,
+			wantCalls: upTo(1),
+		},
+		{
+			name:      "stops when the controller rollout fails",
+			context:   cluster,
+			fail:      "rollout",
+			wantErr:   true,
+			wantCalls: upTo(2),
+		},
+		{
+			name:      "stops when helm fails",
+			context:   cluster,
+			fail:      "helm",
+			wantErr:   true,
+			wantCalls: upTo(3),
+		},
+		{
+			name:      "keeps helm on the requested cluster",
+			context:   cluster,
+			enforce:   privileged,
+			env:       []string{"HELM_KUBEAPISERVER=https://elsewhere", "HELM_KUBETOKEN=secret"},
+			wantOut:   "install.sh: installed keycard-sandbox into namespace agents on " + cluster,
+			wantCalls: all,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -142,14 +183,17 @@ fi
 			//nolint:gosec // The arguments are fixed inputs to a script in this repository.
 			cmd := exec.CommandContext(t.Context(), "/bin/bash", filepath.Join(install, "install.sh"),
 				"--context", tc.context, "--values", values)
-			cmd.Env = []string{
+			cmd.Env = append([]string{
 				"PATH=" + decoys + ":" + miseDir + ":/usr/bin:/bin",
-				"CALLS=" + calls, "ENFORCE=" + tc.enforce,
-			}
+				"CALLS=" + calls, "ENFORCE=" + tc.enforce, "FAIL=" + tc.fail,
+			}, tc.env...)
 
 			out, err := cmd.CombinedOutput()
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, want error %t\n%s", err, tc.wantErr, out)
+			}
+			if tc.wantErr && strings.Contains(string(out), "install.sh: installed") {
+				t.Errorf("output reports success\n%s", out)
 			}
 			if !strings.Contains(string(out), tc.wantOut) {
 				t.Errorf("output lacks %q\n%s", tc.wantOut, out)
