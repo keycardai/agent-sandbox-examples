@@ -249,7 +249,7 @@ func decode[S any](build *builder, data []byte, where string) (*S, bool) {
 }
 
 // sandboxSpec is the spec of an agents.x-k8s.io/v1beta1 Sandbox in
-// agent-sandbox v1.0.3.
+// agent-sandbox v1.0.4.
 type sandboxSpec struct {
 	OperatingMode        string                `json:"operatingMode,omitempty"`
 	PodTemplate          *podTemplate          `json:"podTemplate"`
@@ -260,7 +260,7 @@ type sandboxSpec struct {
 }
 
 // sandboxTemplateSpec is the spec of an extensions.agents.x-k8s.io/v1beta1
-// SandboxTemplate in agent-sandbox v1.0.3.
+// SandboxTemplate in agent-sandbox v1.0.4.
 type sandboxTemplateSpec struct {
 	EnvVarsInjectionPolicy     string                `json:"envVarsInjectionPolicy,omitempty"`
 	NetworkPolicy              *sandboxNetworkPolicy `json:"networkPolicy,omitempty"`
