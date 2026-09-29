@@ -137,14 +137,17 @@ func lookTool(t *testing.T, tool string) string {
 	t.Helper()
 
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-		if filepath.Base(dir) == "shims" && filepath.Base(filepath.Dir(dir)) == "mise" {
-			continue
-		}
 		path := filepath.Join(dir, tool)
 		//nolint:gosec // G703: the path is a PATH entry joined with a fixed tool name.
-		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
-			return path
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
+			continue
 		}
+		// A mise shim is a link to the mise binary itself.
+		if target, err := filepath.EvalSymlinks(path); err == nil && filepath.Base(target) == "mise" {
+			continue
+		}
+		return path
 	}
 	//nolint:gosec // G204: mise is fixed and the tool name comes from this test.
 	out, err := exec.CommandContext(t.Context(), "mise", "which", tool).Output()

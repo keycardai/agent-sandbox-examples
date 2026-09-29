@@ -57,15 +57,16 @@ lane_require_tools() {
 }
 
 # lane_cluster_exists returns 0 when k3d lists a cluster named exactly $1 and 1
-# when it does not. A failed listing or output that is not a JSON array stops
-# the run, so an unreachable Docker never reads as a missing cluster.
+# when it does not. A failed listing, or output that is not a list of named
+# clusters, stops the run, so an unreachable Docker never reads as a missing
+# cluster.
 lane_cluster_exists() {
 	local list found
 	list=$(k3d cluster list -o json) || {
 		echo "$(basename "$0"): cannot list k3d clusters. Is Docker running?" >&2
 		exit 1
 	}
-	found=$(jq --arg name "$1" 'if type == "array" then any(.[]; .name == $name) else error("not a list") end' <<<"$list") || found=""
+	found=$(jq --arg name "$1" 'if type == "array" and all(.[]; (.name | type) == "string") then any(.[]; .name == $name) else error("not a cluster list") end' <<<"$list") || found=""
 	case $found in
 	true) return 0 ;;
 	false) return 1 ;;

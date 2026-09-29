@@ -41,6 +41,13 @@ func TestDown(t *testing.T) {
 		{"cannot list", "FAIL", true, "down.sh: cannot list k3d clusters. Is Docker running?", false},
 		{"absent", `[{"name":"asp-other"},{"name":"as"}]`, false, "down.sh: there is no k3d cluster named asp", false},
 		{"empty list", "[]", false, "down.sh: there is no k3d cluster named asp", false},
+		{
+			"entry without a name",
+			`[{}]`,
+			true,
+			"down.sh: k3d cluster list printed something other than a cluster list",
+			false,
+		},
 		{"present", `[{"name":"other"},{"name":"asp"}]`, false, "down.sh: deleted asp", true},
 	}
 	for _, tc := range tests {
