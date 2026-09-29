@@ -81,11 +81,11 @@ lane_use_pinned() {
 		exit 1
 	}
 	for tool in "$@"; do
-		path=$("$mise" -C "$root" which "$tool" 2>/dev/null) || {
-			echo "$(basename "$0"): mise does not provide $tool. Run mise install." >&2
+		path=$("$mise" -C "$root" which "$tool") || {
+			echo "$(basename "$0"): mise does not provide $tool. See mise's message above." >&2
 			exit 1
 		}
-		lane_require_pinned "$root" "$tool" "$path" "$("$mise" -C "$root" ls --current --json "$tool" 2>/dev/null)"
+		lane_require_pinned "$root" "$tool" "$path" "$("$mise" -C "$root" ls --current --json "$tool")"
 		PATH=$(dirname "$path"):$PATH
 	done
 	export PATH

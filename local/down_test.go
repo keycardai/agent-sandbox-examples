@@ -40,7 +40,10 @@ func TestDown(t *testing.T) {
 	realJq := lookTool(t, "jq")
 	mise := `#!/usr/bin/env bash
 tool=${!#}
-[[ "$1 $2" == "-C ` + root + `" && $tool != "$MISE_LACKS" ]] || exit 1
+if [[ "$1 $2" != "-C ` + root + `" || $tool == "$MISE_LACKS" ]]; then
+	echo "mise ERROR $tool is not a mise bin" >&2
+	exit 1
+fi
 source=` + root + `/mise.toml installed=true
 case $tool in
 k3d)
@@ -122,7 +125,8 @@ esac
 			list:    "[]",
 			lacks:   "k3d",
 			wantErr: true,
-			wantOut: "down.sh: mise does not provide k3d. Run mise install.",
+			// mise's own error comes first, then the script's.
+			wantOut: "mise ERROR k3d is not a mise bin\ndown.sh: mise does not provide k3d. See mise's message above.",
 		},
 		{
 			name:    "global k3d",
