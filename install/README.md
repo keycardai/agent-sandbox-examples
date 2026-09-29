@@ -9,6 +9,17 @@ The once-per-cluster Helm chart for Keycard agent sandboxes. It installs:
 
 `values.yaml` documents every key. `values.example.yaml` is a starting point.
 
+## Install
+
+`install.sh` applies the agent-sandbox controller, then installs the chart. It
+stops unless the namespace enforces the `privileged` Pod Security level.
+
+    ./install/install.sh --context NAME --values my-values.yaml
+
+The controller manifest in `agent-sandbox/` is the upstream release asset.
+`agent-sandbox/refresh.sh` downloads it and checks it against the digest GitHub
+publishes.
+
 ## The sandbox-admin Role is effectively node admin
 
 The Role grants API access in the sandbox namespace only, but its effect
