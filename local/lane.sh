@@ -71,14 +71,16 @@ lane_require_tools() {
 # from the repository's mise.toml first on PATH. The answer is the same from
 # any working directory.
 lane_use_pinned() {
-	local root tool path
+	local root mise tool path
 	root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-	command -v mise >/dev/null 2>&1 || {
+	# Resolve mise once, so a tool directory put first on PATH cannot supply
+	# another mise for the next lookup.
+	mise=$(command -v mise) || {
 		echo "$(basename "$0"): mise is not installed. See README.md." >&2
 		exit 1
 	}
 	for tool in "$@"; do
-		path=$(mise -C "$root" which "$tool" 2>/dev/null) || {
+		path=$("$mise" -C "$root" which "$tool" 2>/dev/null) || {
 			echo "$(basename "$0"): mise does not provide $tool. Run mise install." >&2
 			exit 1
 		}
