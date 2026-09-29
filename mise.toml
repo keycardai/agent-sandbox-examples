@@ -1,0 +1,10 @@
+# mise.lock is lockfile version 2, which mise reads from 2026.9.7.
+min_version = "2026.9.7"
+
+[settings]
+use_versions_host_track = false
+
+[tools]
+jq = "1.8.2"
+k3d = "5.9.0"
+kubectl = "1.37.1"
