@@ -8,8 +8,9 @@
 # argument names another. It reads the file as data and executes nothing.
 # Each line is blank, a # comment, or KEY=value for KEYCARD_LOCAL_CLUSTER or
 # KEYCARD_LOCAL_ISSUER. The value is the rest of the line, taken literally.
-# Any other line stops the run. A script's flag wins over the file, and the
-# file wins over an exported variable of the same name. A missing default
+# Any other line stops the run. A script's flag wins over an exported
+# variable of the same name, and an exported variable that is not empty wins
+# over the file. A missing default
 # file is skipped. A missing named file stops the run.
 lane_load_env() {
 	local file=${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/local.env}
@@ -23,7 +24,7 @@ lane_load_env() {
 		n=$((n + 1))
 		[[ $line =~ ^[[:space:]]*(#|$) ]] && continue
 		if [[ $line =~ ^(KEYCARD_LOCAL_CLUSTER|KEYCARD_LOCAL_ISSUER)=(.*)$ ]]; then
-			printf -v "${BASH_REMATCH[1]}" '%s' "${BASH_REMATCH[2]}"
+			[[ -n ${!BASH_REMATCH[1]:-} ]] || printf -v "${BASH_REMATCH[1]}" '%s' "${BASH_REMATCH[2]}"
 		else
 			echo "$(basename "$0"): $file line $n is not KEYCARD_LOCAL_CLUSTER=value or KEYCARD_LOCAL_ISSUER=value" >&2
 			exit 1

@@ -32,31 +32,39 @@ func TestBootstrapDryRun(t *testing.T) {
 		name, cluster, issuer, file string
 		wantErr                     bool
 		want                        []string
+		env                         string
 	}{
-		{"http", "", "http://asp.localdev.keycard.sh", "", true, []string{"the issuer must be https"}},
-		{"no host", "", "https:///path", "", true, []string{noHost}},
-		{"space in host", "", "https://asp .localdev.keycard.sh", "", true, []string{noHost}},
-		{"userinfo", "", "https://user@asp.localdev.keycard.sh", "", true, []string{noHost}},
-		{"unicode host", "", "https://asp.localdév.keycard.sh", "", true, []string{noHost}},
-		{"port out of range", "", host + ":65536", "", true, []string{"the issuer port must be 1-65535"}},
-		{"space in path", "", host + "/a b", "", true, []string{"the issuer must have an optional port and a path"}},
-		{"query", "", valid + "?a=b", "", true, []string{"the issuer must have no query or fragment"}},
-		{"fragment", "", valid + "#a", "", true, []string{"the issuer must have no query or fragment"}},
-		{"trailing slash", "", valid + "/", "", true, []string{"the issuer must have no trailing slash"}},
-		{"localdev cluster", "localdev", valid, "", true, []string{"'localdev' is the Keycard localdev stack"}},
-		{"file assigns a script variable", "", valid, "cluster=other\n", true, []string{refused}},
-		{"file runs a command", "", valid, "touch MARKER\n", true, []string{refused}},
+		{"http", "", "http://asp.localdev.keycard.sh", "", true, []string{"the issuer must be https"}, ""},
+		{"no host", "", "https:///path", "", true, []string{noHost}, ""},
+		{"space in host", "", "https://asp .localdev.keycard.sh", "", true, []string{noHost}, ""},
+		{"userinfo", "", "https://user@asp.localdev.keycard.sh", "", true, []string{noHost}, ""},
+		{"unicode host", "", "https://asp.localdév.keycard.sh", "", true, []string{noHost}, ""},
+		{"port out of range", "", host + ":65536", "", true, []string{"the issuer port must be 1-65535"}, ""},
+		{"space in path", "", host + "/a b", "", true, []string{"the issuer must have an optional port and a path"}, ""},
+		{"query", "", valid + "?a=b", "", true, []string{"the issuer must have no query or fragment"}, ""},
+		{"fragment", "", valid + "#a", "", true, []string{"the issuer must have no query or fragment"}, ""},
+		{"trailing slash", "", valid + "/", "", true, []string{"the issuer must have no trailing slash"}, ""},
+		{"localdev cluster", "localdev", valid, "", true, []string{"'localdev' is the Keycard localdev stack"}, ""},
+		{"file assigns a script variable", "", valid, "cluster=other\n", true, []string{refused}, ""},
+		{"file runs a command", "", valid, "touch MARKER\n", true, []string{refused}, ""},
 		{"valid", "", valid, "# comment\n\nKEYCARD_LOCAL_CLUSTER=other\n", false, []string{
 			"k3d\ncluster\ncreate\nasp\n--image\nrancher/k3s:v1.36.4-k3s1\n",
 			"--k3s-arg\n--kube-apiserver-arg=service-account-issuer=" + valid + "@server:*\n",
 			"--k3s-arg\n--kube-apiserver-arg=service-account-jwks-uri=" + valid + "/openid/v1/jwks@server:*\n",
-		}},
+		}, ""},
+		{"environment beats file", "", valid, "KEYCARD_LOCAL_CLUSTER=from-file\n", false, []string{
+			"k3d\ncluster\ncreate\nfrom-env\n",
+		}, "KEYCARD_LOCAL_CLUSTER=from-env"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			out, failed := dryRun(t, bin, cmp.Or(tc.cluster, "asp"), tc.issuer, tc.file)
+			cluster := cmp.Or(tc.cluster, "asp")
+			if tc.env != "" {
+				cluster = ""
+			}
+			out, failed := dryRun(t, bin, cluster, tc.issuer, tc.file, tc.env)
 			if failed != tc.wantErr {
 				t.Fatalf("failed = %t, want %t\n%s", failed, tc.wantErr, out)
 			}
@@ -70,22 +78,29 @@ func TestBootstrapDryRun(t *testing.T) {
 }
 
 // dryRun runs bootstrap.sh --dry-run with only bin on its PATH and a settings
-// file holding file. MARKER in file stands for a path the run must never
-// create. A settings file per run keeps the host's local.env out of it.
+// file holding file. An empty cluster passes no --cluster flag, and env is a
+// KEY=value added to the run's environment when it is not empty. MARKER in
+// file stands for a path the run must never create. A settings file per run keeps the host's local.env out of it.
 // It reports whether the run failed and logs why.
-func dryRun(t *testing.T, bin, cluster, issuer, file string) ([]byte, bool) {
+func dryRun(t *testing.T, bin, cluster, issuer, file, env string) ([]byte, bool) {
 	t.Helper()
 
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "marker")
-	env := filepath.Join(dir, "local.env")
-	if err := os.WriteFile(env, []byte(strings.ReplaceAll(file, "MARKER", marker)), 0o600); err != nil {
+	settings := filepath.Join(dir, "local.env")
+	if err := os.WriteFile(settings, []byte(strings.ReplaceAll(file, "MARKER", marker)), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	args := []string{"bootstrap.sh", "--dry-run", "--env", settings, "--issuer", issuer}
+	if cluster != "" {
+		args = append(args, "--cluster", cluster)
+	}
 	//nolint:gosec // The arguments are a test table's inputs to a script in this repository.
-	cmd := exec.CommandContext(t.Context(), filepath.Join(bin, "bash"), "bootstrap.sh", "--dry-run",
-		"--env", env, "--cluster", cluster, "--issuer", issuer)
+	cmd := exec.CommandContext(t.Context(), filepath.Join(bin, "bash"), args...)
 	cmd.Env = []string{"PATH=" + bin}
+	if env != "" {
+		cmd.Env = append(cmd.Env, env)
+	}
 
 	out, err := cmd.CombinedOutput()
 	if _, statErr := os.Stat(marker); !errors.Is(statErr, fs.ErrNotExist) {
