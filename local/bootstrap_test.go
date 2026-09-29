@@ -11,6 +11,9 @@ import (
 	"testing"
 )
 
+// localdev is the Keycard stack's cluster, which the lane never touches.
+const localdev = "localdev"
+
 // TestBootstrapDryRun runs bootstrap.sh --dry-run, which reads its settings
 // file as data and validates its settings before it looks for Docker or any
 // other tool.
@@ -23,6 +26,9 @@ func TestBootstrapDryRun(t *testing.T) {
 		noHost  = "the issuer must name a host"
 		badName = "the cluster name must be lowercase letters, digits and dashes (got "
 		refused = "line 1 is not KEYCARD_LOCAL_CLUSTER=value or KEYCARD_LOCAL_ISSUER=value"
+		// noFlag as a row's cluster passes no --cluster flag. An empty cluster
+		// passes --cluster asp.
+		noFlag = "-"
 	)
 	// The PATH holds only what the script runs before its tool check, plus
 	// touch, so a settings file that runs "touch MARKER" leaves a marker.
@@ -44,9 +50,17 @@ func TestBootstrapDryRun(t *testing.T) {
 		{"query", "", valid + "?a=b", "", true, []string{"the issuer must have no query or fragment"}, ""},
 		{"fragment", "", valid + "#a", "", true, []string{"the issuer must have no query or fragment"}, ""},
 		{"trailing slash", "", valid + "/", "", true, []string{"the issuer must have no trailing slash"}, ""},
-		{"localdev cluster", "localdev", valid, "", true, []string{"'localdev' is the Keycard localdev stack"}, ""},
+		{"localdev cluster", localdev, valid, "", true, []string{"'localdev' is the Keycard localdev stack"}, ""},
 		{"option as cluster", "--verbose", valid, "", true, []string{badName + "'--verbose')"}, ""},
-		{"quoted in file", "", valid, "KEYCARD_LOCAL_CLUSTER=\"quoted\"\n", true, []string{badName + `'"quoted"')`}, ""},
+		{
+			"quoted in file",
+			noFlag,
+			valid,
+			"KEYCARD_LOCAL_CLUSTER=\"quoted\"\n",
+			true,
+			[]string{badName + `'"quoted"')`},
+			"",
+		},
 		{"cluster over 32 characters", strings.Repeat("a", 33), valid, "", true, []string{badName}, ""},
 		{"file assigns a script variable", "", valid, "cluster=other\n", true, []string{refused}, ""},
 		{"file runs a command", "", valid, "touch MARKER\n", true, []string{refused}, ""},
@@ -55,7 +69,7 @@ func TestBootstrapDryRun(t *testing.T) {
 			"--k3s-arg\n--kube-apiserver-arg=service-account-issuer=" + valid + "@server:*\n",
 			"--k3s-arg\n--kube-apiserver-arg=service-account-jwks-uri=" + valid + "/openid/v1/jwks@server:*\n",
 		}, ""},
-		{"environment beats file", "", valid, "KEYCARD_LOCAL_CLUSTER=from-file\n", false, []string{
+		{"environment beats file", noFlag, valid, "KEYCARD_LOCAL_CLUSTER=from-file\n", false, []string{
 			"k3d\ncluster\ncreate\nfrom-env\n",
 		}, "KEYCARD_LOCAL_CLUSTER=from-env"},
 	}
@@ -63,7 +77,7 @@ func TestBootstrapDryRun(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			cluster := cmp.Or(tc.cluster, "asp")
-			if tc.env != "" || strings.HasPrefix(tc.file, "KEYCARD_LOCAL_CLUSTER=") {
+			if cluster == noFlag {
 				cluster = ""
 			}
 			out, failed := dryRun(t, bin, cluster, tc.issuer, tc.file, tc.env)

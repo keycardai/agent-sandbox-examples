@@ -1,6 +1,7 @@
 package local_test
 
 import (
+	"cmp"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,18 +38,29 @@ func TestDown(t *testing.T) {
 		wantErr     bool
 		wantOut     string
 		wantDeleted bool
+		cluster     string
 	}{
-		{"cannot list", "FAIL", true, "down.sh: cannot list k3d clusters. Is Docker running?", false},
-		{"absent", `[{"name":"asp-other"},{"name":"as"}]`, false, "down.sh: there is no k3d cluster named asp", false},
-		{"empty list", "[]", false, "down.sh: there is no k3d cluster named asp", false},
+		{"cannot list", "FAIL", true, "down.sh: cannot list k3d clusters. Is Docker running?", false, ""},
+		{"absent", `[{"name":"asp-other"},{"name":"as"}]`, false, "down.sh: there is no k3d cluster named asp", false, ""},
+		{"empty list", "[]", false, "down.sh: there is no k3d cluster named asp", false, ""},
 		{
 			"entry without a name",
 			`[{}]`,
 			true,
 			"down.sh: k3d cluster list printed something other than a cluster list",
 			false,
+			"",
 		},
-		{"present", `[{"name":"other"},{"name":"asp"}]`, false, "down.sh: deleted asp", true},
+		{"present", `[{"name":"other"},{"name":"asp"}]`, false, "down.sh: deleted asp", true, ""},
+		// k3d lists localdev, so a down.sh that skipped the refusal would delete it.
+		{
+			"refuses localdev",
+			`[{"name":"localdev"}]`,
+			true,
+			"down.sh: 'localdev' is the Keycard localdev stack",
+			false,
+			localdev,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -62,7 +74,7 @@ func TestDown(t *testing.T) {
 			}
 			//nolint:gosec // The arguments are fixed inputs to a script in this repository.
 			cmd := exec.CommandContext(t.Context(), filepath.Join(bin, "bash"), "down.sh",
-				"--env", env, "--cluster", "asp", "--yes")
+				"--env", env, "--cluster", cmp.Or(tc.cluster, "asp"), "--yes")
 			cmd.Env = []string{"PATH=" + bin, "K3D_LIST=" + tc.list, "K3D_CALLS=" + calls}
 
 			out, err := cmd.CombinedOutput()
