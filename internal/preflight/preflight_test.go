@@ -72,6 +72,10 @@ func TestCheckRefuses(t *testing.T) {
 			`{"kind":"ConfigMap","apiVersion":"v1","kind":"ConfigMap"}`,
 		},
 		{
+			"a YAML document that repeats a key", preflight.RuleUnreadableDocument,
+			"apiVersion: v1\nkind: Pod\nkind: ConfigMap\n",
+		},
+		{
 			"nothing judged beside empty and null documents", preflight.RuleNothingJudged,
 			"---\n# a comment\n---\nnull\n---\napiVersion: v1\nkind: ConfigMap\n---\n",
 		},
