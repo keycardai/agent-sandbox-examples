@@ -106,14 +106,35 @@ func linkTools(t *testing.T, tools ...string) string {
 
 	dir := t.TempDir()
 	for _, tool := range tools {
-		path, err := exec.LookPath(tool)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(path, filepath.Join(dir, tool)); err != nil {
+		if err := os.Symlink(lookTool(t, tool), filepath.Join(dir, tool)); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	return dir
+}
+
+// lookTool finds tool on PATH but skips mise's shims, which need mise's own
+// environment and fail under the stripped PATH these tests run with. It
+// falls back to the version mise resolves for this directory.
+func lookTool(t *testing.T, tool string) string {
+	t.Helper()
+
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if filepath.Base(dir) == "shims" && filepath.Base(filepath.Dir(dir)) == "mise" {
+			continue
+		}
+		path := filepath.Join(dir, tool)
+		//nolint:gosec // G703: the path is a PATH entry joined with a fixed tool name.
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
+			return path
+		}
+	}
+	//nolint:gosec // G204: mise is fixed and the tool name comes from this test.
+	out, err := exec.CommandContext(t.Context(), "mise", "which", tool).Output()
+	if err != nil {
+		t.Fatalf("%s is not on PATH outside mise's shims, and mise does not resolve it: %v", tool, err)
+	}
+
+	return strings.TrimSpace(string(out))
 }
