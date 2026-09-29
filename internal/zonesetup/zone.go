@@ -29,7 +29,7 @@ const (
 // nothing to the zone. Every error wraps ErrAuth, ErrAPI, ErrZoneNotFound,
 // ErrZoneAmbiguous or ErrZoneMismatch.
 func ResolveZone(ctx context.Context, values *Values, secrets *Secrets) (*keycard.Zone, error) {
-	httpClient := &http.Client{Timeout: requestTimeout}
+	httpClient := &http.Client{Timeout: requestTimeout, CheckRedirect: refuseRedirect}
 	token, err := serviceAccountToken(ctx, httpClient, values, secrets.ManagementClientSecret)
 	if err != nil {
 		return nil, err
@@ -47,6 +47,15 @@ func ResolveZone(ctx context.Context, values *Values, secrets *Secrets) (*keycar
 	}
 	return zoneByURL(ctx, &zones, values.ZoneURL)
 }
+
+// refuseRedirect stops every redirect, so a credential goes only to the URL
+// it was sent to.
+func refuseRedirect(req *http.Request, _ []*http.Request) error {
+	return fmt.Errorf("%w to %s", errRedirect, req.URL.Redacted())
+}
+
+// errRedirect is wrapped by the ErrAuth or ErrAPI of the refused request.
+var errRedirect = errors.New("refused a redirect")
 
 // serviceAccountToken exchanges the service account's client credentials for
 // a bearer token at the management API's /service-account-token endpoint. It
@@ -84,12 +93,21 @@ func serviceAccountToken(
 	}
 	var payload struct {
 		AccessToken string `json:"access_token"`
+		TokenType   string `json:"token_type"`
 	}
-	if err := json.NewDecoder(io.LimitReader(res.Body, maxTokenResponseBytes)).Decode(&payload); err != nil {
+	dec := json.NewDecoder(io.LimitReader(res.Body, maxTokenResponseBytes))
+	if err := dec.Decode(&payload); err != nil {
 		return "", fmt.Errorf("%w: token response: %w", ErrAuth, err)
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("%w: token response has data after the JSON object", ErrAuth)
 	}
 	if payload.AccessToken == "" {
 		return "", fmt.Errorf("%w: token response has no access_token", ErrAuth)
+	}
+	// RFC 6749 section 7.1 makes the token type case-insensitive.
+	if !strings.EqualFold(payload.TokenType, "Bearer") {
+		return "", fmt.Errorf("%w: token response has token_type %q, not Bearer", ErrAuth, payload.TokenType)
 	}
 	return payload.AccessToken, nil
 }
@@ -104,6 +122,9 @@ func zoneByID(ctx context.Context, zones *keycard.ZoneService, values *Values) (
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: zone %s: %w", ErrAPI, values.ZoneID, err)
+	}
+	if zone.ID != values.ZoneID {
+		return nil, fmt.Errorf("%w: zone_id %s returned zone %q", ErrAPI, values.ZoneID, zone.ID)
 	}
 	if values.ZoneURL != "" && !sameIssuer(zone.Protocols.Oauth2.Issuer, values.ZoneURL) {
 		return nil, fmt.Errorf("%w: zone_id %s issues %s, not zone_url %s",
@@ -136,10 +157,11 @@ func zoneByURL(ctx context.Context, zones *keycard.ZoneService, zoneURL string) 
 }
 
 // listZones walks every page of zones the service account can list. A page
-// with no after cursor or no items is the last.
+// with no after cursor is the last. A cursor seen before is refused.
 func listZones(ctx context.Context, zones *keycard.ZoneService) ([]keycard.Zone, error) {
 	var all []keycard.Zone
 	after := ""
+	seen := map[string]bool{}
 	for {
 		params := keycard.ZoneListParams{Limit: keycard.Int(zonePageSize)}
 		if after != "" {
@@ -151,12 +173,13 @@ func listZones(ctx context.Context, zones *keycard.ZoneService) ([]keycard.Zone,
 		}
 		all = append(all, page.Items...)
 		next := page.Pagination.AfterCursor
-		if next == "" || len(page.Items) == 0 {
+		if next == "" {
 			return all, nil
 		}
-		if next == after {
-			return nil, fmt.Errorf("%w: list zones returned the cursor it was given", ErrAPI)
+		if seen[next] {
+			return nil, fmt.Errorf("%w: list zones repeated the cursor %q", ErrAPI, next)
 		}
+		seen[next] = true
 		after = next
 	}
 }

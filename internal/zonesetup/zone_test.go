@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/keycardai/agent-sandbox-poc/internal/zonesetup"
@@ -25,6 +26,12 @@ const (
 	issuerA      = "https://a.keycard.cloud"
 	issuerB      = "https://b.keycard.cloud"
 	exchangeCall = "POST /service-account-token"
+	listCall     = "GET /zones"
+	getACall     = "GET /zones/zone-a"
+	tokenPath    = "/service-account-token"
+	listPath     = "/zones"
+	getAPath     = "/zones/zone-a"
+	emptyPageToA = `{"items":[],"pagination":{"after_cursor":"A"}}`
 	zoneA        = "zone-a"
 	zoneB        = "zone-b"
 	zoneD        = "zone-d"
@@ -41,6 +48,8 @@ type fakeAPI struct {
 	// failStatus, when set, answers every request to failPath with it.
 	failPath   string
 	failStatus int
+	// handlers, when set, answer the request to each path in place of the mux.
+	handlers map[string]http.HandlerFunc
 
 	mu    sync.Mutex
 	calls map[string]int
@@ -59,6 +68,10 @@ func (f *fakeAPI) serve(t *testing.T) string {
 		f.mu.Unlock()
 		if r.URL.Path == f.failPath {
 			w.WriteHeader(f.failStatus)
+			return
+		}
+		if h, ok := f.handlers[r.URL.Path]; ok {
+			h(w, r)
 			return
 		}
 		mux.ServeHTTP(w, r)
@@ -130,6 +143,32 @@ func (f *fakeAPI) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"items": items, "pagination": map[string]any{"after_cursor": cursor}})
 }
 
+// redirect sends every request to /redirected with its method and body kept.
+func redirect(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/redirected", http.StatusTemporaryRedirect)
+}
+
+// rawBody answers with body verbatim and status 200.
+func rawBody(body string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}
+}
+
+// pages answers a list request with the page keyed by its after cursor. It
+// fails every request after the tenth, so a client that loops stops.
+func pages(byCursor map[string]string) http.HandlerFunc {
+	var served atomic.Int32
+	return func(w http.ResponseWriter, r *http.Request) {
+		if served.Add(1) > 10 {
+			http.Error(w, `{"error":"too many pages"}`, http.StatusTooManyRequests)
+			return
+		}
+		rawBody(byCursor[r.URL.Query().Get("after")])(w, r)
+	}
+}
+
 func zoneJSON(zone fakeZone) map[string]any {
 	return map[string]any{"id": zone.id, "protocols": map[string]any{"oauth2": map[string]any{"issuer": zone.issuer}}}
 }
@@ -158,6 +197,7 @@ func TestResolveZone(t *testing.T) {
 		secret     string
 		failPath   string
 		failStatus int
+		handlers   map[string]http.HandlerFunc
 		wantZone   string
 		wantErr    error
 		// wantCalls pins how often each listed request reached the fake.
@@ -165,7 +205,7 @@ func TestResolveZone(t *testing.T) {
 	}{
 		{
 			name: "by url", zoneURL: issuerA, wantZone: zoneA,
-			wantCalls: map[string]int{exchangeCall: 1, "GET /zones": 3},
+			wantCalls: map[string]int{exchangeCall: 1, listCall: 3},
 		},
 		{name: "by url on the last page", zoneURL: "https://e.keycard.cloud", wantZone: "zone-e"},
 		{name: "a trailing slash on zone_url still matches", zoneURL: "https://c.keycard.cloud/", wantZone: "zone-c"},
@@ -188,28 +228,85 @@ func TestResolveZone(t *testing.T) {
 		},
 		{
 			name: "wrong secret", zoneID: zoneA, secret: "wrong", wantErr: zonesetup.ErrAuth,
-			wantCalls: map[string]int{exchangeCall: 1, "GET /zones/zone-a": 0},
+			wantCalls: map[string]int{exchangeCall: 1, getACall: 0},
 		},
 		{
 			name: "a failed token request is sent once", zoneID: zoneA,
-			failPath: "/service-account-token", failStatus: http.StatusBadGateway, wantErr: zonesetup.ErrAuth,
+			failPath: tokenPath, failStatus: http.StatusBadGateway, wantErr: zonesetup.ErrAuth,
 			wantCalls: map[string]int{exchangeCall: 1},
 		},
 		{
 			name: "a failed zone request is sent once", zoneID: zoneA,
-			failPath: "/zones/zone-a", failStatus: http.StatusBadGateway, wantErr: zonesetup.ErrAPI,
-			wantCalls: map[string]int{"GET /zones/zone-a": 1},
+			failPath: getAPath, failStatus: http.StatusBadGateway, wantErr: zonesetup.ErrAPI,
+			wantCalls: map[string]int{getACall: 1},
 		},
 		{
 			name: "a failed list request is sent once", zoneURL: issuerA,
-			failPath: "/zones", failStatus: http.StatusServiceUnavailable, wantErr: zonesetup.ErrAPI,
-			wantCalls: map[string]int{"GET /zones": 1},
+			failPath: listPath, failStatus: http.StatusServiceUnavailable, wantErr: zonesetup.ErrAPI,
+			wantCalls: map[string]int{listCall: 1},
+		},
+		{
+			name: "a redirected token request is refused", zoneID: zoneA,
+			handlers: map[string]http.HandlerFunc{tokenPath: redirect}, wantErr: zonesetup.ErrAuth,
+			wantCalls: map[string]int{exchangeCall: 1, "POST /redirected": 0},
+		},
+		{
+			name: "a redirected zone request is refused", zoneID: zoneA,
+			handlers: map[string]http.HandlerFunc{getAPath: redirect}, wantErr: zonesetup.ErrAPI,
+			wantCalls: map[string]int{getACall: 1, "GET /redirected": 0},
+		},
+		{
+			name: "a token response without token_type", zoneID: zoneA, wantErr: zonesetup.ErrAuth,
+			handlers: map[string]http.HandlerFunc{tokenPath: rawBody(`{"access_token":"sa-token"}`)},
+		},
+		{
+			name: "a token response with another token_type", zoneID: zoneA, wantErr: zonesetup.ErrAuth,
+			handlers: map[string]http.HandlerFunc{
+				tokenPath: rawBody(`{"access_token":"sa-token","token_type":"mac"}`),
+			},
+		},
+		{
+			name: "a token response with trailing bytes", zoneID: zoneA, wantErr: zonesetup.ErrAuth,
+			handlers: map[string]http.HandlerFunc{
+				tokenPath: rawBody(`{"access_token":"sa-token","token_type":"bearer"} x`),
+			},
+		},
+		{
+			name: "a lowercase bearer token_type is accepted", zoneID: zoneA, wantZone: zoneA,
+			handlers: map[string]http.HandlerFunc{
+				tokenPath: rawBody(`{"access_token":"sa-token","token_type":"bearer"}`),
+			},
+		},
+		{
+			name: "zone_id returns another zone", zoneID: zoneA, wantErr: zonesetup.ErrAPI,
+			handlers: map[string]http.HandlerFunc{getAPath: rawBody(`{"id":"zone-b"}`)},
+		},
+		{
+			name: "zone_id returns an error body with status 200", zoneID: zoneA, wantErr: zonesetup.ErrAPI,
+			handlers: map[string]http.HandlerFunc{getAPath: rawBody(`{"error":"server failed"}`)},
+		},
+		{
+			name: "a cursor cycle is refused", zoneURL: issuerA, wantErr: zonesetup.ErrAPI,
+			handlers: map[string]http.HandlerFunc{listPath: pages(map[string]string{
+				"":  emptyPageToA,
+				"A": `{"items":[],"pagination":{"after_cursor":"B"}}`,
+				"B": emptyPageToA,
+			})},
+			wantCalls: map[string]int{listCall: 3},
+		},
+		{
+			name: "a zone after an empty page", zoneURL: issuerA, wantZone: zoneA,
+			handlers: map[string]http.HandlerFunc{listPath: pages(map[string]string{
+				"": emptyPageToA,
+				"A": `{"items":[{"id":"zone-a","protocols":{"oauth2":{"issuer":"` + issuerA +
+					`"}}}],"pagination":{"after_cursor":""}}`,
+			})},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			fake := &fakeAPI{zones: zones, failPath: tc.failPath, failStatus: tc.failStatus}
+			fake := &fakeAPI{zones: zones, failPath: tc.failPath, failStatus: tc.failStatus, handlers: tc.handlers}
 			if tc.zones != nil {
 				fake.zones = tc.zones
 			}
@@ -247,7 +344,7 @@ func TestResolveZone(t *testing.T) {
 // client secret or the bearer token.
 func TestResolveZoneKeepsSecretsOutOfErrors(t *testing.T) {
 	t.Parallel()
-	for _, failPath := range []string{"/service-account-token", "/zones/zone-a"} {
+	for _, failPath := range []string{tokenPath, getAPath} {
 		fake := &fakeAPI{failPath: failPath, failStatus: http.StatusBadGateway}
 		values := &zonesetup.Values{
 			ManagementAPIURL: fake.serve(t),
