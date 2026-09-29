@@ -92,6 +92,9 @@ func check(ctx context.Context, cmd *cli.Command) error {
 	}
 	verifier := provider.Verifier(&oidc.Config{
 		ClientID: cmd.String("audience"),
+		// check compares iss itself because go-oidc accepts a scheme-less
+		// Google issuer.
+		SkipIssuerCheck: true,
 		SupportedSigningAlgs: []string{
 			oidc.RS256, oidc.RS384, oidc.RS512,
 			oidc.ES256, oidc.ES384, oidc.ES512,
@@ -102,6 +105,9 @@ func check(ctx context.Context, cmd *cli.Command) error {
 	verified, err := verifier.Verify(ctx, token)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errToken, err)
+	}
+	if verified.Issuer != issuer {
+		return fmt.Errorf("%w: iss is %q, want %q", errToken, verified.Issuer, issuer)
 	}
 	if want := cmd.String("subject"); verified.Subject != want {
 		return fmt.Errorf("%w: sub is %q, want %q", errSubject, verified.Subject, want)
@@ -130,15 +136,16 @@ func checkFlags(cmd *cli.Command, issuer string) error {
 // readToken reads the token from a file, or from stdin when path is "-",
 // and refuses one larger than maxBody.
 func readToken(stdin io.Reader, path string) (string, error) {
-	var (
-		raw []byte
-		err error
-	)
-	if path == "-" {
-		raw, err = io.ReadAll(io.LimitReader(stdin, maxBody+1))
-	} else {
-		raw, err = os.ReadFile(path) //nolint:gosec // G304: the path is the token file the operator named.
+	src := stdin
+	if path != "-" {
+		file, err := os.Open(path) //nolint:gosec // G304: the path is the token file the operator named.
+		if err != nil {
+			return "", fmt.Errorf("%w: reading %s: %w", errToken, path, err)
+		}
+		defer func() { _ = file.Close() }()
+		src = file
 	}
+	raw, err := io.ReadAll(io.LimitReader(src, maxBody+1))
 	if err != nil {
 		return "", fmt.Errorf("%w: reading %s: %w", errToken, path, err)
 	}

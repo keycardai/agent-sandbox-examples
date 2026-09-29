@@ -41,6 +41,8 @@ type issuerCase struct {
 	httpJWKS bool
 	// emptySubject passes an empty --subject.
 	emptySubject bool
+	// padDiscovery grows the discovery document past maxBody.
+	padDiscovery bool
 	signer       *rsa.PrivateKey
 	claims       func(issuer string, now time.Time) map[string]any
 	want         error
@@ -61,6 +63,24 @@ func TestCheck(t *testing.T) {
 		{
 			name: "issuer mismatch", discoveredIssuer: "https://other.example", signer: cluster, claims: validClaims,
 			want: errDiscovery, wantText: "did not match the issuer URL returned by provider",
+		},
+		{
+			name: "iss differs from --issuer", signer: cluster, want: errToken, wantText: "iss is",
+			claims: func(issuer string, now time.Time) map[string]any {
+				return validClaims(issuer+"/", now)
+			},
+		},
+		{
+			name: "another audience", signer: cluster, want: errToken, wantText: "expected audience",
+			claims: func(issuer string, now time.Time) map[string]any {
+				claims := validClaims(issuer, now)
+				claims["aud"] = []string{"https://other.example"}
+				return claims
+			},
+		},
+		{
+			name: "oversized discovery", padDiscovery: true, signer: cluster, claims: validClaims,
+			want: errDiscovery, wantText: "request body too large",
 		},
 		{
 			name: "missing exp", signer: cluster, want: errToken, wantText: "token is expired",
@@ -144,7 +164,11 @@ func runCase(t *testing.T, published *rsa.PrivateKey, tc issuerCase) (string, er
 		if tc.httpJWKS {
 			scheme = "http://"
 		}
-		writeJSON(t, w, map[string]string{"issuer": issuer, "jwks_uri": scheme + r.Host + jwksPath})
+		doc := map[string]string{"issuer": issuer, "jwks_uri": scheme + r.Host + jwksPath}
+		if tc.padDiscovery {
+			doc["padding"] = strings.Repeat("a", maxBody)
+		}
+		writeJSON(t, w, doc)
 	})
 	mux.HandleFunc(jwksPath, func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(t, w, map[string]any{"keys": []map[string]string{{
@@ -186,18 +210,25 @@ func runCase(t *testing.T, published *rsa.PrivateKey, tc issuerCase) (string, er
 	return out.String(), err
 }
 
-// A token on stdin larger than the cap is refused, so nothing past the cap
-// is silently dropped.
+// A token larger than the cap is refused, from stdin or from a file, so
+// nothing past the cap is silently dropped.
 func TestOversizedToken(t *testing.T) {
 	t.Parallel()
-	cmd := newCommand()
-	cmd.Reader = bytes.NewReader(bytes.Repeat([]byte("a"), maxBody+1))
-	err := cmd.Run(t.Context(), []string{
-		"oidc-check", "--issuer", "https://issuer.example", "--token-file", "-",
-		"--audience", testAudience, "--subject", testSubject,
-	})
-	if !errors.Is(err, errToken) || !strings.Contains(err.Error(), "holds more than") {
-		t.Fatalf("err = %v, want errToken naming the size cap", err)
+	oversized := bytes.Repeat([]byte("a"), maxBody+1)
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, oversized, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"-", tokenFile} {
+		cmd := newCommand()
+		cmd.Reader = bytes.NewReader(oversized)
+		err := cmd.Run(t.Context(), []string{
+			"oidc-check", "--issuer", "https://issuer.example", "--token-file", path,
+			"--audience", testAudience, "--subject", testSubject,
+		})
+		if !errors.Is(err, errToken) || !strings.Contains(err.Error(), "holds more than") {
+			t.Fatalf("--token-file %s: err = %v, want errToken naming the size cap", path, err)
+		}
 	}
 }
 
