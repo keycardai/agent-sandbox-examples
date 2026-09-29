@@ -42,6 +42,11 @@ linters:
         - tt
   exclusions:
     generated: lax
+    rules:
+      # A test table grows by one row per case, so its length says nothing
+      # about its complexity.
+      - path: _test\.go
+        linters: [funlen]
 
 issues:
   max-issues-per-linter: 0

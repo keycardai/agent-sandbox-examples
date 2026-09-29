@@ -11,9 +11,10 @@
 # argument names another. It reads the file as data and executes nothing.
 # Each line is blank, a # comment, or KEY=value for KEYCARD_LOCAL_CLUSTER or
 # KEYCARD_LOCAL_ISSUER. The value is the rest of the line, taken literally.
-# Any other line stops the run. A script's flag wins over the file, and the
-# file wins over an exported variable of the same name. A missing default
-# file is skipped. A missing named file stops the run.
+# Any other line stops the run. A script's flag wins over an exported
+# variable of the same name, and an exported variable that is not empty wins
+# over the file. A missing default file is skipped. A missing named file
+# stops the run.
 lane_load_env() {
 	local file=${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/local.env}
 	local line n=0
@@ -26,7 +27,7 @@ lane_load_env() {
 		n=$((n + 1))
 		[[ $line =~ ^[[:space:]]*(#|$) ]] && continue
 		if [[ $line =~ ^(KEYCARD_LOCAL_CLUSTER|KEYCARD_LOCAL_ISSUER)=(.*)$ ]]; then
-			printf -v "${BASH_REMATCH[1]}" '%s' "${BASH_REMATCH[2]}"
+			[[ -n ${!BASH_REMATCH[1]:-} ]] || printf -v "${BASH_REMATCH[1]}" '%s' "${BASH_REMATCH[2]}"
 		else
 			echo "$(basename "$0"): $file line $n is not KEYCARD_LOCAL_CLUSTER=value or KEYCARD_LOCAL_ISSUER=value" >&2
 			exit 1
@@ -34,8 +35,10 @@ lane_load_env() {
 	done <"$file"
 }
 
-# lane_require_cluster stops a run that names no cluster or names the user's
-# Keycard stack.
+# lane_require_cluster stops a run that names no cluster, names the user's
+# Keycard stack, or names a cluster k3d would refuse or read as an option.
+# The name rule is k3d's RFC 1123 label with its 32-character limit, narrowed
+# to lowercase.
 lane_require_cluster() {
 	local name=$1
 	if [[ -z $name ]]; then
@@ -44,6 +47,12 @@ lane_require_cluster() {
 	fi
 	if [[ $name == localdev ]]; then
 		echo "$(basename "$0"): 'localdev' is the Keycard localdev stack. This lane never writes to it." >&2
+		exit 1
+	fi
+	# The classes spell out every character so that no locale widens them.
+	local ld=abcdefghijklmnopqrstuvwxyz0123456789
+	if ((${#name} > 32)) || [[ ! $name =~ ^[$ld]([$ld-]*[$ld])?$ ]]; then
+		echo "$(basename "$0"): the cluster name must be lowercase letters, digits and dashes (got '$name')" >&2
 		exit 1
 	fi
 }
@@ -76,4 +85,23 @@ lane_use_pinned() {
 		PATH=$(dirname "$path"):$PATH
 	done
 	export PATH
+}
+
+# lane_cluster_exists returns 0 when k3d lists a cluster named exactly $1 and 1
+# when it does not. A failed listing, or output that is not a list of named
+# clusters, stops the run, so an unreachable Docker never reads as a missing
+# cluster.
+lane_cluster_exists() {
+	local list found
+	list=$(k3d cluster list -o json) || {
+		echo "$(basename "$0"): cannot list k3d clusters. Is Docker running?" >&2
+		exit 1
+	}
+	found=$(jq --arg name "$1" 'if type == "array" and all(.[]; (.name | type) == "string") then any(.[]; .name == $name) else error("not a cluster list") end' <<<"$list") || found=""
+	case $found in
+	true) return 0 ;;
+	false) return 1 ;;
+	esac
+	echo "$(basename "$0"): k3d cluster list printed something other than a cluster list" >&2
+	exit 1
 }

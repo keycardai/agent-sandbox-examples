@@ -1,8 +1,7 @@
 package local_test
 
 import (
-	"errors"
-	"io/fs"
+	"cmp"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,112 +9,135 @@ import (
 	"testing"
 )
 
-// TestDownRunsPinnedK3d runs down.sh from outside the repository with a
-// decoy k3d first on PATH. The fake mise resolves k3d only when asked
-// against the repository root. The pinned k3d reports no cluster, so a run
-// that reaches it exits 0 without deleting anything.
-func TestDownRunsPinnedK3d(t *testing.T) {
+// fakeK3d prints $K3D_LIST for "cluster list -o json", or fails when it is
+// FAIL, and appends every other call to $K3D_CALLS.
+const fakeK3d = `#!/usr/bin/env bash
+if [[ $* == "cluster list -o json" ]]; then
+	[[ $K3D_LIST == FAIL ]] && exit 1
+	printf '%s\n' "$K3D_LIST"
+	exit 0
+fi
+printf '%s\n' "$*" >>"$K3D_CALLS"
+`
+
+// TestDown runs down.sh from outside the repository. The PATH holds a decoy
+// k3d that records every call, and ends with a fake mise that answers only
+// against the repository root. The mise resolves k3d to fakeK3d and jq to the
+// real jq, except the tool named in $MISE_LACKS. The empty list is the "[]"
+// k3d v5.9.0 prints when it lists no cluster.
+func TestDown(t *testing.T) {
 	t.Parallel()
 
 	root, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)
 	}
+	bin := linkTools(t, "basename", "bash", "dirname")
+	pinned, miseDir := t.TempDir(), t.TempDir()
+	mise := `#!/usr/bin/env bash
+[[ "$1 $2 $3" == "-C ` + root + ` which" && $4 != "$MISE_LACKS" ]] || exit 1
+case $4 in
+k3d) echo ` + pinned + `/k3d ;;
+jq) echo ` + lookTool(t, "jq") + ` ;;
+*) exit 1 ;;
+esac
+`
+	for path, body := range map[string]string{
+		filepath.Join(bin, "docker"):   "#!/usr/bin/env bash\n",
+		filepath.Join(bin, "k3d"):      "#!/usr/bin/env bash\nprintf 'decoy %s\\n' \"$*\" >>\"$K3D_CALLS\"\n",
+		filepath.Join(miseDir, "mise"): mise,
+		filepath.Join(pinned, "k3d"):   fakeK3d,
+	} {
+		//nolint:gosec // The fakes must be executable.
+		if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	tests := []struct {
-		name       string
-		mise       string
-		wantErr    bool
-		want       string
-		wantPinned bool
+		name, list, cluster, lacks string
+		noMise, wantErr            bool
+		wantOut, wantCalls         string
 	}{
-		{"pinned", "resolves", false, "there is no k3d cluster named asp", true},
-		{"no mise", "", true, "down.sh: mise is not installed. See README.md.", false},
-		{"mise lacks k3d", "fails", true, "down.sh: mise does not provide k3d. Run mise install.", false},
+		{
+			name:    "cannot list",
+			list:    "FAIL",
+			wantErr: true,
+			wantOut: "down.sh: cannot list k3d clusters. Is Docker running?",
+		},
+		{
+			name:    "absent",
+			list:    `[{"name":"asp-other"},{"name":"as"}]`,
+			wantOut: "down.sh: there is no k3d cluster named asp",
+		},
+		{name: "empty list", list: "[]", wantOut: "down.sh: there is no k3d cluster named asp"},
+		{
+			name:    "entry without a name",
+			list:    `[{}]`,
+			wantErr: true,
+			wantOut: "down.sh: k3d cluster list printed something other than a cluster list",
+		},
+		{
+			name:      "present",
+			list:      `[{"name":"other"},{"name":"asp"}]`,
+			wantOut:   "down.sh: deleted asp",
+			wantCalls: "cluster delete asp\n",
+		},
+		// k3d lists localdev, so a down.sh that skipped the refusal would delete it.
+		{
+			name:    "refuses localdev",
+			list:    `[{"name":"localdev"}]`,
+			cluster: localdev,
+			wantErr: true,
+			wantOut: "down.sh: 'localdev' is the Keycard localdev stack",
+		},
+		{
+			name:    "no mise",
+			list:    "[]",
+			noMise:  true,
+			wantErr: true,
+			wantOut: "down.sh: mise is not installed. See README.md.",
+		},
+		{
+			name:    "mise lacks k3d",
+			list:    "[]",
+			lacks:   "k3d",
+			wantErr: true,
+			wantOut: "down.sh: mise does not provide k3d. Run mise install.",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
 			dir := t.TempDir()
-			pinnedRan := filepath.Join(dir, "pinned-ran")
-			decoyRan := filepath.Join(dir, "decoy-ran")
-			path := fakeTools(t, dir, root, tc.mise, pinnedRan, decoyRan)
-			empty := filepath.Join(dir, "empty.env")
-			if err := os.WriteFile(empty, nil, 0o600); err != nil {
+			calls := filepath.Join(dir, "calls")
+			env := filepath.Join(dir, "local.env")
+			if err := os.WriteFile(env, nil, 0o600); err != nil {
 				t.Fatal(err)
 			}
-
-			//nolint:gosec // The arguments are fixed paths inside this test.
-			cmd := exec.CommandContext(t.Context(), "bash",
-				filepath.Join(root, "local", "down.sh"), "--cluster", "asp", "--env", empty, "--yes")
+			path := bin + ":" + miseDir
+			if tc.noMise {
+				path = bin
+			}
+			//nolint:gosec // The arguments are fixed inputs to a script in this repository.
+			cmd := exec.CommandContext(t.Context(), filepath.Join(bin, "bash"), filepath.Join(root, "local", "down.sh"),
+				"--env", env, "--cluster", cmp.Or(tc.cluster, "asp"), "--yes")
 			cmd.Dir = dir
-			cmd.Env = []string{"PATH=" + path}
-			out, err := cmd.CombinedOutput()
+			cmd.Env = []string{"PATH=" + path, "K3D_LIST=" + tc.list, "K3D_CALLS=" + calls, "MISE_LACKS=" + tc.lacks}
 
-			if failed := err != nil; failed != tc.wantErr {
-				t.Fatalf("failed = %t, want %t\n%s", failed, tc.wantErr, out)
+			out, err := cmd.CombinedOutput()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, want error %t\n%s", err, tc.wantErr, out)
 			}
-			if !strings.Contains(string(out), tc.want) {
-				t.Errorf("output lacks %q\n%s", tc.want, out)
+			if !strings.Contains(string(out), tc.wantOut) {
+				t.Errorf("output lacks %q\n%s", tc.wantOut, out)
 			}
-			if ran := exists(t, pinnedRan); ran != tc.wantPinned {
-				t.Errorf("pinned k3d ran = %t, want %t\n%s", ran, tc.wantPinned, out)
-			}
-			if exists(t, decoyRan) {
-				t.Errorf("the decoy k3d ran\n%s", out)
+			// A missing file means no k3d had a call other than the listing.
+			got, _ := os.ReadFile(calls) //nolint:gosec // The path is the test's temp file.
+			if string(got) != tc.wantCalls {
+				t.Errorf("k3d calls = %q, want %q", got, tc.wantCalls)
 			}
 		})
 	}
-}
-
-// fakeTools returns a PATH that holds the tools down.sh runs, a fake docker,
-// and a decoy k3d that touches decoyRan. When mise is "resolves" or "fails",
-// the PATH ends with a fake mise that resolves or refuses to resolve a pinned
-// k3d, which touches pinnedRan and reports no cluster.
-func fakeTools(t *testing.T, dir, root, mise, pinnedRan, decoyRan string) string {
-	t.Helper()
-
-	bin := linkTools(t, "basename", "bash", "dirname")
-	writeScript(t, filepath.Join(bin, "docker"), "exit 0")
-	writeScript(t, filepath.Join(bin, "k3d"), ": >"+decoyRan)
-	if mise == "" {
-		return bin
-	}
-
-	pinned := filepath.Join(dir, "pinned")
-	miseDir := filepath.Join(dir, "mise")
-	for _, d := range []string{pinned, miseDir} {
-		if err := os.Mkdir(d, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	writeScript(t, filepath.Join(pinned, "k3d"), ": >"+pinnedRan+"\nexit 1")
-	answer := "exit 1"
-	if mise == "resolves" {
-		answer = `[ "$1 $2 $3" = "-C ` + root + ` which" ] || exit 1` + "\necho " + pinned + `/"$4"`
-	}
-	writeScript(t, filepath.Join(miseDir, "mise"), answer)
-
-	return bin + ":" + miseDir
-}
-
-func writeScript(t *testing.T, path, body string) {
-	t.Helper()
-
-	//nolint:gosec // The fake tool must be executable.
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func exists(t *testing.T, path string) bool {
-	t.Helper()
-
-	_, err := os.Stat(path)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		t.Fatal(err)
-	}
-
-	return err == nil
 }

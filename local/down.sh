@@ -31,16 +31,16 @@ lane_load_env "$env_file"
 cluster=${cluster:-${KEYCARD_LOCAL_CLUSTER:-}}
 lane_require_cluster "$cluster"
 lane_require_tools docker
-lane_use_pinned k3d
+lane_use_pinned jq k3d
 
-if ! k3d cluster get "$cluster" >/dev/null 2>&1; then
+if ! lane_cluster_exists "$cluster"; then
 	echo "down.sh: there is no k3d cluster named $cluster"
 	exit 0
 fi
 
 if [[ $confirmed == false ]]; then
 	printf 'down.sh: delete the k3d cluster %s? [y/N] ' "$cluster"
-	read -r answer
+	read -r answer || die "no answer. Pass --yes to delete without asking."
 	[[ $answer == [yY]* ]] || die "nothing deleted"
 fi
 
