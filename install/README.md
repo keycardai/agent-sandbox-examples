@@ -1,0 +1,22 @@
+# install
+
+The once-per-cluster Helm chart for Keycard agent sandboxes. It installs:
+
+- the sandbox namespace (`namespace`, default `agents`), labeled with the
+  `privileged` Pod Security level and kept when the release is deleted
+- the sandbox-admin Role in that namespace, and a RoleBinding to
+  `rbac.subjects` when that list is not empty
+
+`values.yaml` documents every key. `values.example.yaml` is a starting point.
+
+## The sandbox-admin Role is effectively node admin
+
+The Role grants API access in the sandbox namespace only, but its effect
+reaches the node. Bind it only to people you would trust as node
+administrators. A Sandbox embeds an arbitrary pod template, and the
+namespace admits privileged pods, so creating a Sandbox is equivalent to
+administering the node it lands on.
+
+It is also equivalent to impersonating every enrolled user. The Role can
+create a Sandbox under any user's ServiceAccount in the namespace, and that
+Sandbox acts with the user's identity.
