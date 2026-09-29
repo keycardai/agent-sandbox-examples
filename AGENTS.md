@@ -14,8 +14,9 @@ outbound HTTPS the Keycard egress proxy mediates.
   in `mise.lock`. Run `mise install`. Docker comes from OrbStack or Docker
   Desktop. Add any other new tool to `mise.toml`, never as a requirement on
   `$PATH`.
-- Scripts and tests resolve those tools through mise against this
-  `mise.toml`, and stop when mise does not provide the pinned version.
+- Scripts and tests run those tools through `scripts/pinned`, which resolves
+  them through mise against this `mise.toml` and stops when mise does not
+  provide the pinned version.
 
 ## Git workflow
 

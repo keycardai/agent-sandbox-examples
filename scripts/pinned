@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Resolves a tool that the repository's mise.toml pins, and refuses any other.
+#
+# Sourced, it defines pinned_path. Run, it resolves its first argument and
+# runs that tool with the rest.
+#
+# Usage: scripts/pinned TOOL [ARG...]
+
+# pinned_path prints the path of $1 that mise resolves against the
+# repository's mise.toml. It stops the run unless mise reports one entry whose
+# source is that mise.toml, whose version is installed, and whose install path
+# holds the resolved path. The answer is the same from any working directory.
+# It matches the JSON with bash because jq is one of the tools it checks. The
+# fields follow JSONToolVersion in mise's src/cli/ls.rs, in its order.
+pinned_path() {
+	local tool=$1 root mise path json
+	root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+	mise=$(command -v mise) || {
+		echo "$(basename "$0"): mise is not installed. See README.md." >&2
+		exit 1
+	}
+	path=$("$mise" -C "$root" which "$tool") || {
+		echo "$(basename "$0"): mise does not provide $tool. See mise's message above." >&2
+		exit 1
+	}
+	json=$("$mise" -C "$root" ls --current --json "$tool") || json=""
+	local s='[[:space:]]*' q='"([^"\\]*)"'
+	local re="^$s\\[$s\\{$s\"version\": $q,.*\"install_path\": $q,$s\"source\": \\{$s\"type\": $q,$s\"path\": $q$s\\},.*\"installed\": (true|false),$s\"active\": (true|false)$s\\}$s\\]$s$"
+	if [[ $json == *'"install_path"'*'"install_path"'* || ! $json =~ $re ]]; then
+		echo "$(basename "$0"): mise ls --current --json $tool printed something other than one entry" >&2
+		exit 1
+	fi
+	local version=${BASH_REMATCH[1]} install=${BASH_REMATCH[2]} source=${BASH_REMATCH[4]}
+	if [[ $source != "$root/mise.toml" ]]; then
+		echo "$(basename "$0"): mise resolves $tool from $source, not $root/mise.toml" >&2
+		exit 1
+	fi
+	if [[ ${BASH_REMATCH[5]} != true ]]; then
+		echo "$(basename "$0"): $tool $version is not installed. Run mise install." >&2
+		exit 1
+	fi
+	if [[ $path != "$install"/* ]]; then
+		echo "$(basename "$0"): mise resolves $tool to $path, outside $install" >&2
+		exit 1
+	fi
+	printf '%s\n' "$path"
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+	set -euo pipefail
+	if [[ $# -eq 0 ]]; then
+		echo "$(basename "$0"): usage: scripts/pinned TOOL [ARG...]" >&2
+		exit 2
+	fi
+	path=$(pinned_path "$1")
+	shift
+	exec "$path" "$@"
+fi
