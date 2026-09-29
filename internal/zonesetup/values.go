@@ -1,4 +1,5 @@
-// Package zonesetup reads the values file zone-setup configures a zone from.
+// Package zonesetup reads the values file zone-setup configures a zone from
+// and resolves that zone through the management API.
 package zonesetup
 
 import (
@@ -25,6 +26,17 @@ var (
 	// ErrMissingSecret is a credential the values file names but the
 	// environment or filesystem does not hold.
 	ErrMissingSecret = errors.New("missing secret")
+	// ErrAuth is a service account the token endpoint did not accept.
+	ErrAuth = errors.New("service account token")
+	// ErrAPI is a management API request that failed.
+	ErrAPI = errors.New("management API")
+	// ErrZoneNotFound is a zone_id or zone_url that names no zone the service
+	// account can see.
+	ErrZoneNotFound = errors.New("zone not found")
+	// ErrZoneAmbiguous is a zone_url more than one zone issues from.
+	ErrZoneAmbiguous = errors.New("zone ambiguous")
+	// ErrZoneMismatch is a zone_id and a zone_url that name different zones.
+	ErrZoneMismatch = errors.New("zone_id and zone_url disagree")
 )
 
 const (
