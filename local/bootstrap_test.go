@@ -94,6 +94,34 @@ func TestBootstrapDryRun(t *testing.T) {
 	}
 }
 
+// TestBootstrapNeedsMise runs bootstrap.sh past validation with no mise on
+// PATH, so a bootstrap.sh that took its tools from PATH instead of mise fails.
+func TestBootstrapNeedsMise(t *testing.T) {
+	t.Parallel()
+
+	bin := linkTools(t, "basename", "bash", "dirname")
+	//nolint:gosec // The fake docker must be executable.
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte("#!/usr/bin/env bash\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	env := filepath.Join(t.TempDir(), "local.env")
+	if err := os.WriteFile(env, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	//nolint:gosec // The arguments are fixed inputs to a script in this repository.
+	cmd := exec.CommandContext(t.Context(), filepath.Join(bin, "bash"), "bootstrap.sh",
+		"--env", env, "--cluster", "asp", "--issuer", "https://asp.localdev.keycard.sh")
+	cmd.Env = []string{"PATH=" + bin}
+
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("bootstrap.sh succeeded with no mise on PATH\n%s", out)
+	}
+	if want := "bootstrap.sh: mise is not installed. See README.md."; !strings.Contains(string(out), want) {
+		t.Errorf("output lacks %q\n%s", want, out)
+	}
+}
+
 // dryRun runs bootstrap.sh --dry-run with only bin on its PATH and a settings
 // file holding file. An empty cluster passes no --cluster flag, and env is a
 // KEY=value added to the run's environment when it is not empty. MARKER in
