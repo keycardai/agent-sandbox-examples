@@ -23,22 +23,40 @@ printf '%s\n' "$*" >>"$K3D_CALLS"
 // TestDown runs down.sh from outside the repository. The PATH holds a decoy
 // k3d that records every call, and ends with a fake mise that answers only
 // against the repository root. The mise resolves k3d to fakeK3d and jq to the
-// real jq, except the tool named in $MISE_LACKS. The empty list is the "[]"
-// k3d v5.9.0 prints when it lists no cluster.
+// real jq, except the tool named in $MISE_LACKS. Its entry for k3d takes its
+// source, installed flag and install path from $MISE_SOURCE, $MISE_INSTALLED
+// and $MISE_INSTALL when they are set. The empty list is the "[]" k3d v5.9.0
+// prints when it lists no cluster.
 func TestDown(t *testing.T) {
 	t.Parallel()
 
-	root, err := filepath.Abs("..")
-	if err != nil {
-		t.Fatal(err)
-	}
+	// present lists the cluster the run names, so a run that passes the tool
+	// checks deletes it.
+	const present = `[{"name":"asp"}]`
+
+	root := repoRoot(t)
 	bin := linkTools(t, "basename", "bash", "dirname")
 	pinned, miseDir := t.TempDir(), t.TempDir()
+	realJq := lookTool(t, "jq")
 	mise := `#!/usr/bin/env bash
-[[ "$1 $2 $3" == "-C ` + root + ` which" && $4 != "$MISE_LACKS" ]] || exit 1
-case $4 in
-k3d) echo ` + pinned + `/k3d ;;
-jq) echo ` + lookTool(t, "jq") + ` ;;
+tool=${!#}
+[[ "$1 $2" == "-C ` + root + `" && $tool != "$MISE_LACKS" ]] || exit 1
+source=` + root + `/mise.toml installed=true
+case $tool in
+k3d)
+	path=` + pinned + `/k3d install=${MISE_INSTALL:-` + pinned + `}
+	source=${MISE_SOURCE:-$source} installed=${MISE_INSTALLED:-true}
+	;;
+jq) path=` + realJq + ` install=` + filepath.Dir(realJq) + ` ;;
+*) exit 1 ;;
+esac
+case "${*:3:$#-3}" in
+which) echo "$path" ;;
+"ls --current --json")
+	printf '[\n  {\n    "version": "1.0.0",\n    "requested_version": "1.0.0",\n    "install_path": "%s",\n' "$install"
+	printf '    "source": {\n      "type": "mise.toml",\n      "path": "%s"\n    },\n' "$source"
+	printf '    "installed": %s,\n    "active": true\n  }\n]\n' "$installed"
+	;;
 *) exit 1 ;;
 esac
 `
@@ -56,6 +74,7 @@ esac
 
 	tests := []struct {
 		name, list, cluster, lacks string
+		source, installed, install string
 		noMise, wantErr            bool
 		wantOut, wantCalls         string
 	}{
@@ -105,6 +124,27 @@ esac
 			wantErr: true,
 			wantOut: "down.sh: mise does not provide k3d. Run mise install.",
 		},
+		{
+			name:    "global k3d",
+			list:    present,
+			source:  "/home/user/.config/mise/config.toml",
+			wantErr: true,
+			wantOut: "down.sh: mise resolves k3d from /home/user/.config/mise/config.toml, not " + root + "/mise.toml",
+		},
+		{
+			name:      "k3d not installed",
+			list:      present,
+			installed: "false",
+			wantErr:   true,
+			wantOut:   "down.sh: k3d 1.0.0 is not installed. Run mise install.",
+		},
+		{
+			name:    "k3d outside its install path",
+			list:    present,
+			install: pinned + "-other",
+			wantErr: true,
+			wantOut: "down.sh: mise resolves k3d to " + pinned + "/k3d, outside " + pinned + "-other",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -124,7 +164,10 @@ esac
 			cmd := exec.CommandContext(t.Context(), filepath.Join(bin, "bash"), filepath.Join(root, "local", "down.sh"),
 				"--env", env, "--cluster", cmp.Or(tc.cluster, "asp"), "--yes")
 			cmd.Dir = dir
-			cmd.Env = []string{"PATH=" + path, "K3D_LIST=" + tc.list, "K3D_CALLS=" + calls, "MISE_LACKS=" + tc.lacks}
+			cmd.Env = []string{
+				"PATH=" + path, "K3D_LIST=" + tc.list, "K3D_CALLS=" + calls, "MISE_LACKS=" + tc.lacks,
+				"MISE_SOURCE=" + tc.source, "MISE_INSTALLED=" + tc.installed, "MISE_INSTALL=" + tc.install,
+			}
 
 			out, err := cmd.CombinedOutput()
 			if (err != nil) != tc.wantErr {
@@ -140,4 +183,20 @@ esac
 			}
 		})
 	}
+}
+
+// repoRoot returns the repository root with symlinks resolved, as pwd -P
+// prints it.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+
+	root, err := filepath.Abs("..")
+	if err == nil {
+		root, err = filepath.EvalSymlinks(root)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return root
 }
