@@ -32,8 +32,10 @@ lane_load_env() {
 	done <"$file"
 }
 
-# lane_require_cluster stops a run that names no cluster or names the user's
-# Keycard stack.
+# lane_require_cluster stops a run that names no cluster, names the user's
+# Keycard stack, or names a cluster k3d would refuse or read as an option.
+# The name rule is k3d's RFC 1123 label with its 32-character limit, narrowed
+# to lowercase.
 lane_require_cluster() {
 	local name=$1
 	if [[ -z $name ]]; then
@@ -42,6 +44,12 @@ lane_require_cluster() {
 	fi
 	if [[ $name == localdev ]]; then
 		echo "$(basename "$0"): 'localdev' is the Keycard localdev stack. This lane never writes to it." >&2
+		exit 1
+	fi
+	# The classes spell out every character so that no locale widens them.
+	local ld=abcdefghijklmnopqrstuvwxyz0123456789
+	if ((${#name} > 32)) || [[ ! $name =~ ^[$ld]([$ld-]*[$ld])?$ ]]; then
+		echo "$(basename "$0"): the cluster name must be lowercase letters, digits and dashes (got '$name')" >&2
 		exit 1
 	fi
 }

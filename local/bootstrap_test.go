@@ -21,9 +21,9 @@ func TestBootstrapDryRun(t *testing.T) {
 		host    = "https://asp.localdev.keycard.sh"
 		valid   = host + ":8443/oidc"
 		noHost  = "the issuer must name a host"
+		badName = "the cluster name must be lowercase letters, digits and dashes (got "
 		refused = "line 1 is not KEYCARD_LOCAL_CLUSTER=value or KEYCARD_LOCAL_ISSUER=value"
 	)
-
 	// The PATH holds only what the script runs before its tool check, plus
 	// touch, so a settings file that runs "touch MARKER" leaves a marker.
 	bin := linkTools(t, "basename", "bash", "dirname", "touch")
@@ -45,6 +45,9 @@ func TestBootstrapDryRun(t *testing.T) {
 		{"fragment", "", valid + "#a", "", true, []string{"the issuer must have no query or fragment"}, ""},
 		{"trailing slash", "", valid + "/", "", true, []string{"the issuer must have no trailing slash"}, ""},
 		{"localdev cluster", "localdev", valid, "", true, []string{"'localdev' is the Keycard localdev stack"}, ""},
+		{"option as cluster", "--verbose", valid, "", true, []string{badName + "'--verbose')"}, ""},
+		{"quoted in file", "", valid, "KEYCARD_LOCAL_CLUSTER=\"quoted\"\n", true, []string{badName + `'"quoted"')`}, ""},
+		{"cluster over 32 characters", strings.Repeat("a", 33), valid, "", true, []string{badName}, ""},
 		{"file assigns a script variable", "", valid, "cluster=other\n", true, []string{refused}, ""},
 		{"file runs a command", "", valid, "touch MARKER\n", true, []string{refused}, ""},
 		{"valid", "", valid, "# comment\n\nKEYCARD_LOCAL_CLUSTER=other\n", false, []string{
@@ -59,9 +62,8 @@ func TestBootstrapDryRun(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-
 			cluster := cmp.Or(tc.cluster, "asp")
-			if tc.env != "" {
+			if tc.env != "" || strings.HasPrefix(tc.file, "KEYCARD_LOCAL_CLUSTER=") {
 				cluster = ""
 			}
 			out, failed := dryRun(t, bin, cluster, tc.issuer, tc.file, tc.env)
