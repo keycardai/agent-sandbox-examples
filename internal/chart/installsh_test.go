@@ -37,7 +37,7 @@ func TestControllerManifest(t *testing.T) {
 // to, and resolves kubectl and helm to fakes that append their arguments to
 // $CALLS. The fake kubectl prints $ENFORCE as the namespace's enforce label,
 // or fails when it is FAIL. Each fake fails when $FAIL names its call. The
-// fake helm records any HELM_KUBE variable it sees.
+// fake helm records every HELM_ variable it sees.
 func TestInstallScript(t *testing.T) {
 	t.Parallel()
 	const cluster, privileged = "asp", "privileged"
