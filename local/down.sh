@@ -39,7 +39,7 @@ fi
 
 if [[ $confirmed == false ]]; then
 	printf 'down.sh: delete the k3d cluster %s? [y/N] ' "$cluster"
-	read -r answer
+	read -r answer || die "no answer. Pass --yes to delete without asking."
 	[[ $answer == [yY]* ]] || die "nothing deleted"
 fi
 
