@@ -143,9 +143,21 @@ func (f *fakeAPI) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"items": items, "pagination": map[string]any{"after_cursor": cursor}})
 }
 
+// redirectSecret stands for a credential a redirect target could carry. No
+// error may repeat it.
+const redirectSecret = "redirect-secret"
+
+// refuseRedirectSecret fails the test when err repeats redirectSecret.
+func refuseRedirectSecret(t *testing.T, err error) {
+	t.Helper()
+	if err != nil && strings.Contains(err.Error(), redirectSecret) {
+		t.Errorf("err = %v, which repeats the redirect target's credential", err)
+	}
+}
+
 // redirect sends every request to /redirected with its method and body kept.
 func redirect(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "/redirected", http.StatusTemporaryRedirect)
+	http.Redirect(w, r, "/redirected?key="+redirectSecret, http.StatusTemporaryRedirect)
 }
 
 // rawBody answers with body verbatim and status 200.
@@ -256,6 +268,12 @@ func TestResolveZone(t *testing.T) {
 			wantCalls: map[string]int{getACall: 1, "GET /redirected": 0},
 		},
 		{
+			name: "a token response with a second object past the size limit", zoneID: zoneA, wantErr: zonesetup.ErrAuth,
+			handlers: map[string]http.HandlerFunc{tokenPath: rawBody(
+				`{"access_token":"sa-token","token_type":"Bearer"}` + strings.Repeat(" ", 1<<20) + `{"x":1}`,
+			)},
+		},
+		{
 			name: "a token response without token_type", zoneID: zoneA, wantErr: zonesetup.ErrAuth,
 			handlers: map[string]http.HandlerFunc{tokenPath: rawBody(`{"access_token":"sa-token"}`)},
 		},
@@ -321,6 +339,7 @@ func TestResolveZone(t *testing.T) {
 				secret = tc.secret
 			}
 			zone, err := zonesetup.ResolveZone(t.Context(), values, &zonesetup.Secrets{ManagementClientSecret: secret})
+			refuseRedirectSecret(t, err)
 			switch {
 			case tc.wantErr != nil:
 				if !errors.Is(err, tc.wantErr) {

@@ -1,6 +1,7 @@
 package zonesetup
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -50,8 +51,17 @@ func ResolveZone(ctx context.Context, values *Values, secrets *Secrets) (*keycar
 
 // refuseRedirect stops every redirect, so a credential goes only to the URL
 // it was sent to.
-func refuseRedirect(req *http.Request, _ []*http.Request) error {
-	return fmt.Errorf("%w to %s", errRedirect, req.URL.Redacted())
+func refuseRedirect(*http.Request, []*http.Request) error {
+	return errRedirect
+}
+
+// scrubRedirect replaces a refused redirect with errRedirect alone, because
+// the client's error names the redirect target, which can carry a credential.
+func scrubRedirect(err error) error {
+	if errors.Is(err, errRedirect) {
+		return errRedirect
+	}
+	return err
 }
 
 // errRedirect is wrapped by the ErrAuth or ErrAPI of the refused request.
@@ -83,7 +93,7 @@ func serviceAccountToken(
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	res, err := httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrAuth, err)
+		return "", fmt.Errorf("%w: %w", ErrAuth, scrubRedirect(err))
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
@@ -91,11 +101,24 @@ func serviceAccountToken(
 			"The client must be an organization service account",
 			ErrAuth, res.StatusCode, values.ServiceAccount.ClientID)
 	}
+	return tokenFromResponse(res.Body)
+}
+
+// tokenFromResponse reads one bounded JSON object holding a bearer token and
+// nothing after it.
+func tokenFromResponse(body io.Reader) (string, error) {
 	var payload struct {
 		AccessToken string `json:"access_token"`
 		TokenType   string `json:"token_type"`
 	}
-	dec := json.NewDecoder(io.LimitReader(res.Body, maxTokenResponseBytes))
+	raw, err := io.ReadAll(io.LimitReader(body, maxTokenResponseBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("%w: token response: %w", ErrAuth, err)
+	}
+	if len(raw) > maxTokenResponseBytes {
+		return "", fmt.Errorf("%w: token response exceeds %d bytes", ErrAuth, maxTokenResponseBytes)
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	if err := dec.Decode(&payload); err != nil {
 		return "", fmt.Errorf("%w: token response: %w", ErrAuth, err)
 	}
@@ -121,7 +144,7 @@ func zoneByID(ctx context.Context, zones *keycard.ZoneService, values *Values) (
 		return nil, fmt.Errorf("%w: zone_id %s", ErrZoneNotFound, values.ZoneID)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("%w: zone %s: %w", ErrAPI, values.ZoneID, err)
+		return nil, fmt.Errorf("%w: zone %s: %w", ErrAPI, values.ZoneID, scrubRedirect(err))
 	}
 	if zone.ID != values.ZoneID {
 		return nil, fmt.Errorf("%w: zone_id %s returned zone %q", ErrAPI, values.ZoneID, zone.ID)
@@ -169,7 +192,7 @@ func listZones(ctx context.Context, zones *keycard.ZoneService) ([]keycard.Zone,
 		}
 		page, err := zones.List(ctx, params)
 		if err != nil {
-			return nil, fmt.Errorf("%w: list zones: %w", ErrAPI, err)
+			return nil, fmt.Errorf("%w: list zones: %w", ErrAPI, scrubRedirect(err))
 		}
 		all = append(all, page.Items...)
 		next := page.Pagination.AfterCursor
