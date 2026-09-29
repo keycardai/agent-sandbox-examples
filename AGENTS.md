@@ -8,8 +8,12 @@ outbound HTTPS the Keycard egress proxy mediates.
 - `make all` runs every gate CI runs: build, `go test -race`, golangci-lint,
   govulncheck and `go mod tidy -diff`. A change is done when it passes.
 - `make fmt` applies the formatters `.golangci.yml` enables.
-- Tools are `tool` directives in `go.mod`, run as `go tool <name>`. NEVER run
+- Go tools are `tool` directives in `go.mod`, run as `go tool <name>`. NEVER run
   a gate tool from `$PATH`.
+- Every other tool except Docker is pinned in `mise.toml`, with its checksums
+  in `mise.lock`. Run `mise install`. Docker comes from OrbStack or Docker
+  Desktop. Add any other new tool to `mise.toml`, never as a requirement on
+  `$PATH`.
 
 ## Git workflow
 
