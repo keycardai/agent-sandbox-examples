@@ -85,6 +85,11 @@ func TestParseValues(t *testing.T) {
 			check: func(v *zonesetup.Values) bool { return v.ManagementAPIURL == "http://127.0.0.1:8080" },
 		},
 		{
+			name:  "namespace defaults to agents",
+			doc:   minimal,
+			check: func(v *zonesetup.Values) bool { return v.Namespace == zonesetup.DefaultNamespace },
+		},
+		{
 			name:      "neither zone field",
 			doc:       strings.Replace(minimal, "zone_url: https://acme.keycard.cloud\n", "", 1),
 			wantField: "zone_url or zone_id",
@@ -100,6 +105,44 @@ func TestParseValues(t *testing.T) {
 		{name: "a port out of range", doc: withAPI("https://api.keycard.ai:65536"), wantField: "management_api_url port"},
 		{name: "a non-numeric port", doc: withAPI("https://api.keycard.ai:https"), wantField: "management_api_url"},
 		{name: "a port with no host", doc: withAPI("https://:443"), wantField: "management_api_url"},
+		{name: "an empty management port", doc: withAPI(`"https://api.keycard.ai:"`), wantField: "management_api_url port"},
+		{
+			name: "an empty issuer port",
+			doc: strings.Replace(
+				minimal,
+				"https://oidc.eks.us-west-2.amazonaws.com/id/EXAMPLE",
+				`"https://i.example:"`,
+				1,
+			),
+			wantField: "issuer_url port",
+		},
+		{name: "a second YAML document", doc: minimal + "---\nnamespace: other\n", wantField: "more than one document"},
+		{
+			name:      "two adjacent JSON objects",
+			doc:       `{"zone_id": "z"}{"namespace": "other"}`,
+			wantField: "content after the first document",
+		},
+		{name: "a repeated key", doc: minimal + "namespace: a\nnamespace: b\n", wantField: `"namespace"`},
+		{
+			name:      "a user listed twice",
+			doc:       minimal + "users: [{email: a@x.io}, {email: a@x.io}]\n",
+			wantField: "users[1].email",
+		},
+		{
+			name:      "a resource listed twice",
+			doc:       minimal + "resources: [{identifier: r, secret_env: K}, {identifier: r, secret_env: K}]\n",
+			wantField: "resources[1].identifier",
+		},
+		{
+			name:      "a resource with both credential sources",
+			doc:       minimal + "resources: [{identifier: r, secret_env: K, credential_provider: p}]\n",
+			wantField: "resources[0]: set exactly one",
+		},
+		{
+			name:      "a resource with no credential source",
+			doc:       minimal + "resources: [{identifier: r}]\n",
+			wantField: "resources[0]: set exactly one",
+		},
 		{name: "a display-name email", doc: minimal + "users: [{email: A <a@x.io>}]\n", wantField: "users[0].email"},
 	}
 	for _, tc := range cases {

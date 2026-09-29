@@ -10,6 +10,7 @@ tool (
 )
 
 require (
+	go.yaml.in/yaml/v2 v2.4.2
 	sigs.k8s.io/json v0.0.0-20260909141634-11ed52e25bc5
 	sigs.k8s.io/yaml v1.6.0
 )
@@ -212,7 +213,6 @@ require (
 	go.augendre.info/fatcontext v0.10.1 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
-	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/exp/typeparams v0.0.0-20260811152304-ee035b5b010f // indirect
 	golang.org/x/mod v0.41.0 // indirect

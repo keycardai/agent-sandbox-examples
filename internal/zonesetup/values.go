@@ -2,6 +2,7 @@
 package zonesetup
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	yamlv2 "go.yaml.in/yaml/v2"
 	kjson "sigs.k8s.io/json"
 	"sigs.k8s.io/yaml"
 )
@@ -101,7 +103,7 @@ type Secrets struct {
 }
 
 // ParseValues reads and validates a values file, YAML or JSON, and applies
-// defaults. Unknown keys, duplicate keys and keys that differ from a field
+// defaults. The file holds exactly one document. Unknown keys, duplicate keys and keys that differ from a field
 // name only in case are errors. Every error wraps ErrValues.
 func ParseValues(reader io.Reader) (*Values, error) {
 	raw, err := io.ReadAll(reader)
@@ -110,6 +112,9 @@ func ParseValues(reader io.Reader) (*Values, error) {
 	}
 	if strings.TrimSpace(string(raw)) == "" {
 		return nil, fmt.Errorf("%w: empty", ErrValues)
+	}
+	if err = singleDocument(raw); err != nil {
+		return nil, err
 	}
 	data, err := yaml.YAMLToJSONStrict(raw)
 	if err != nil {
@@ -130,6 +135,25 @@ func ParseValues(reader io.Reader) (*Values, error) {
 		}
 	}
 	return &values, nil
+}
+
+// singleDocument refuses a stream that holds more than one YAML document.
+// Every "---" marker starts a document, even an empty one. A trailing comment
+// or "..." marker starts none.
+func singleDocument(raw []byte) error {
+	decoder := yamlv2.NewDecoder(bytes.NewReader(raw))
+	var doc any
+	if err := decoder.Decode(&doc); err != nil {
+		return fmt.Errorf("%w: %w", ErrValues, err)
+	}
+	err := decoder.Decode(&doc)
+	switch {
+	case err == nil:
+		return fmt.Errorf("%w: holds more than one document", ErrValues)
+	case !errors.Is(err, io.EOF):
+		return fmt.Errorf("%w: content after the first document: %w", ErrValues, err)
+	}
+	return nil
 }
 
 func (v *Values) checkConnection() error {
@@ -201,9 +225,8 @@ func (v *Values) checkResources() error {
 	return nil
 }
 
-// checkURL requires an absolute https URL with a host, no userinfo and a
-// valid port.
-// Only a loopback host may use http. NEVER put the value in an error, because
+// checkURL requires an absolute https URL with a host, no userinfo and either
+// no port or a valid one. Only a loopback host may use http. NEVER put the value in an error, because
 // a URL can carry a credential.
 func checkURL(key, value string) error {
 	if value == "" {
@@ -216,7 +239,7 @@ func checkURL(key, value string) error {
 	if parsed.User != nil {
 		return fmt.Errorf("%w: %s must not carry userinfo", ErrValues, key)
 	}
-	if !validPort(parsed.Port()) {
+	if strings.HasSuffix(parsed.Host, ":") || !validPort(parsed.Port()) {
 		return fmt.Errorf("%w: %s port must be 1-65535", ErrValues, key)
 	}
 	if parsed.Scheme == "https" || parsed.Scheme == "http" && isLoopback(parsed.Hostname()) {
