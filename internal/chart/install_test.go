@@ -81,14 +81,15 @@ func TestInstall(t *testing.T) {
 
 	var role rbacv1.Role
 	decode(t, objects, "Role/keycard-sandbox-admin", &role)
-	crud := []string{"get", "list", "watch", "create", "update", "patch", "delete"}
-	read := []string{"get", "list", "watch"}
+	const get, create = "get", "create"
+	crud := []string{get, "list", "watch", create, "update", "patch", "delete"}
+	read := []string{get, "list", "watch"}
 	wantRules := []rbacv1.PolicyRule{
 		{APIGroups: []string{"agents.x-k8s.io"}, Resources: []string{"sandboxes"}, Verbs: crud},
 		{APIGroups: []string{"extensions.agents.x-k8s.io"}, Resources: []string{"sandboxtemplates"}, Verbs: read},
 		{APIGroups: []string{""}, Resources: []string{"serviceaccounts", "configmaps"}, Verbs: crud},
 		{APIGroups: []string{""}, Resources: []string{"pods", "pods/log"}, Verbs: read},
-		{APIGroups: []string{""}, Resources: []string{"pods/exec"}, Verbs: []string{"create"}},
+		{APIGroups: []string{""}, Resources: []string{"pods/exec"}, Verbs: []string{create, get}},
 	}
 	if !reflect.DeepEqual(role.Rules, wantRules) {
 		t.Errorf("role rules = %+v\nwant %+v", role.Rules, wantRules)

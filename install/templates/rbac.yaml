@@ -23,7 +23,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods/exec"]
-    verbs: ["create"]
+    verbs: ["create", "get"]
 {{- with .Values.rbac.subjects }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
