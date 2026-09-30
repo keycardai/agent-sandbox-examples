@@ -143,7 +143,7 @@ func TestParseValues(t *testing.T) {
 			doc:       `{"zone_id": "z"}{"namespace": "other"}`,
 			wantField: afterFirst,
 		},
-		{name: "a repeated key", doc: minimal + "namespace: a\nnamespace: b\n", wantField: `"namespace"`},
+		{name: "a repeated key", doc: minimal + "namespace: a\nnamespace: b\n", wantField: "a key is repeated at line"},
 		{
 			name:      "a user listed twice",
 			doc:       minimal + "users: [{email: a@x.io}, {email: a@x.io}]\n",
@@ -220,6 +220,13 @@ func TestParseErrorsKeepFileTextOut(t *testing.T) {
 		"a null key":                 minimal + "null: " + url + "\n",
 		"an unknown key":             minimal + url + ": 1\n",
 		"a value of the wrong type":  minimal + "users: [" + url + "]\n",
+		"a backtick in a mistagged value": strings.Replace(
+			minimal, "https://api.keycard.ai", "!!int 'x`"+url+"'", 1,
+		),
+		"a URL as the namespace": minimal + "namespace: " + url + "\n",
+		"a URL as an email":      minimal + "users: [{email: '" + url + "'}]\n",
+		"a URL identifier listed twice": minimal + "resources: [{identifier: '" + url + "', secret_env: K}, " +
+			"{identifier: '" + url + "', secret_env: K}]\n",
 	} {
 		_, err := zonesetup.ParseValues(strings.NewReader(doc))
 		if !errors.Is(err, zonesetup.ErrValues) {
@@ -229,6 +236,21 @@ func TestParseErrorsKeepFileTextOut(t *testing.T) {
 		if strings.Contains(err.Error(), "hunter2") {
 			t.Errorf("%s: error %q leaks the password", name, err)
 		}
+	}
+}
+
+// errReadURL is a read error that repeats a credential.
+var errReadURL = errors.New("reading https://sa:hunter2@api.keycard.ai")
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errReadURL }
+
+func TestReadErrorKeepsTextOut(t *testing.T) {
+	t.Parallel()
+	_, err := zonesetup.ParseValues(failingReader{})
+	if !errors.Is(err, zonesetup.ErrValues) || strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("error = %v, want ErrValues without the reader's text", err)
 	}
 }
 
