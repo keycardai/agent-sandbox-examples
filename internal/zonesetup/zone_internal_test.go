@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-// TestHTTPClientSpeaksHTTP1ToAnHTTP2Server needs the unexported client,
-// because ResolveZone trusts only the system roots.
 func TestHTTPClientSpeaksHTTP1ToAnHTTP2Server(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))

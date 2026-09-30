@@ -18,11 +18,8 @@ import (
 )
 
 const (
-	// requestTimeout bounds each request to the management API.
-	requestTimeout = 30 * time.Second
-	// zonePageSize is how many zones each list request asks for.
-	zonePageSize = 100
-	// maxTokenResponseBytes bounds what is read from the token endpoint.
+	requestTimeout        = 30 * time.Second
+	zonePageSize          = 100
 	maxTokenResponseBytes = 1 << 20
 )
 
@@ -40,7 +37,6 @@ func ResolveZone(ctx context.Context, values *Values, secrets *Secrets) (*keycar
 		return nil, err
 	}
 	// NewZoneService reads no KEYCARD_API_* variable, unlike keycard.NewClient.
-	// A retried request can repeat a write, so every request is sent once.
 	zones := keycard.NewZoneService(
 		option.WithBaseURL(values.ManagementAPIURL),
 		option.WithHTTPClient(httpClient),
@@ -72,8 +68,6 @@ func newHTTPClient() (*http.Client, error) {
 	return &http.Client{Timeout: requestTimeout, CheckRedirect: refuseRedirect, Transport: transport}, nil
 }
 
-// refuseRedirect stops every redirect, so a credential goes only to the URL
-// it was sent to.
 func refuseRedirect(*http.Request, []*http.Request) error {
 	return errRedirect
 }
@@ -101,18 +95,14 @@ func requestError(err error) error {
 	}
 }
 
-// The errors requestError reports, each wrapped by the ErrAuth or ErrAPI of
-// the failed request.
 var (
 	errRedirect   = errors.New("refused a redirect")
 	errStatus     = errors.New("returned HTTP status")
 	errUnreadable = errors.New("the request failed or its response could not be read")
 )
 
-// serviceAccountToken exchanges the service account's client credentials for
-// a bearer token at the management API's /service-account-token endpoint. It
-// sends one request. keycard-go sends this exchange to https://api.keycard.ai
-// whatever the base URL, so the exchange happens here.
+// keycard-go sends this exchange to https://api.keycard.ai whatever the base
+// URL, so the exchange happens here.
 func serviceAccountToken(
 	ctx context.Context,
 	httpClient *http.Client,
@@ -146,8 +136,6 @@ func serviceAccountToken(
 	return tokenFromResponse(res.Body)
 }
 
-// tokenFromResponse reads one bounded JSON object holding a bearer token and
-// nothing after it.
 func tokenFromResponse(body io.Reader) (string, error) {
 	var payload struct {
 		AccessToken string `json:"access_token"`
@@ -177,8 +165,6 @@ func tokenFromResponse(body io.Reader) (string, error) {
 	return payload.AccessToken, nil
 }
 
-// zoneByID fetches the zone by id. When zone_url is also set, the zone must
-// issue from it.
 func zoneByID(ctx context.Context, zones *keycard.ZoneService, values *Values) (*keycard.Zone, error) {
 	zone, err := zones.Get(ctx, values.ZoneID, keycard.ZoneGetParams{})
 	var apiErr *keycard.Error
@@ -201,8 +187,7 @@ func zoneByID(ctx context.Context, zones *keycard.ZoneService, values *Values) (
 	return zone, nil
 }
 
-// zoneByURL returns the single zone that issues from zoneURL. The list API
-// has no issuer filter, so the match happens here.
+// The list API has no issuer filter, so the match happens here.
 func zoneByURL(ctx context.Context, zones *keycard.ZoneService, zoneURL string) (*keycard.Zone, error) {
 	all, err := listZones(ctx, zones)
 	if err != nil {
@@ -224,8 +209,6 @@ func zoneByURL(ctx context.Context, zones *keycard.ZoneService, zoneURL string) 
 	}
 }
 
-// listZones walks every page of zones the service account can list. A page
-// with no after cursor is the last. A cursor seen before is refused.
 func listZones(ctx context.Context, zones *keycard.ZoneService) ([]keycard.Zone, error) {
 	var all []keycard.Zone
 	after := ""
@@ -255,8 +238,6 @@ func listZones(ctx context.Context, zones *keycard.ZoneService) ([]keycard.Zone,
 	}
 }
 
-// sameIssuer compares two issuer URLs exactly, except that a trailing slash on
-// either does not matter.
 func sameIssuer(a, b string) bool {
 	return strings.TrimRight(a, "/") == strings.TrimRight(b, "/")
 }

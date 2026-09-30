@@ -19,9 +19,7 @@ const (
 	fakeClientID = "sa-1"
 	fakeSecret   = "sa-secret"
 	fakeToken    = "sa-token"
-	// fakeMaxPage is the largest page the fake returns whatever the limit, so
-	// a handful of zones spans several pages.
-	fakeMaxPage = 2
+	fakeMaxPage  = 2
 
 	issuerA      = "https://a.keycard.cloud"
 	issuerB      = "https://b.keycard.cloud"
@@ -41,15 +39,11 @@ type fakeZone struct {
 	id, issuer string
 }
 
-// fakeAPI is the management API and its token endpoint. It authenticates
-// every request and pages zones by an opaque after cursor.
 type fakeAPI struct {
-	zones []fakeZone
-	// failStatus, when set, answers every request to failPath with it.
+	zones      []fakeZone
 	failPath   string
 	failStatus int
-	// handlers, when set, answer the request to each path in place of the mux.
-	handlers map[string]http.HandlerFunc
+	handlers   map[string]http.HandlerFunc
 
 	mu    sync.Mutex
 	calls map[string]int
@@ -114,8 +108,6 @@ func (f *fakeAPI) get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, zoneJSON(f.zones[i]))
 }
 
-// list returns the zones after the one the cursor names, at most limit and at
-// most fakeMaxPage of them. The cursor is the id of the page's last zone.
 func (f *fakeAPI) list(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	start := 0
@@ -143,12 +135,8 @@ func (f *fakeAPI) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"items": items, "pagination": map[string]any{"after_cursor": cursor}})
 }
 
-// redirectSecret stands for a credential a redirect target could carry. No
-// error may repeat it.
 const redirectSecret = "redirect-secret"
 
-// refuseLeaks fails the test when err repeats the client secret, the bearer
-// token or redirectSecret.
 func refuseLeaks(t *testing.T, err error) {
 	t.Helper()
 	for _, secret := range []string{fakeSecret, fakeToken, redirectSecret} {
@@ -158,24 +146,19 @@ func refuseLeaks(t *testing.T, err error) {
 	}
 }
 
-// redirect sends every request to /redirected with its method and body kept.
 func redirect(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/redirected?key="+redirectSecret, http.StatusTemporaryRedirect)
 }
 
-// badRedirect redirects to a Location that does not parse as a URL.
 func badRedirect(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Location", "/redirected?key="+redirectSecret+"%zz")
 	w.WriteHeader(http.StatusTemporaryRedirect)
 }
 
-// echoToken answers with status 500 and a body that repeats the bearer token.
 func echoToken(w http.ResponseWriter, _ *http.Request) {
 	http.Error(w, `{"error":"`+fakeToken+`"}`, http.StatusInternalServerError)
 }
 
-// dropOnce closes the connection without a response the first time it is
-// called, and serves next after that.
 func dropOnce(next http.HandlerFunc) http.HandlerFunc {
 	var dropped atomic.Bool
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -190,7 +173,6 @@ func dropOnce(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// rawBody answers with body verbatim and status 200.
 func rawBody(body string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -198,8 +180,6 @@ func rawBody(body string) http.HandlerFunc {
 	}
 }
 
-// pages answers a list request with the page keyed by its after cursor. It
-// fails every request after the tenth, so a client that loops stops.
 func pages(byCursor map[string]string) http.HandlerFunc {
 	var served atomic.Int32
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -242,8 +222,7 @@ func TestResolveZone(t *testing.T) {
 		handlers   map[string]http.HandlerFunc
 		wantZone   string
 		wantErr    error
-		// wantCalls pins how often each listed request reached the fake.
-		wantCalls map[string]int
+		wantCalls  map[string]int
 	}{
 		{
 			name: "by url", zoneURL: issuerA, wantZone: zoneA,
