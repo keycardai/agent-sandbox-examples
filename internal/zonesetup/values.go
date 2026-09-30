@@ -4,9 +4,11 @@ package zonesetup
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/mail"
 	"net/url"
@@ -52,9 +54,9 @@ const (
 
 var (
 	namespaceRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-	backticked  = regexp.MustCompile("`[^`]*`")
-	quoted      = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
-	plainName   = regexp.MustCompile(`^"[A-Za-z0-9_.\[\]-]*"$`)
+	lineRE      = regexp.MustCompile(`^(?:error converting YAML to JSON: )?yaml: (?:unmarshal errors:\n\s*)?line (\d+):`)
+	envNameRE   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	fieldRE     = regexp.MustCompile(`^(?:json: )?(unknown|duplicate) field "([A-Za-z0-9_.\[\]-]*)"$`)
 )
 
 // Values is the values file. It holds no credential. Every secret is named by
@@ -125,7 +127,7 @@ type Secrets struct {
 func ParseValues(reader io.Reader) (*Values, error) {
 	raw, err := io.ReadAll(reader)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrValues, err)
+		return nil, fmt.Errorf("%w: cannot read it", ErrValues)
 	}
 	if strings.TrimSpace(string(raw)) == "" {
 		return nil, fmt.Errorf("%w: empty", ErrValues)
@@ -143,9 +145,15 @@ func ParseValues(reader io.Reader) (*Values, error) {
 		return nil, parseError(err)
 	}
 	if len(strict) > 0 {
-		return nil, parseError(errors.Join(strict...))
+		return nil, parseError(strict[0])
 	}
-	steps := []func() error{values.checkConnection, values.checkSandbox, values.checkUsers, values.checkResources}
+	steps := []func() error{
+		values.checkConnection,
+		values.checkServiceAccount,
+		values.checkSandbox,
+		values.checkUsers,
+		values.checkResources,
+	}
 	for _, step := range steps {
 		if err := step(); err != nil {
 			return nil, err
@@ -173,7 +181,7 @@ func singleDocument(raw []byte) error {
 	case err == nil:
 		return fmt.Errorf("%w: holds more than one document", ErrValues)
 	case !errors.Is(err, io.EOF):
-		return fmt.Errorf("%w: content after the first document: %s", ErrValues, scrub(err))
+		return fmt.Errorf("%w: content after the first document: %w", ErrValues, parseError(err))
 	}
 	return nil
 }
@@ -195,21 +203,25 @@ func plainStructure(node *yamlv3.Node) error {
 	return nil
 }
 
-// parseError wraps err in ErrValues without the text of the values file.
+// parseError describes a parse error in fixed words, with the line it names
+// and a key only when the key is a plain name. NEVER repeat the error's text,
+// because it can quote the file, which may hold a credential in a URL.
 func parseError(err error) error {
-	return fmt.Errorf("%w: %s", ErrValues, scrub(err))
-}
-
-// scrub removes every quoted value from err's message but plain names. Parse
-// errors can quote the file, which may hold a credential in a URL.
-func scrub(err error) string {
-	msg := backticked.ReplaceAllString(err.Error(), "`…`")
-	return quoted.ReplaceAllStringFunc(msg, func(q string) string {
-		if plainName.MatchString(q) {
-			return q
-		}
-		return `"…"`
-	})
+	msg := err.Error()
+	if match := fieldRE.FindStringSubmatch(msg); match != nil {
+		return fmt.Errorf("%w: %s field %q", ErrValues, match[1], match[2])
+	}
+	if typeErr, ok := errors.AsType[*json.UnmarshalTypeError](err); ok {
+		return fmt.Errorf("%w: %s must be %s", ErrValues, typeErr.Field, typeErr.Type)
+	}
+	where := ""
+	if match := lineRE.FindStringSubmatch(msg); match != nil {
+		where = " at line " + match[1]
+	}
+	if strings.Contains(msg, "already set in map") || strings.Contains(msg, "already defined") {
+		return fmt.Errorf("%w: a key is repeated%s", ErrValues, where)
+	}
+	return fmt.Errorf("%w: not valid YAML or JSON%s", ErrValues, where)
 }
 
 func (v *Values) checkConnection() error {
@@ -224,11 +236,18 @@ func (v *Values) checkConnection() error {
 			return err
 		}
 	}
+	return nil
+}
+
+func (v *Values) checkServiceAccount() error {
 	if v.ServiceAccount.ClientID == "" {
 		return fmt.Errorf("%w: service_account.client_id is required", ErrValues)
 	}
 	if v.ServiceAccount.ClientSecretEnv == "" && v.ServiceAccount.ClientSecretFile == "" {
 		v.ServiceAccount.ClientSecretEnv = DefaultManagementSecretEnv
+	}
+	if v.ServiceAccount.ClientSecretEnv != "" && !envNameRE.MatchString(v.ServiceAccount.ClientSecretEnv) {
+		return fmt.Errorf("%w: service_account.client_secret_env is not an environment variable name", ErrValues)
 	}
 	return nil
 }
@@ -241,7 +260,7 @@ func (v *Values) checkSandbox() error {
 		v.Namespace = DefaultNamespace
 	}
 	if !namespaceRE.MatchString(v.Namespace) || len(v.Namespace) > maxNamespaceLength {
-		return fmt.Errorf("%w: namespace %q is not a DNS-1123 label", ErrValues, v.Namespace)
+		return fmt.Errorf("%w: namespace is not a DNS-1123 label", ErrValues)
 	}
 	return nil
 }
@@ -250,10 +269,10 @@ func (v *Values) checkUsers() error {
 	seen := map[string]bool{}
 	for i, user := range v.Users {
 		if parsed, err := mail.ParseAddress(user.Email); err != nil || parsed.Address != user.Email {
-			return fmt.Errorf("%w: users[%d].email %q is not a bare email address", ErrValues, i, user.Email)
+			return fmt.Errorf("%w: users[%d].email is not a bare email address", ErrValues, i)
 		}
 		if seen[user.Email] {
-			return fmt.Errorf("%w: users[%d].email %q is listed twice", ErrValues, i, user.Email)
+			return fmt.Errorf("%w: users[%d].email is listed twice", ErrValues, i)
 		}
 		seen[user.Email] = true
 	}
@@ -268,7 +287,7 @@ func (v *Values) checkResources() error {
 			return fmt.Errorf("%w: resources[%d].identifier is required", ErrValues, i)
 		}
 		if seen[resource.Identifier] {
-			return fmt.Errorf("%w: resources[%d].identifier %q is listed twice", ErrValues, i, resource.Identifier)
+			return fmt.Errorf("%w: resources[%d].identifier is listed twice", ErrValues, i)
 		}
 		seen[resource.Identifier] = true
 		if resource.Name == "" {
@@ -276,6 +295,9 @@ func (v *Values) checkResources() error {
 		}
 		if (resource.CredentialProvider == "") == (resource.SecretEnv == "") {
 			return fmt.Errorf("%w: resources[%d]: set exactly one of credential_provider and secret_env", ErrValues, i)
+		}
+		if resource.SecretEnv != "" && !envNameRE.MatchString(resource.SecretEnv) {
+			return fmt.Errorf("%w: resources[%d].secret_env is not an environment variable name", ErrValues, i)
 		}
 	}
 	return nil
@@ -335,13 +357,13 @@ func LoadSecrets(
 	}
 	resources := map[string]string{}
 	var missing []string
-	for _, resource := range values.Resources {
+	for i, resource := range values.Resources {
 		if resource.SecretEnv == "" {
 			continue
 		}
 		value, ok := lookupEnv(resource.SecretEnv)
 		if !ok || value == "" {
-			missing = append(missing, fmt.Sprintf("%s (for %s)", resource.SecretEnv, resource.Identifier))
+			missing = append(missing, fmt.Sprintf("%s (for resources[%d])", resource.SecretEnv, i))
 			continue
 		}
 		resources[resource.SecretEnv] = value
@@ -360,15 +382,14 @@ func managementSecret(
 	if account.ClientSecretFile != "" {
 		raw, err := readFile(account.ClientSecretFile)
 		if err != nil {
-			return "", fmt.Errorf("%w: service_account.client_secret_file: %w", ErrMissingSecret, err)
+			return "", fmt.Errorf("%w: service_account.client_secret_file %s", ErrMissingSecret, readFailure(err))
 		}
 		secret, found := strings.CutSuffix(string(raw), "\r\n")
 		if !found {
 			secret = strings.TrimSuffix(secret, "\n")
 		}
 		if secret == "" {
-			return "", fmt.Errorf("%w: service_account.client_secret_file %s is empty",
-				ErrMissingSecret, account.ClientSecretFile)
+			return "", fmt.Errorf("%w: service_account.client_secret_file is empty", ErrMissingSecret)
 		}
 		return secret, nil
 	}
@@ -381,4 +402,17 @@ func managementSecret(
 		)
 	}
 	return secret, nil
+}
+
+// readFailure describes a failed read in fixed words, because the error names
+// the path, which comes from the values file.
+func readFailure(err error) string {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "does not exist"
+	case errors.Is(err, fs.ErrPermission):
+		return "cannot be read: permission denied"
+	default:
+		return "cannot be read"
+	}
 }
