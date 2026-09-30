@@ -10,11 +10,11 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
 {{- end }}
 
 {{/*
-The sandbox namespace, quoted. Rendering fails unless it is a DNS label, as
-Kubernetes requires of a namespace name.
+The sandbox namespace, which is the release namespace, quoted. Rendering fails
+unless it is a DNS label, as Kubernetes requires of a namespace name.
 */}}
 {{- define "keycard-sandbox.namespace" -}}
-{{- $namespace := toString .Values.namespace -}}
+{{- $namespace := .Release.Namespace -}}
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" $namespace) -}}
 {{- fail (printf "namespace %q must be a DNS label" $namespace) -}}
 {{- end -}}

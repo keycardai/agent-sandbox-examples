@@ -38,7 +38,7 @@ esac
 		t.Fatal(err)
 	}
 
-	_, err = chart.Render(t.Context(), dir, "release")
+	_, err = chart.Render(t.Context(), dir, "release", "default")
 	if !errors.Is(err, chart.ErrHelm) {
 		t.Fatalf("Render error = %v, want ErrHelm", err)
 	}
@@ -71,7 +71,7 @@ func TestRenderUsesThisRepositorysLauncher(t *testing.T) {
 		}
 	}
 
-	docs, err := chart.Render(t.Context(), dir, "release")
+	docs, err := chart.Render(t.Context(), dir, "release", "default")
 	if err != nil {
 		t.Fatal(err)
 	}

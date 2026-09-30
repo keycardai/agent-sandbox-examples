@@ -2,12 +2,25 @@
 
 The once-per-cluster Helm chart for Keycard agent sandboxes. It installs:
 
-- the sandbox namespace (`namespace`, default `agents`), labeled with the
+- the sandbox namespace, which is the release namespace, labeled with the
   `privileged` Pod Security level and kept when the release is deleted
 - the sandbox-admin Role in that namespace, and a RoleBinding to
   `rbac.subjects` when that list is not empty
 
 `values.yaml` documents every key. `values.example.yaml` is a starting point.
+
+## Install
+
+`install.sh` applies the agent-sandbox controller, then installs the chart. It
+stops before any change when an existing namespace sets a Pod Security level
+other than `privileged`, and prints the `kubectl label` command that fixes it.
+It also stops unless the namespace enforces `privileged` after the install.
+
+    ./install/install.sh --context NAME --values my-values.yaml
+
+The controller manifest in `agent-sandbox/` is the upstream release asset.
+`agent-sandbox/refresh.sh` downloads it and checks it against the digest GitHub
+publishes.
 
 ## The sandbox-admin Role is effectively node admin
 
