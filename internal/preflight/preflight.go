@@ -18,6 +18,7 @@ import (
 	"io"
 	"slices"
 
+	yamlv2 "go.yaml.in/yaml/v2"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -134,7 +135,9 @@ func (b *builder) jsonStream(manifest []byte) {
 }
 
 // yamlStream splits the stream into documents at "---" lines, as kubectl
-// does, and judges the first YAML value of each document.
+// does, and judges each document. It refuses a document that a YAML stream
+// parser reads as more than one, because kubectl would drop all but the
+// first.
 func (b *builder) yamlStream(manifest []byte) {
 	reader := utilyaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(manifest)))
 	for index := 1; ; {
@@ -147,6 +150,11 @@ func (b *builder) yamlStream(manifest []byte) {
 			b.refuse(RuleUnreadableDocument, where, err.Error())
 			return
 		}
+		if err = singleDocument(doc); err != nil {
+			b.refuse(RuleUnreadableDocument, where, err.Error())
+			index++
+			continue
+		}
 		data, err := yaml.YAMLToJSONStrict(doc)
 		if err == nil && bytes.Equal(data, []byte("null")) {
 			continue
@@ -158,6 +166,30 @@ func (b *builder) yamlStream(manifest []byte) {
 		}
 		b.document(data, where)
 	}
+}
+
+var errMoreThanOneDocument = errors.New("it holds more than one YAML document. Separate documents with a --- line")
+
+// singleDocument refuses a document that holds a second YAML document. A
+// "..." marker or a bare CR line ending can hide one from the "---" reader.
+// NEVER call Decode again after it returns an error, because the decoder
+// then panics.
+func singleDocument(doc []byte) error {
+	decoder := yamlv2.NewDecoder(bytes.NewReader(doc))
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return fmt.Errorf("unreadable YAML: %w", err)
+	}
+	switch err := decoder.Decode(&value); {
+	case err == nil:
+		return errMoreThanOneDocument
+	case !errors.Is(err, io.EOF):
+		return fmt.Errorf("content after the first YAML document: %w", err)
+	}
+	return nil
 }
 
 type builder struct {

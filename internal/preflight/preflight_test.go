@@ -2,6 +2,7 @@ package preflight_test
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/keycardai/agent-sandbox-poc/internal/preflight"
@@ -63,6 +64,18 @@ func TestCheckRefuses(t *testing.T) {
 		{"a Pod with no spec", preflight.RuleNoPodSpec, "apiVersion: v1\nkind: Pod\n"},
 		{"a JSON Pod and a JSON Deployment", preflight.RuleUnknownKind, jsonPod + "\n" + jsonDeployment},
 		{"a JSON Pod and an adjacent JSON Deployment", preflight.RuleUnknownKind, jsonPod + jsonDeployment},
+		{
+			"a Deployment after an end marker", preflight.RuleUnreadableDocument,
+			pod + "...\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: evil\n",
+		},
+		{
+			"a Deployment behind bare CR line endings", preflight.RuleUnreadableDocument,
+			strings.ReplaceAll(pod+"---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: evil\n", "\n", "\r"),
+		},
+		{
+			"a JSON Pod and an adjacent JSON Deployment after a comment", preflight.RuleUnreadableDocument,
+			"# rendered\n" + jsonPod + jsonDeployment,
+		},
 		{
 			"a JSON Pod and a truncated JSON object", preflight.RuleUnreadableDocument,
 			jsonPod + `{"apiVersion":"v1","kind":`,
