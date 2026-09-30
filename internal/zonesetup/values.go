@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 
-	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
+	yamlv2 "go.yaml.in/yaml/v2"
 	kjson "sigs.k8s.io/json"
 	"sigs.k8s.io/yaml"
 )
@@ -137,11 +137,11 @@ func ParseValues(reader io.Reader) (*Values, error) {
 	return &values, nil
 }
 
-// singleDocument refuses a stream that holds more than one document. A YAML
-// document is the text between "---" markers, and one that holds only
-// whitespace counts as none. A JSON stream ends after its first value.
+// singleDocument refuses a stream that holds more than one YAML document.
+// Every "---" marker starts a document, even an empty one. A trailing comment
+// or "..." marker starts none.
 func singleDocument(raw []byte) error {
-	decoder := utilyaml.NewYAMLOrJSONDecoder(bytes.NewReader(raw), len(raw))
+	decoder := yamlv2.NewDecoder(bytes.NewReader(raw))
 	var doc any
 	if err := decoder.Decode(&doc); err != nil {
 		return fmt.Errorf("%w: %w", ErrValues, err)

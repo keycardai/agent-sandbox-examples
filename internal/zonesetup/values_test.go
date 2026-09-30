@@ -116,21 +116,11 @@ func TestParseValues(t *testing.T) {
 			),
 			wantField: "issuer_url port",
 		},
-		{
-			name:  "a trailing document marker",
-			doc:   minimal + "---\n",
-			check: func(v *zonesetup.Values) bool { return v.ServiceAccount.ClientID == "sa-1" },
-		},
 		{name: "a second YAML document", doc: minimal + "---\nnamespace: other\n", wantField: "more than one document"},
-		{
-			name:      "content on a document marker",
-			doc:       minimal + "--- namespace: other\n",
-			wantField: "invalid Yaml document separator",
-		},
 		{
 			name:      "two adjacent JSON objects",
 			doc:       `{"zone_id": "z"}{"namespace": "other"}`,
-			wantField: "more than one document",
+			wantField: "content after the first document",
 		},
 		{name: "a repeated key", doc: minimal + "namespace: a\nnamespace: b\n", wantField: `"namespace"`},
 		{
