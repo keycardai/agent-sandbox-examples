@@ -1,0 +1,8 @@
+# Example values. Copy this file, name who may create sandboxes, and pass it
+# to helm with --values.
+
+rbac:
+  subjects:
+    - kind: Group
+      name: sandbox-admins
+      apiGroup: rbac.authorization.k8s.io
