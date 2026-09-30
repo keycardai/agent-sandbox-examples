@@ -76,6 +76,21 @@ func TestCheckRefuses(t *testing.T) {
 			"a JSON Pod and an adjacent JSON Deployment after a comment", preflight.RuleUnreadableDocument,
 			"# rendered\n" + jsonPod + jsonDeployment,
 		},
+		{
+			"an anchor and an alias",
+			preflight.RuleUnreadableDocument,
+			pod + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {a: &x b, c: *x}\n",
+		},
+		{
+			"a merge key",
+			preflight.RuleUnreadableDocument,
+			pod + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {<<: {a: b}}\n",
+		},
+		{
+			"a key that is not a string",
+			preflight.RuleUnreadableDocument,
+			pod + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {0777: b}\n",
+		},
 		{"a key that kubectl's reader takes for a separator", preflight.RuleUnreadableDocument, pod + "---#hidden: true\n"},
 		{
 			"a Deployment after a CR in a separator comment", preflight.RuleUnreadableDocument,

@@ -16,7 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"iter"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -189,64 +189,116 @@ func (b *builder) sameDocuments(manifest []byte) {
 }
 
 // yamlShapes returns the shape of each document that is not null in a YAML
-// stream.
+// stream. It refuses anchors, aliases and merge keys, and a key that is not
+// a string, which a manifest has no use for.
 func yamlShapes(manifest []byte) ([]string, error) {
 	decoder := yamlv3.NewDecoder(bytes.NewReader(manifest))
 	var shapes []string
 	for {
-		var value any
-		err := decoder.Decode(&value)
+		var doc yamlv3.Node
+		err := decoder.Decode(&doc)
 		if errors.Is(err, io.EOF) {
 			return shapes, nil
 		}
 		if err != nil {
 			return nil, fmt.Errorf("a YAML parser cannot read the manifest: %w", err)
 		}
-		if value != nil {
-			shapes = append(shapes, shape(value))
+		if len(doc.Content) == 0 || doc.Content[0].Tag == "!!null" {
+			continue
+		}
+		var out strings.Builder
+		if err := writeNodeShape(&out, doc.Content[0]); err != nil {
+			return nil, err
+		}
+		shapes = append(shapes, out.String())
+	}
+}
+
+// The constructs yamlShapes refuses.
+var (
+	errAnchor    = errors.New("anchors and aliases are not allowed")
+	errMergeKey  = errors.New("merge keys are not allowed")
+	errKeyString = errors.New("a key must be a string")
+)
+
+func writeNodeShape(out *strings.Builder, node *yamlv3.Node) error {
+	if node.Kind == yamlv3.AliasNode || node.Anchor != "" {
+		return fmt.Errorf("line %d: %w", node.Line, errAnchor)
+	}
+	switch node.Kind {
+	case yamlv3.MappingNode:
+		return writeMappingShape(out, node)
+	case yamlv3.SequenceNode:
+		out.WriteByte('[')
+		for _, child := range node.Content {
+			if err := writeNodeShape(out, child); err != nil {
+				return err
+			}
+		}
+		out.WriteByte(']')
+	case yamlv3.DocumentNode, yamlv3.ScalarNode, yamlv3.AliasNode:
+		out.WriteByte('_')
+	}
+	return nil
+}
+
+// writeMappingShape writes a mapping's entries in key order.
+func writeMappingShape(out *strings.Builder, node *yamlv3.Node) error {
+	var keys, values []*yamlv3.Node
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		if key.Tag == "!!merge" {
+			return fmt.Errorf("line %d: %w", key.Line, errMergeKey)
+		}
+		if key.Kind != yamlv3.ScalarNode || key.Tag != "!!str" {
+			return fmt.Errorf("line %d: %w", key.Line, errKeyString)
+		}
+		keys = append(keys, key)
+		values = append(values, node.Content[i+1])
+	}
+	order := make([]int, len(keys))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortFunc(order, func(a, b int) int { return strings.Compare(keys[a].Value, keys[b].Value) })
+	out.WriteByte('{')
+	for _, i := range order {
+		out.WriteString(strconv.Quote(keys[i].Value) + ":")
+		if err := writeNodeShape(out, values[i]); err != nil {
+			return err
 		}
 	}
+	out.WriteByte('}')
+	return nil
 }
 
 // shape renders a decoded document's keys, nesting and list lengths, and
 // no scalar. kubectl's reader parses YAML 1.1 and yaml/v3 parses YAML 1.2,
 // so the two can read one scalar differently, as with yes or 0777.
 func shape(value any) string {
-	switch value := value.(type) {
-	case map[string]any:
-		return shapeMap(len(value), func(yield func(string, any) bool) {
-			for key, v := range value {
-				if !yield(key, v) {
-					return
-				}
-			}
-		})
-	case map[any]any:
-		return shapeMap(len(value), func(yield func(string, any) bool) {
-			for key, v := range value {
-				if !yield(fmt.Sprint(key), v) {
-					return
-				}
-			}
-		})
-	case []any:
-		parts := make([]string, 0, len(value))
-		for _, v := range value {
-			parts = append(parts, shape(v))
-		}
-		return "[" + strings.Join(parts, ",") + "]"
-	default:
-		return "_"
-	}
+	var out strings.Builder
+	writeShape(&out, value)
+	return out.String()
 }
 
-func shapeMap(size int, entries iter.Seq2[string, any]) string {
-	parts := make([]string, 0, size)
-	for key, v := range entries {
-		parts = append(parts, strconv.Quote(key)+":"+shape(v))
+func writeShape(out *strings.Builder, value any) {
+	switch value := value.(type) {
+	case map[string]any:
+		out.WriteByte('{')
+		for _, key := range slices.Sorted(maps.Keys(value)) {
+			out.WriteString(strconv.Quote(key) + ":")
+			writeShape(out, value[key])
+		}
+		out.WriteByte('}')
+	case []any:
+		out.WriteByte('[')
+		for _, v := range value {
+			writeShape(out, v)
+		}
+		out.WriteByte(']')
+	default:
+		out.WriteByte('_')
 	}
-	slices.Sort(parts)
-	return "{" + strings.Join(parts, ",") + "}"
 }
 
 type builder struct {
