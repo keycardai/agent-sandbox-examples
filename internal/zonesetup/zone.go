@@ -31,14 +31,17 @@ const (
 // nothing to the zone. Every error wraps ErrAuth, ErrAPI, ErrZoneNotFound,
 // ErrZoneAmbiguous or ErrZoneMismatch.
 func ResolveZone(ctx context.Context, values *Values, secrets *Secrets) (*keycard.Zone, error) {
-	// NEVER reuse a connection. net/http resends a request whose reused
-	// connection closes before the response.
+	// NEVER reuse a connection or speak HTTP/2. net/http resends a request
+	// whose reused connection closes before the response, and HTTP/2 resends
+	// a refused stream.
 	transport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		return nil, fmt.Errorf("%w: the default HTTP transport is not an *http.Transport", ErrAPI)
 	}
 	transport = transport.Clone()
 	transport.DisableKeepAlives = true
+	transport.Protocols = new(http.Protocols)
+	transport.Protocols.SetHTTP1(true)
 	httpClient := &http.Client{Timeout: requestTimeout, CheckRedirect: refuseRedirect, Transport: transport}
 	token, err := serviceAccountToken(ctx, httpClient, values, secrets.ManagementClientSecret)
 	if err != nil {
