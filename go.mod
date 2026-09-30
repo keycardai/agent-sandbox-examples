@@ -1,8 +1,6 @@
 module github.com/keycardai/agent-sandbox-poc
 
-go 1.27.0
-
-toolchain go1.27.1
+go 1.27.1
 
 // Build-time tools, run as `go tool <name>`. Their modules are requirements
 // of this module but no package here imports them, so they are in no binary.

@@ -1,8 +1,8 @@
 # Dependency updates as PRs. Each PR runs the same gates as any other change,
 # so a vulnerability regression in an update fails CI.
 #
-# Dependabot does not move the `go` directive. Bump the Go toolchain by hand
-# in go.mod.
+# Dependabot does not move the `go` directive. Bump Go by hand in go.mod and
+# mise.toml, then run `mise lock`.
 version: 2
 updates:
   # Covers the dependencies and the tool directives alike.
