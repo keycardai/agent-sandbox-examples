@@ -31,18 +31,10 @@ const (
 // nothing to the zone. Every error wraps ErrAuth, ErrAPI, ErrZoneNotFound,
 // ErrZoneAmbiguous or ErrZoneMismatch.
 func ResolveZone(ctx context.Context, values *Values, secrets *Secrets) (*keycard.Zone, error) {
-	// NEVER reuse a connection or speak HTTP/2. net/http resends a request
-	// whose reused connection closes before the response, and HTTP/2 resends
-	// a refused stream.
-	transport, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		return nil, fmt.Errorf("%w: the default HTTP transport is not an *http.Transport", ErrAPI)
+	httpClient, err := newHTTPClient()
+	if err != nil {
+		return nil, err
 	}
-	transport = transport.Clone()
-	transport.DisableKeepAlives = true
-	transport.Protocols = new(http.Protocols)
-	transport.Protocols.SetHTTP1(true)
-	httpClient := &http.Client{Timeout: requestTimeout, CheckRedirect: refuseRedirect, Transport: transport}
 	token, err := serviceAccountToken(ctx, httpClient, values, secrets.ManagementClientSecret)
 	if err != nil {
 		return nil, err
@@ -59,6 +51,25 @@ func ResolveZone(ctx context.Context, values *Values, secrets *Secrets) (*keycar
 		return zoneByID(ctx, &zones, values)
 	}
 	return zoneByURL(ctx, &zones, values.ZoneURL)
+}
+
+// newHTTPClient returns the client for the management API. NEVER reuse a
+// connection or speak HTTP/2. net/http resends a request whose reused
+// connection closes before the response, and HTTP/2 resends a refused stream.
+func newHTTPClient() (*http.Client, error) {
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, fmt.Errorf("%w: the default HTTP transport is not an *http.Transport", ErrAPI)
+	}
+	transport = transport.Clone()
+	transport.DisableKeepAlives = true
+	transport.Protocols = new(http.Protocols)
+	transport.Protocols.SetHTTP1(true)
+	// Clone has already offered h2 in the TLS handshake.
+	if transport.TLSClientConfig != nil {
+		transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	}
+	return &http.Client{Timeout: requestTimeout, CheckRedirect: refuseRedirect, Transport: transport}, nil
 }
 
 // refuseRedirect stops every redirect, so a credential goes only to the URL
