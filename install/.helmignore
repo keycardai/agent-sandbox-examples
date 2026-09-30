@@ -1,0 +1,3 @@
+# The installer and the controller manifest it applies are not part of the chart.
+agent-sandbox/
+install.sh

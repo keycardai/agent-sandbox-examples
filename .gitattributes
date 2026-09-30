@@ -1,0 +1,2 @@
+# The agent-sandbox release manifest, which install/agent-sandbox/refresh.sh writes.
+install/agent-sandbox/sandbox-with-extensions.yaml linguist-generated=true

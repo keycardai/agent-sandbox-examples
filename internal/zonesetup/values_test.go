@@ -59,6 +59,12 @@ func withAPI(url string) string {
 
 const aksIssuer = "https://eastus.oic.prod-aks.azure.com/tenant/cluster/"
 
+// The refusals of a file that holds more than one document.
+const (
+	afterFirst  = "content after the first document"
+	moreThanOne = "more than one document"
+)
+
 func TestParseValues(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -116,11 +122,26 @@ func TestParseValues(t *testing.T) {
 			),
 			wantField: "issuer_url port",
 		},
-		{name: "a second YAML document", doc: minimal + "---\nnamespace: other\n", wantField: "more than one document"},
+		{name: "a second YAML document", doc: minimal + "---\nnamespace: other\n", wantField: moreThanOne},
+		{
+			name:      "a document after an end marker",
+			doc:       minimal + "...\nnamespace: other\n",
+			wantField: afterFirst,
+		},
+		{
+			name:      "a second document with bare CR line endings",
+			doc:       strings.ReplaceAll(minimal+"---\nnamespace: other\n", "\n", "\r"),
+			wantField: moreThanOne,
+		},
+		{
+			name:      "two adjacent flow mappings",
+			doc:       "{zone_id: z}{namespace: other}",
+			wantField: afterFirst,
+		},
 		{
 			name:      "two adjacent JSON objects",
 			doc:       `{"zone_id": "z"}{"namespace": "other"}`,
-			wantField: "content after the first document",
+			wantField: afterFirst,
 		},
 		{name: "a repeated key", doc: minimal + "namespace: a\nnamespace: b\n", wantField: `"namespace"`},
 		{
