@@ -1,0 +1,9 @@
+apiVersion: v2
+name: keycard-sandbox
+description: >-
+  The once-per-cluster install for Keycard agent sandboxes: the namespace and
+  the RBAC for the people who create sandboxes.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/keycardai/agent-sandbox-poc
