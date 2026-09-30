@@ -71,12 +71,15 @@ func TestInstall(t *testing.T) {
 		t.Errorf("objects = %v, want %v", got, want)
 	}
 
-	var ns metav1.PartialObjectMetadata
-	decode(t, objects, "Namespace/agents", &ns)
+	var namespace metav1.PartialObjectMetadata
+	decode(t, objects, "Namespace/agents", &namespace)
 	for _, mode := range []string{"enforce", "audit", "warn"} {
-		if got := ns.Labels["pod-security.kubernetes.io/"+mode]; got != "privileged" {
+		if got := namespace.Labels["pod-security.kubernetes.io/"+mode]; got != "privileged" {
 			t.Errorf("pod-security %s = %q, want privileged", mode, got)
 		}
+	}
+	if got := namespace.Annotations["helm.sh/resource-policy"]; got != "keep" {
+		t.Errorf("resource-policy = %q, want keep", got)
 	}
 
 	var role rbacv1.Role
