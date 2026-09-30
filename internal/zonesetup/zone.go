@@ -65,7 +65,7 @@ func newHTTPClient() (*http.Client, error) {
 	transport.DisableKeepAlives = true
 	transport.Protocols = new(http.Protocols)
 	transport.Protocols.SetHTTP1(true)
-	// Clone has already offered h2 in the TLS handshake.
+	// Clone preserves h2 in the TLS configuration.
 	if transport.TLSClientConfig != nil {
 		transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
 	}
