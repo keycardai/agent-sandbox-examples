@@ -135,25 +135,21 @@ func (b *builder) jsonStream(manifest []byte) {
 }
 
 // yamlStream splits the stream into documents at "---" lines, as kubectl
-// does, and judges each document. It refuses a document that a YAML stream
-// parser reads as more than one, because kubectl would drop all but the
-// first.
+// does, and judges each document. It refuses the manifest when a YAML stream
+// parser reads a different number of documents, because a document that
+// kubectl's reader drops would go unjudged.
 func (b *builder) yamlStream(manifest []byte) {
 	reader := utilyaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(manifest)))
 	for index := 1; ; {
 		doc, err := reader.Read()
 		if errors.Is(err, io.EOF) {
+			b.sameDocuments(manifest, index-1)
 			return
 		}
 		where := fmt.Sprintf("document %d", index)
 		if err != nil {
 			b.refuse(RuleUnreadableDocument, where, err.Error())
 			return
-		}
-		if err = singleDocument(doc); err != nil {
-			b.refuse(RuleUnreadableDocument, where, err.Error())
-			index++
-			continue
 		}
 		data, err := yaml.YAMLToJSONStrict(doc)
 		if err == nil && bytes.Equal(data, []byte("null")) {
@@ -168,28 +164,43 @@ func (b *builder) yamlStream(manifest []byte) {
 	}
 }
 
-var errMoreThanOneDocument = errors.New("it holds more than one YAML document. Separate documents with a --- line")
+// sameDocuments refuses the manifest unless a YAML stream parser reads read
+// documents that are not null. A manifest already refused needs no count.
+func (b *builder) sameDocuments(manifest []byte, read int) {
+	if len(b.refusals) > 0 {
+		return
+	}
+	count, err := documentCount(manifest)
+	switch {
+	case err != nil:
+		b.refuse(RuleUnreadableDocument, "the manifest", err.Error())
+	case count != read:
+		b.refuse(RuleUnreadableDocument, "the manifest", fmt.Sprintf(
+			"a YAML parser reads %d documents where kubectl's reader reads %d. Separate documents with --- lines",
+			count, read,
+		))
+	}
+}
 
-// singleDocument refuses a document that holds a second YAML document. A
-// "..." marker or a bare CR line ending can hide one from the "---" reader.
+// documentCount counts the documents that are not null in a YAML stream.
 // NEVER call Decode again after it returns an error, because the decoder
 // then panics.
-func singleDocument(doc []byte) error {
-	decoder := yamlv2.NewDecoder(bytes.NewReader(doc))
-	var value any
-	if err := decoder.Decode(&value); err != nil {
+func documentCount(manifest []byte) (int, error) {
+	decoder := yamlv2.NewDecoder(bytes.NewReader(manifest))
+	count := 0
+	for {
+		var value any
+		err := decoder.Decode(&value)
 		if errors.Is(err, io.EOF) {
-			return nil
+			return count, nil
 		}
-		return fmt.Errorf("unreadable YAML: %w", err)
+		if err != nil {
+			return 0, fmt.Errorf("a YAML parser cannot read the stream: %w", err)
+		}
+		if value != nil {
+			count++
+		}
 	}
-	switch err := decoder.Decode(&value); {
-	case err == nil:
-		return errMoreThanOneDocument
-	case !errors.Is(err, io.EOF):
-		return fmt.Errorf("content after the first YAML document: %w", err)
-	}
-	return nil
 }
 
 type builder struct {

@@ -77,6 +77,22 @@ func TestCheckRefuses(t *testing.T) {
 			"# rendered\n" + jsonPod + jsonDeployment,
 		},
 		{
+			"a Deployment after a CR in a separator comment", preflight.RuleUnreadableDocument,
+			pod + "--- # split\r{apiVersion: apps/v1, kind: Deployment, metadata: {name: evil}}\n",
+		},
+		{
+			"a Deployment after a NEL in a separator comment", preflight.RuleUnreadableDocument,
+			pod + "--- # split\u0085{apiVersion: apps/v1, kind: Deployment, metadata: {name: evil}}\n",
+		},
+		{
+			"a Deployment after a line separator in a separator comment", preflight.RuleUnreadableDocument,
+			pod + "--- # split\u2028{apiVersion: apps/v1, kind: Deployment, metadata: {name: evil}}\n",
+		},
+		{
+			"a Deployment after a paragraph separator in a separator comment", preflight.RuleUnreadableDocument,
+			pod + "--- # split\u2029{apiVersion: apps/v1, kind: Deployment, metadata: {name: evil}}\n",
+		},
+		{
 			"a JSON Pod and a truncated JSON object", preflight.RuleUnreadableDocument,
 			jsonPod + `{"apiVersion":"v1","kind":`,
 		},
