@@ -147,17 +147,47 @@ func (f *fakeAPI) list(w http.ResponseWriter, r *http.Request) {
 // error may repeat it.
 const redirectSecret = "redirect-secret"
 
-// refuseRedirectSecret fails the test when err repeats redirectSecret.
-func refuseRedirectSecret(t *testing.T, err error) {
+// refuseLeaks fails the test when err repeats the client secret, the bearer
+// token or redirectSecret.
+func refuseLeaks(t *testing.T, err error) {
 	t.Helper()
-	if err != nil && strings.Contains(err.Error(), redirectSecret) {
-		t.Errorf("err = %v, which repeats the redirect target's credential", err)
+	for _, secret := range []string{fakeSecret, fakeToken, redirectSecret} {
+		if err != nil && strings.Contains(err.Error(), secret) {
+			t.Errorf("err = %v, which holds %q", err, secret)
+		}
 	}
 }
 
 // redirect sends every request to /redirected with its method and body kept.
 func redirect(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/redirected?key="+redirectSecret, http.StatusTemporaryRedirect)
+}
+
+// badRedirect redirects to a Location that does not parse as a URL.
+func badRedirect(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Location", "/redirected?key="+redirectSecret+"%zz")
+	w.WriteHeader(http.StatusTemporaryRedirect)
+}
+
+// echoToken answers with status 500 and a body that repeats the bearer token.
+func echoToken(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, `{"error":"`+fakeToken+`"}`, http.StatusInternalServerError)
+}
+
+// dropOnce closes the connection without a response the first time it is
+// called, and serves next after that.
+func dropOnce(next http.HandlerFunc) http.HandlerFunc {
+	var dropped atomic.Bool
+	return func(w http.ResponseWriter, r *http.Request) {
+		if dropped.CompareAndSwap(false, true) {
+			conn, _, err := http.NewResponseController(w).Hijack()
+			if err == nil {
+				_ = conn.Close()
+			}
+			return
+		}
+		next(w, r)
+	}
 }
 
 // rawBody answers with body verbatim and status 200.
@@ -268,6 +298,41 @@ func TestResolveZone(t *testing.T) {
 			wantCalls: map[string]int{getACall: 1, "GET /redirected": 0},
 		},
 		{
+			name: "a malformed redirect on the token request is refused", zoneID: zoneA,
+			handlers: map[string]http.HandlerFunc{tokenPath: badRedirect}, wantErr: zonesetup.ErrAuth,
+		},
+		{
+			name: "a malformed redirect on the zone request is refused", zoneID: zoneA,
+			handlers: map[string]http.HandlerFunc{getAPath: badRedirect}, wantErr: zonesetup.ErrAPI,
+		},
+		{
+			name: "a zone error body that repeats the token", zoneID: zoneA,
+			handlers: map[string]http.HandlerFunc{getAPath: echoToken}, wantErr: zonesetup.ErrAPI,
+		},
+		{
+			name: "a list error body that repeats the token", zoneURL: issuerA,
+			handlers: map[string]http.HandlerFunc{listPath: echoToken}, wantErr: zonesetup.ErrAPI,
+		},
+		{
+			name: "a zone request dropped without a response is sent once", zoneID: zoneA,
+			handlers: map[string]http.HandlerFunc{getAPath: dropOnce(rawBody(`{"id":"zone-a"}`))},
+			wantErr:  zonesetup.ErrAPI, wantCalls: map[string]int{getACall: 1},
+		},
+		{
+			name: "a null zone", zoneID: zoneA, wantErr: zonesetup.ErrAPI,
+			handlers: map[string]http.HandlerFunc{getAPath: rawBody("null")},
+		},
+		{
+			name: "a null zone page", zoneURL: issuerA, wantErr: zonesetup.ErrAPI,
+			handlers: map[string]http.HandlerFunc{listPath: rawBody("null")},
+		},
+		{
+			name: "a token_type that repeats the secret", zoneID: zoneA, wantErr: zonesetup.ErrAuth,
+			handlers: map[string]http.HandlerFunc{
+				tokenPath: rawBody(`{"access_token":"sa-token","token_type":"` + fakeSecret + `"}`),
+			},
+		},
+		{
 			name: "a token response with a second object past the size limit", zoneID: zoneA, wantErr: zonesetup.ErrAuth,
 			handlers: map[string]http.HandlerFunc{tokenPath: rawBody(
 				`{"access_token":"sa-token","token_type":"Bearer"}` + strings.Repeat(" ", 1<<20) + `{"x":1}`,
@@ -339,7 +404,7 @@ func TestResolveZone(t *testing.T) {
 				secret = tc.secret
 			}
 			zone, err := zonesetup.ResolveZone(t.Context(), values, &zonesetup.Secrets{ManagementClientSecret: secret})
-			refuseRedirectSecret(t, err)
+			refuseLeaks(t, err)
 			switch {
 			case tc.wantErr != nil:
 				if !errors.Is(err, tc.wantErr) {
@@ -356,28 +421,5 @@ func TestResolveZone(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// TestResolveZoneKeepsSecretsOutOfErrors checks that no error names the
-// client secret or the bearer token.
-func TestResolveZoneKeepsSecretsOutOfErrors(t *testing.T) {
-	t.Parallel()
-	for _, failPath := range []string{tokenPath, getAPath} {
-		fake := &fakeAPI{failPath: failPath, failStatus: http.StatusBadGateway}
-		values := &zonesetup.Values{
-			ManagementAPIURL: fake.serve(t),
-			ZoneID:           zoneA,
-			ServiceAccount:   zonesetup.ServiceAccountValues{ClientID: fakeClientID},
-		}
-		_, err := zonesetup.ResolveZone(t.Context(), values, &zonesetup.Secrets{ManagementClientSecret: fakeSecret})
-		if err == nil {
-			t.Fatalf("%s: err = nil", failPath)
-		}
-		for _, secret := range []string{fakeSecret, fakeToken} {
-			if msg := err.Error(); strings.Contains(msg, secret) {
-				t.Errorf("%s: error %q holds %q", failPath, msg, secret)
-			}
-		}
 	}
 }

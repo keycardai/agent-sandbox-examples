@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -30,7 +31,15 @@ const (
 // nothing to the zone. Every error wraps ErrAuth, ErrAPI, ErrZoneNotFound,
 // ErrZoneAmbiguous or ErrZoneMismatch.
 func ResolveZone(ctx context.Context, values *Values, secrets *Secrets) (*keycard.Zone, error) {
-	httpClient := &http.Client{Timeout: requestTimeout, CheckRedirect: refuseRedirect}
+	// NEVER reuse a connection. net/http resends a request whose reused
+	// connection closes before the response.
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, fmt.Errorf("%w: the default HTTP transport is not an *http.Transport", ErrAPI)
+	}
+	transport = transport.Clone()
+	transport.DisableKeepAlives = true
+	httpClient := &http.Client{Timeout: requestTimeout, CheckRedirect: refuseRedirect, Transport: transport}
 	token, err := serviceAccountToken(ctx, httpClient, values, secrets.ManagementClientSecret)
 	if err != nil {
 		return nil, err
@@ -55,17 +64,36 @@ func refuseRedirect(*http.Request, []*http.Request) error {
 	return errRedirect
 }
 
-// scrubRedirect replaces a refused redirect with errRedirect alone, because
-// the client's error names the redirect target, which can carry a credential.
-func scrubRedirect(err error) error {
-	if errors.Is(err, errRedirect) {
+// requestError returns what a failed request may safely report. A response
+// body can repeat the bearer token and a redirect target can carry a
+// credential, so neither reaches the caller.
+func requestError(err error) error {
+	var apiErr *keycard.Error
+	var urlErr *url.Error
+	var opErr *net.OpError
+	switch {
+	case errors.Is(err, errRedirect):
 		return errRedirect
+	case errors.As(err, &apiErr):
+		return fmt.Errorf("%w %d", errStatus, apiErr.StatusCode)
+	case errors.Is(err, context.Canceled):
+		return context.Canceled
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &urlErr) && urlErr.Timeout():
+		return context.DeadlineExceeded
+	case errors.As(err, &opErr):
+		return opErr
+	default:
+		return errUnreadable
 	}
-	return err
 }
 
-// errRedirect is wrapped by the ErrAuth or ErrAPI of the refused request.
-var errRedirect = errors.New("refused a redirect")
+// The errors requestError reports, each wrapped by the ErrAuth or ErrAPI of
+// the failed request.
+var (
+	errRedirect   = errors.New("refused a redirect")
+	errStatus     = errors.New("returned HTTP status")
+	errUnreadable = errors.New("the request failed or its response could not be read")
+)
 
 // serviceAccountToken exchanges the service account's client credentials for
 // a bearer token at the management API's /service-account-token endpoint. It
@@ -93,7 +121,7 @@ func serviceAccountToken(
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	res, err := httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrAuth, scrubRedirect(err))
+		return "", fmt.Errorf("%w: %w", ErrAuth, requestError(err))
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
@@ -130,7 +158,7 @@ func tokenFromResponse(body io.Reader) (string, error) {
 	}
 	// RFC 6749 section 7.1 makes the token type case-insensitive.
 	if !strings.EqualFold(payload.TokenType, "Bearer") {
-		return "", fmt.Errorf("%w: token response has token_type %q, not Bearer", ErrAuth, payload.TokenType)
+		return "", fmt.Errorf("%w: token response has a token_type other than Bearer", ErrAuth)
 	}
 	return payload.AccessToken, nil
 }
@@ -144,7 +172,10 @@ func zoneByID(ctx context.Context, zones *keycard.ZoneService, values *Values) (
 		return nil, fmt.Errorf("%w: zone_id %s", ErrZoneNotFound, values.ZoneID)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("%w: zone %s: %w", ErrAPI, values.ZoneID, scrubRedirect(err))
+		return nil, fmt.Errorf("%w: zone %s: %w", ErrAPI, values.ZoneID, requestError(err))
+	}
+	if zone == nil {
+		return nil, fmt.Errorf("%w: zone %s: the response holds no zone", ErrAPI, values.ZoneID)
 	}
 	if zone.ID != values.ZoneID {
 		return nil, fmt.Errorf("%w: zone_id %s returned zone %q", ErrAPI, values.ZoneID, zone.ID)
@@ -192,7 +223,10 @@ func listZones(ctx context.Context, zones *keycard.ZoneService) ([]keycard.Zone,
 		}
 		page, err := zones.List(ctx, params)
 		if err != nil {
-			return nil, fmt.Errorf("%w: list zones: %w", ErrAPI, scrubRedirect(err))
+			return nil, fmt.Errorf("%w: list zones: %w", ErrAPI, requestError(err))
+		}
+		if page == nil {
+			return nil, fmt.Errorf("%w: list zones: the response holds no page", ErrAPI)
 		}
 		all = append(all, page.Items...)
 		next := page.Pagination.AfterCursor
