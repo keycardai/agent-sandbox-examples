@@ -118,7 +118,7 @@ func TestInstallRefusesBadNamespace(t *testing.T) {
 	}
 	for name, namespace := range map[string]string{
 		"underscore": "bad_name",
-		"injection":  `agents\n  annotations:\n    attacker.example/mark: injected`,
+		"injection":  "agents\n  annotations:\n    attacker.example/mark: injected",
 	} {
 		_, err := chart.Render(t.Context(), dir, release, namespace)
 		if err == nil || !strings.Contains(err.Error(), "must be a DNS label") {
