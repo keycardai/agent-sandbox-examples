@@ -203,7 +203,12 @@ func yamlShapes(manifest []byte) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("a YAML parser cannot read the manifest: %w", err)
 		}
-		if len(doc.Content) == 0 || doc.Content[0].Tag == "!!null" {
+		if len(doc.Content) == 0 {
+			continue
+		}
+		if root := doc.Content[0]; root.Anchor != "" {
+			return nil, fmt.Errorf("line %d: %w", root.Line, errAnchor)
+		} else if root.Tag == "!!null" {
 			continue
 		}
 		var out strings.Builder
@@ -222,7 +227,7 @@ var (
 )
 
 func writeNodeShape(out *strings.Builder, node *yamlv3.Node) error {
-	if node.Kind == yamlv3.AliasNode || node.Anchor != "" {
+	if node.Anchor != "" {
 		return fmt.Errorf("line %d: %w", node.Line, errAnchor)
 	}
 	switch node.Kind {
@@ -247,6 +252,9 @@ func writeMappingShape(out *strings.Builder, node *yamlv3.Node) error {
 	var keys, values []*yamlv3.Node
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		key := node.Content[i]
+		if key.Anchor != "" {
+			return fmt.Errorf("line %d: %w", key.Line, errAnchor)
+		}
 		if key.Tag == "!!merge" {
 			return fmt.Errorf("line %d: %w", key.Line, errMergeKey)
 		}

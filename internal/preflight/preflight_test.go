@@ -87,6 +87,15 @@ func TestCheckRefuses(t *testing.T) {
 			pod + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {<<: {a: b}}\n",
 		},
 		{
+			"an anchored key", preflight.RuleUnreadableDocument,
+			pod + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {&x a: b}\n",
+		},
+		{"an anchored null document", preflight.RuleUnreadableDocument, pod + "---\n&x null\n"},
+		{
+			"a number key", preflight.RuleUnreadableDocument,
+			pod + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {42: b}\n",
+		},
+		{
 			"a key that is not a string",
 			preflight.RuleUnreadableDocument,
 			pod + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {0777: b}\n",
