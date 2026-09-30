@@ -176,6 +176,21 @@ func TestParseValues(t *testing.T) {
 			doc:   minimal + "...\n",
 			check: func(v *zonesetup.Values) bool { return v.Namespace == zonesetup.DefaultNamespace },
 		},
+		{
+			name:      "a value of the wrong type",
+			doc:       minimal + "resources: [{identifier: r, secret_env: K, prefix: wrong}]\n",
+			wantField: "resources.prefix must be bool",
+		},
+		{
+			name:      "a secret_env that is not a variable name",
+			doc:       minimal + "resources: [{identifier: r, secret_env: 'a b'}]\n",
+			wantField: "resources[0].secret_env is not an environment variable name",
+		},
+		{
+			name:      "a client_secret_env that is not a variable name",
+			doc:       strings.Replace(minimal, "client_id: sa-1\n", "client_id: sa-1\n  client_secret_env: a-b\n", 1),
+			wantField: "client_secret_env is not an environment variable name",
+		},
 		{name: "a display-name email", doc: minimal + "users: [{email: A <a@x.io>}]\n", wantField: "users[0].email"},
 	}
 	for _, tc := range cases {
@@ -227,13 +242,17 @@ func TestParseErrorsKeepFileTextOut(t *testing.T) {
 		"a URL as an email":      minimal + "users: [{email: '" + url + "'}]\n",
 		"a URL identifier listed twice": minimal + "resources: [{identifier: '" + url + "', secret_env: K}, " +
 			"{identifier: '" + url + "', secret_env: K}]\n",
+		"a line number inside a key": minimal + "'https://sa:line 8675309@api.keycard.ai': 1\n",
+		"a line number inside a mistagged value": strings.Replace(
+			minimal, "https://api.keycard.ai", "!!int 'https://sa:line 8675309@api.keycard.ai'", 1,
+		),
 	} {
 		_, err := zonesetup.ParseValues(strings.NewReader(doc))
 		if !errors.Is(err, zonesetup.ErrValues) {
 			t.Errorf("%s: error = %v, want ErrValues", name, err)
 			continue
 		}
-		if strings.Contains(err.Error(), "hunter2") {
+		if strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), "8675309") {
 			t.Errorf("%s: error %q leaks the password", name, err)
 		}
 	}
@@ -251,6 +270,34 @@ func TestReadErrorKeepsTextOut(t *testing.T) {
 	_, err := zonesetup.ParseValues(failingReader{})
 	if !errors.Is(err, zonesetup.ErrValues) || strings.Contains(err.Error(), "hunter2") {
 		t.Errorf("error = %v, want ErrValues without the reader's text", err)
+	}
+}
+
+// TestLoadSecretsKeepsFileTextOut proves no missing-secret error repeats an
+// identifier, a path or a read error, which can hold a credential.
+func TestLoadSecretsKeepsFileTextOut(t *testing.T) {
+	t.Parallel()
+	const url = "https://sa:hunter2@api.keycard.ai" //nolint:gosec // A fake credential no error may repeat.
+	values, err := zonesetup.ParseValues(strings.NewReader(minimal +
+		"resources: [{identifier: '" + url + "', secret_env: K}]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := func(k string) (string, bool) { return "set", k == zonesetup.DefaultManagementSecretEnv }
+	_, err = zonesetup.LoadSecrets(values, env, nil)
+	if !errors.Is(err, zonesetup.ErrMissingSecret) || strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("missing resource secret: error = %v, want ErrMissingSecret without the identifier", err)
+	}
+
+	values.ServiceAccount = zonesetup.ServiceAccountValues{ClientID: "sa-1", ClientSecretFile: "/" + url}
+	for name, read := range map[string]func(string) ([]byte, error){
+		"a read error":  func(string) ([]byte, error) { return nil, errReadURL },
+		"an empty file": func(string) ([]byte, error) { return nil, nil },
+	} {
+		_, err = zonesetup.LoadSecrets(values, env, read)
+		if !errors.Is(err, zonesetup.ErrMissingSecret) || strings.Contains(err.Error(), "hunter2") {
+			t.Errorf("%s: error = %v, want ErrMissingSecret without the path", name, err)
+		}
 	}
 }
 
