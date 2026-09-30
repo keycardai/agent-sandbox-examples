@@ -164,6 +164,18 @@ func TestParseValues(t *testing.T) {
 			doc:       minimal + "resources: [{identifier: r}]\n",
 			wantField: "resources[0]: set exactly one",
 		},
+		{
+			name:      "an anchor and an alias",
+			doc:       minimal + "namespace: &ns agents\nzone_id: *ns\n",
+			wantField: "anchors and aliases",
+		},
+		{name: "a merge key", doc: minimal + "<<: {namespace: first}\n", wantField: "merge keys"},
+		{name: "two merge keys", doc: minimal + "<<: {namespace: a}\n<<: {zone_id: z}\n", wantField: "merge keys"},
+		{
+			name:  "a trailing end marker",
+			doc:   minimal + "...\n",
+			check: func(v *zonesetup.Values) bool { return v.Namespace == zonesetup.DefaultNamespace },
+		},
 		{name: "a display-name email", doc: minimal + "users: [{email: A <a@x.io>}]\n", wantField: "users[0].email"},
 	}
 	for _, tc := range cases {
@@ -195,6 +207,28 @@ func TestURLUserinfo(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "hunter2") {
 		t.Errorf("error %q leaks the password", err)
+	}
+}
+
+// TestParseErrorsKeepFileTextOut proves no parse error repeats a value from
+// the file, even one that no check reaches.
+func TestParseErrorsKeepFileTextOut(t *testing.T) {
+	t.Parallel()
+	const url = "https://sa:hunter2@api.keycard.ai" //nolint:gosec // A fake credential no error may repeat.
+	for name, doc := range map[string]string{
+		"a value with the wrong tag": strings.Replace(minimal, "https://api.keycard.ai", "!!int "+url, 1),
+		"a null key":                 minimal + "null: " + url + "\n",
+		"an unknown key":             minimal + url + ": 1\n",
+		"a value of the wrong type":  minimal + "users: [" + url + "]\n",
+	} {
+		_, err := zonesetup.ParseValues(strings.NewReader(doc))
+		if !errors.Is(err, zonesetup.ErrValues) {
+			t.Errorf("%s: error = %v, want ErrValues", name, err)
+			continue
+		}
+		if strings.Contains(err.Error(), "hunter2") {
+			t.Errorf("%s: error %q leaks the password", name, err)
+		}
 	}
 }
 

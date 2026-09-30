@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 
-	yamlv2 "go.yaml.in/yaml/v2"
+	yamlv3 "go.yaml.in/yaml/v3"
 	kjson "sigs.k8s.io/json"
 	"sigs.k8s.io/yaml"
 )
@@ -38,7 +38,12 @@ const (
 	maxNamespaceLength = 63
 )
 
-var namespaceRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+var (
+	namespaceRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+	backticked  = regexp.MustCompile("`[^`]*`")
+	quoted      = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
+	plainName   = regexp.MustCompile(`^"[A-Za-z0-9_.\[\]-]*"$`)
+)
 
 // Values is the values file. It holds no credential. Every secret is named by
 // the environment variable or file that holds it.
@@ -118,15 +123,15 @@ func ParseValues(reader io.Reader) (*Values, error) {
 	}
 	data, err := yaml.YAMLToJSONStrict(raw)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrValues, err)
+		return nil, parseError(err)
 	}
 	var values Values
 	strict, err := kjson.UnmarshalStrict(data, &values, kjson.DisallowUnknownFields)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrValues, err)
+		return nil, parseError(err)
 	}
 	if len(strict) > 0 {
-		return nil, fmt.Errorf("%w: %w", ErrValues, errors.Join(strict...))
+		return nil, parseError(errors.Join(strict...))
 	}
 	steps := []func() error{values.checkConnection, values.checkSandbox, values.checkUsers, values.checkResources}
 	for _, step := range steps {
@@ -137,24 +142,62 @@ func ParseValues(reader io.Reader) (*Values, error) {
 	return &values, nil
 }
 
-// singleDocument refuses a stream that holds more than one YAML document.
-// Every "---" marker starts a document, even an empty one. A trailing comment
-// or "..." marker starts none. NEVER call Decode again after it returns an
-// error, because the decoder then panics.
+// singleDocument refuses a stream that holds more than one YAML document, and
+// a document that uses an anchor, an alias or a merge key. Every "---" marker
+// starts a document, even an empty one. A trailing comment or "..." marker
+// starts none.
 func singleDocument(raw []byte) error {
-	decoder := yamlv2.NewDecoder(bytes.NewReader(raw))
-	var doc any
-	if err := decoder.Decode(&doc); err != nil {
-		return fmt.Errorf("%w: %w", ErrValues, err)
+	decoder := yamlv3.NewDecoder(bytes.NewReader(raw))
+	var doc yamlv3.Node
+	if err := decoder.Decode(&doc); err != nil && !errors.Is(err, io.EOF) {
+		return parseError(err)
 	}
-	err := decoder.Decode(&doc)
+	if err := plainStructure(&doc); err != nil {
+		return err
+	}
+	var next yamlv3.Node
+	err := decoder.Decode(&next)
 	switch {
 	case err == nil:
 		return fmt.Errorf("%w: holds more than one document", ErrValues)
 	case !errors.Is(err, io.EOF):
-		return fmt.Errorf("%w: content after the first document: %w", ErrValues, err)
+		return fmt.Errorf("%w: content after the first document: %s", ErrValues, scrub(err))
 	}
 	return nil
+}
+
+// plainStructure refuses anchors, aliases and merge keys, which the values
+// file has no use for, and which apply keys the duplicate check never sees.
+func plainStructure(node *yamlv3.Node) error {
+	if node.Kind == yamlv3.AliasNode || node.Anchor != "" {
+		return fmt.Errorf("%w: line %d: anchors and aliases are not allowed", ErrValues, node.Line)
+	}
+	for i, child := range node.Content {
+		if node.Kind == yamlv3.MappingNode && i%2 == 0 && child.Tag == "!!merge" {
+			return fmt.Errorf("%w: line %d: merge keys are not allowed", ErrValues, child.Line)
+		}
+		if err := plainStructure(child); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// parseError wraps err in ErrValues without the text of the values file.
+func parseError(err error) error {
+	return fmt.Errorf("%w: %s", ErrValues, scrub(err))
+}
+
+// scrub removes every quoted value from err's message but plain names. Parse
+// errors can quote the file, which may hold a credential in a URL.
+func scrub(err error) string {
+	msg := backticked.ReplaceAllString(err.Error(), "`…`")
+	return quoted.ReplaceAllStringFunc(msg, func(q string) string {
+		if plainName.MatchString(q) {
+			return q
+		}
+		return `"…"`
+	})
 }
 
 func (v *Values) checkConnection() error {
