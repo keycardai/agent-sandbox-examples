@@ -1,0 +1,9 @@
+# Values for the keycard-sandbox chart.
+
+rbac:
+  # Who is bound to the sandbox-admin Role. Empty renders the Role and no
+  # RoleBinding.
+  subjects: []
+  #  - kind: Group
+  #    name: sandbox-admins
+  #    apiGroup: rbac.authorization.k8s.io
