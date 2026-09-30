@@ -208,7 +208,7 @@ func yamlShapes(manifest []byte) ([]string, error) {
 		}
 		if root := doc.Content[0]; root.Anchor != "" {
 			return nil, fmt.Errorf("line %d: %w", root.Line, errAnchor)
-		} else if root.Tag == "!!null" {
+		} else if root.Kind == yamlv3.ScalarNode && root.Tag == "!!null" {
 			continue
 		}
 		var out strings.Builder
