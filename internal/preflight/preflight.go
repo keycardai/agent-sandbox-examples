@@ -16,9 +16,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"slices"
+	"strconv"
+	"strings"
 
-	yamlv2 "go.yaml.in/yaml/v2"
+	yamlv3 "go.yaml.in/yaml/v3"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -135,15 +138,15 @@ func (b *builder) jsonStream(manifest []byte) {
 }
 
 // yamlStream splits the stream into documents at "---" lines, as kubectl
-// does, and judges each document. It refuses the manifest when a YAML stream
-// parser reads a different number of documents, because a document that
-// kubectl's reader drops would go unjudged.
+// does, and judges each document. It refuses the manifest unless a YAML
+// stream parser reads documents of the same shape, because a document that
+// kubectl's reader drops or splits would go unjudged.
 func (b *builder) yamlStream(manifest []byte) {
 	reader := utilyaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(manifest)))
 	for index := 1; ; {
 		doc, err := reader.Read()
 		if errors.Is(err, io.EOF) {
-			b.sameDocuments(manifest, index-1)
+			b.sameDocuments(manifest)
 			return
 		}
 		where := fmt.Sprintf("document %d", index)
@@ -156,55 +159,100 @@ func (b *builder) yamlStream(manifest []byte) {
 			continue
 		}
 		index++
+		var value any
+		if err == nil {
+			err = json.Unmarshal(data, &value)
+		}
 		if err != nil {
 			b.refuse(RuleUnreadableDocument, where, err.Error())
 			continue
 		}
+		b.shapes = append(b.shapes, shape(value))
 		b.document(data, where)
 	}
 }
 
-// sameDocuments refuses the manifest unless a YAML stream parser reads read
-// documents that are not null. A manifest already refused needs no count.
-func (b *builder) sameDocuments(manifest []byte, read int) {
+// sameDocuments refuses the manifest unless a YAML stream parser reads the
+// documents b.shapes records. A manifest already refused needs no check.
+func (b *builder) sameDocuments(manifest []byte) {
 	if len(b.refusals) > 0 {
 		return
 	}
-	count, err := documentCount(manifest)
+	shapes, err := yamlShapes(manifest)
 	switch {
 	case err != nil:
 		b.refuse(RuleUnreadableDocument, "the manifest", err.Error())
-	case count != read:
-		b.refuse(RuleUnreadableDocument, "the manifest", fmt.Sprintf(
-			"a YAML parser reads %d documents where kubectl's reader reads %d. Separate documents with --- lines",
-			count, read,
-		))
+	case !slices.Equal(shapes, b.shapes):
+		b.refuse(RuleUnreadableDocument, "the manifest",
+			"a YAML parser reads other documents than kubectl's reader. Separate documents with --- lines")
 	}
 }
 
-// documentCount counts the documents that are not null in a YAML stream.
-// NEVER call Decode again after it returns an error, because the decoder
-// then panics.
-func documentCount(manifest []byte) (int, error) {
-	decoder := yamlv2.NewDecoder(bytes.NewReader(manifest))
-	count := 0
+// yamlShapes returns the shape of each document that is not null in a YAML
+// stream.
+func yamlShapes(manifest []byte) ([]string, error) {
+	decoder := yamlv3.NewDecoder(bytes.NewReader(manifest))
+	var shapes []string
 	for {
 		var value any
 		err := decoder.Decode(&value)
 		if errors.Is(err, io.EOF) {
-			return count, nil
+			return shapes, nil
 		}
 		if err != nil {
-			return 0, fmt.Errorf("a YAML parser cannot read the stream: %w", err)
+			return nil, fmt.Errorf("a YAML parser cannot read the manifest: %w", err)
 		}
 		if value != nil {
-			count++
+			shapes = append(shapes, shape(value))
 		}
 	}
 }
 
+// shape renders a decoded document's keys, nesting and list lengths, and
+// no scalar. kubectl's reader parses YAML 1.1 and yaml/v3 parses YAML 1.2,
+// so the two can read one scalar differently, as with yes or 0777.
+func shape(value any) string {
+	switch value := value.(type) {
+	case map[string]any:
+		return shapeMap(len(value), func(yield func(string, any) bool) {
+			for key, v := range value {
+				if !yield(key, v) {
+					return
+				}
+			}
+		})
+	case map[any]any:
+		return shapeMap(len(value), func(yield func(string, any) bool) {
+			for key, v := range value {
+				if !yield(fmt.Sprint(key), v) {
+					return
+				}
+			}
+		})
+	case []any:
+		parts := make([]string, 0, len(value))
+		for _, v := range value {
+			parts = append(parts, shape(v))
+		}
+		return "[" + strings.Join(parts, ",") + "]"
+	default:
+		return "_"
+	}
+}
+
+func shapeMap(size int, entries iter.Seq2[string, any]) string {
+	parts := make([]string, 0, size)
+	for key, v := range entries {
+		parts = append(parts, strconv.Quote(key)+":"+shape(v))
+	}
+	slices.Sort(parts)
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
 type builder struct {
-	judged   int
+	judged int
+	// shapes holds the shape of each document kubectl's reader returned.
+	shapes   []string
 	refusals []Refusal
 	unjudged []Unjudged
 }

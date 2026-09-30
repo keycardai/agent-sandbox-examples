@@ -76,6 +76,7 @@ func TestCheckRefuses(t *testing.T) {
 			"a JSON Pod and an adjacent JSON Deployment after a comment", preflight.RuleUnreadableDocument,
 			"# rendered\n" + jsonPod + jsonDeployment,
 		},
+		{"a key that kubectl's reader takes for a separator", preflight.RuleUnreadableDocument, pod + "---#hidden: true\n"},
 		{
 			"a Deployment after a CR in a separator comment", preflight.RuleUnreadableDocument,
 			pod + "--- # split\r{apiVersion: apps/v1, kind: Deployment, metadata: {name: evil}}\n",
@@ -131,7 +132,7 @@ func TestCheckPassesAllowlistedKindsAsUnjudged(t *testing.T) {
 	t.Parallel()
 	manifest := "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: ns\n---\n" +
 		"apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: sa\n---\n" +
-		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cfg\ndata:\n  key: value\n---\n" +
+		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cfg\ndata:\n  key: value\n  flag: yes\n---\n" +
 		"apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: np\nspec: {}\n---\n" +
 		"apiVersion: rbac.authorization.k8s.io/v1\nkind: Role\nmetadata:\n  name: role\n---\n" +
 		"apiVersion: rbac.authorization.k8s.io/v1\nkind: RoleBinding\nmetadata:\n  name: rb\n---\n" +
