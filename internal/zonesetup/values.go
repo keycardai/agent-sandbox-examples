@@ -139,7 +139,8 @@ func ParseValues(reader io.Reader) (*Values, error) {
 
 // singleDocument refuses a stream that holds more than one YAML document.
 // Every "---" marker starts a document, even an empty one. A trailing comment
-// or "..." marker starts none.
+// or "..." marker starts none. NEVER call Decode again after it returns an
+// error, because the decoder then panics.
 func singleDocument(raw []byte) error {
 	decoder := yamlv2.NewDecoder(bytes.NewReader(raw))
 	var doc any
