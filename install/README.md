@@ -2,7 +2,7 @@
 
 The once-per-cluster Helm chart for Keycard agent sandboxes. It installs:
 
-- the sandbox namespace (`namespace`, default `agents`), labeled with the
+- the sandbox namespace, which is the release namespace, labeled with the
   `privileged` Pod Security level and kept when the release is deleted
 - the sandbox-admin Role in that namespace, and a RoleBinding to
   `rbac.subjects` when that list is not empty

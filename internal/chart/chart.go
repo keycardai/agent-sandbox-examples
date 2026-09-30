@@ -21,11 +21,12 @@ import (
 // ErrHelm is a `helm` invocation that failed.
 var ErrHelm = errors.New("helm")
 
-// Render runs `helm template` on the chart at dir with the values files and
-// returns every non-empty YAML document it produced, in output order. It runs
-// helm through this repository's scripts/pinned, which refuses any helm but
-// the one this repository's mise.toml pins, wherever the chart lives.
-func Render(ctx context.Context, dir, release string, valuesFiles ...string) ([][]byte, error) {
+// Render runs `helm template` on the chart at dir with the release namespace
+// and values files given, and returns every non-empty YAML document it
+// produced, in output order. It runs helm through this repository's
+// scripts/pinned, which refuses any helm but the one this repository's
+// mise.toml pins, wherever the chart lives.
+func Render(ctx context.Context, dir, release, namespace string, valuesFiles ...string) ([][]byte, error) {
 	root, err := repoRoot()
 	if err != nil {
 		return nil, err
@@ -34,7 +35,7 @@ func Render(ctx context.Context, dir, release string, valuesFiles ...string) ([]
 	for _, file := range valuesFiles {
 		values = append(values, "--values="+file)
 	}
-	args := slices.Concat([]string{"helm", "template"}, values, []string{"--", release, dir})
+	args := slices.Concat([]string{"helm", "template", "--namespace=" + namespace}, values, []string{"--", release, dir})
 	//nolint:gosec // G204: the script is this repository's and the caller chooses the chart and values paths.
 	cmd := exec.CommandContext(ctx, filepath.Join(root, "scripts", "pinned"), args...)
 	var stderr bytes.Buffer

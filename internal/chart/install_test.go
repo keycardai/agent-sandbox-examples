@@ -25,7 +25,7 @@ func render(t *testing.T, extraValues ...string) map[string][]byte {
 		t.Fatal(err)
 	}
 	values := append([]string{filepath.Join(dir, "values.example.yaml")}, extraValues...)
-	docs, err := chart.Render(t.Context(), dir, release, values...)
+	docs, err := chart.Render(t.Context(), dir, release, "agents", values...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,8 +107,9 @@ func TestInstall(t *testing.T) {
 	}
 }
 
-// A namespace that is not a DNS label fails the render, so a value cannot
-// inject fields into the manifests or defer the error to install time.
+// A namespace that is not a DNS label fails the render, so a release
+// namespace cannot inject fields into the manifests or defer the error to
+// install time.
 func TestInstallRefusesBadNamespace(t *testing.T) {
 	t.Parallel()
 	dir, err := filepath.Abs("../../install")
@@ -119,11 +120,7 @@ func TestInstallRefusesBadNamespace(t *testing.T) {
 		"underscore": "bad_name",
 		"injection":  `agents\n  annotations:\n    attacker.example/mark: injected`,
 	} {
-		values := filepath.Join(t.TempDir(), name+".yaml")
-		if err := os.WriteFile(values, []byte("namespace: \""+namespace+"\"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		_, err := chart.Render(t.Context(), dir, release, values)
+		_, err := chart.Render(t.Context(), dir, release, namespace)
 		if err == nil || !strings.Contains(err.Error(), "must be a DNS label") {
 			t.Errorf("%s: err = %v, want a render failure naming the DNS label rule", name, err)
 		}

@@ -16,8 +16,7 @@
 #
 #   --context NAME    the kube context to install into
 #   --values FILE     the chart's values file. Start from values.example.yaml.
-#   --namespace NAME  the sandbox namespace, agents unless given. It replaces
-#                     the namespace in the values file.
+#   --namespace NAME  the sandbox namespace, agents unless given
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -94,7 +93,7 @@ echo "install.sh: installing $release into namespace $namespace"
 "$helm" upgrade --install "$release" "$here" \
 	--kube-context "$context" \
 	--namespace "$namespace" --create-namespace --take-ownership \
-	--values "$values" --set-string "namespace=$namespace" \
+	--values "$values" \
 	--wait
 
 enforce=$(kube get namespace "$namespace" -o 'jsonpath={.metadata.labels.pod-security\.kubernetes\.io/enforce}') ||

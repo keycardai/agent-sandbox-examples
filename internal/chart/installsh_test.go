@@ -115,7 +115,7 @@ exit 0
 		kube + " apply --server-side -f " + install + "/agent-sandbox/sandbox-with-extensions.yaml",
 		kube + " -n agent-sandbox-system rollout status deployment/agent-sandbox-controller --timeout=180s",
 		"helm upgrade --install keycard-sandbox " + install + " --kube-context " + cluster + " --namespace agents" +
-			" --create-namespace --take-ownership --values " + values + " --set-string namespace=agents --wait",
+			" --create-namespace --take-ownership --values " + values + " --wait",
 		kube + ` get namespace agents -o jsonpath={.metadata.labels.pod-security\.kubernetes\.io/enforce}`,
 	}
 	upTo := func(n int) string { return strings.Join(calls[:n], "\n") + "\n" }
