@@ -193,6 +193,15 @@ exit 0
 			wantCalls: upTo(1),
 		},
 		{
+			name:    "quotes the context in the printed command",
+			context: "staging west",
+			env:     []string{"EXISTING_enforce=baseline"},
+			wantErr: true,
+			wantOut: `run: kubectl --context staging\ west label namespace agents`,
+			wantCalls: "kubectl --context staging west get namespace agents --ignore-not-found" +
+				` -o jsonpath={.metadata.labels.pod-security\.kubernetes\.io/enforce}` + "\n",
+		},
+		{
 			name:      "stops before any change when the namespace audits another level",
 			context:   cluster,
 			env:       []string{"EXISTING_audit=restricted"},

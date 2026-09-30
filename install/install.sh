@@ -80,8 +80,9 @@ for mode in enforce audit warn; do
 		-o "jsonpath={.metadata.labels.pod-security\.kubernetes\.io/$mode}") ||
 		die "cannot read the labels of namespace $namespace"
 	if [[ -n $level && $level != privileged ]]; then
+		printf -v quoted '%q' "$context"
 		die "namespace $namespace sets pod-security.kubernetes.io/$mode=$level, and sandboxes need privileged.
-    If that is acceptable, run: kubectl --context $context label namespace $namespace pod-security.kubernetes.io/$mode=privileged --overwrite"
+    If that is acceptable, run: kubectl --context $quoted label namespace $namespace pod-security.kubernetes.io/$mode=privileged --overwrite"
 	fi
 done
 
