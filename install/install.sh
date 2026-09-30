@@ -4,9 +4,10 @@
 # The controller comes from the release manifest committed in agent-sandbox/,
 # which agent-sandbox/refresh.sh downloads and checks. Sandboxes are the
 # controller's kinds, so the controller goes first. The chart adopts a
-# namespace that already exists. The run stops unless the namespace then
-# enforces the privileged Pod Security level, which the egress proxy's init
-# container needs.
+# namespace that already exists. The egress proxy's init container needs the
+# privileged Pod Security level. The run stops before any change when the
+# namespace already sets another level, and after the chart when the
+# namespace does not enforce privileged.
 #
 # NEVER install into the Keycard localdev stack. The contexts localdev and
 # k3d-localdev are refused.
@@ -71,6 +72,18 @@ kube() { "$kubectl" --context "$context" "$@"; }
 export KUBERC=off
 unset HELM_KUBEAPISERVER HELM_KUBEASGROUPS HELM_KUBEASUSER HELM_KUBECAFILE HELM_KUBECONTEXT \
 	HELM_KUBEINSECURE_SKIP_TLS_VERIFY HELM_KUBETLS_SERVER_NAME HELM_KUBETOKEN HELM_NAMESPACE
+
+# helm cannot take over a Pod Security label that another manager set to
+# another level, so the run stops and names the fix.
+for mode in enforce audit warn; do
+	level=$(kube get namespace "$namespace" --ignore-not-found \
+		-o "jsonpath={.metadata.labels.pod-security\.kubernetes\.io/$mode}") ||
+		die "cannot read the labels of namespace $namespace"
+	if [[ -n $level && $level != privileged ]]; then
+		die "namespace $namespace sets pod-security.kubernetes.io/$mode=$level, and sandboxes need privileged.
+    If that is acceptable, run: kubectl --context $context label namespace $namespace pod-security.kubernetes.io/$mode=privileged --overwrite"
+	fi
+done
 
 echo "install.sh: applying the agent-sandbox controller to $context"
 kube apply --server-side -f "$controller_manifest"

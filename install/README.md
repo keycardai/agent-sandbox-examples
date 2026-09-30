@@ -12,7 +12,9 @@ The once-per-cluster Helm chart for Keycard agent sandboxes. It installs:
 ## Install
 
 `install.sh` applies the agent-sandbox controller, then installs the chart. It
-stops unless the namespace enforces the `privileged` Pod Security level.
+stops before any change when an existing namespace sets a Pod Security level
+other than `privileged`, and prints the `kubectl label` command that fixes it.
+It also stops unless the namespace enforces `privileged` after the install.
 
     ./install/install.sh --context NAME --values my-values.yaml
 

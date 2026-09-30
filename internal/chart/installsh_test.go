@@ -35,9 +35,11 @@ func TestControllerManifest(t *testing.T) {
 // macOS. Decoy kubectl and helm come first on PATH and record any call. A fake
 // mise answers only against the repository root, as scripts/pinned asks it
 // to, and resolves kubectl and helm to fakes that append their arguments to
-// $CALLS. The fake kubectl prints $ENFORCE as the namespace's enforce label,
-// or fails when it is FAIL. Each fake fails when $FAIL names its call. The
-// fake helm records every HELM_ variable it sees.
+// $CALLS. Before the install, the fake kubectl prints $EXISTING_<mode> as the
+// namespace's Pod Security label for that mode, or fails when $EXISTING is
+// FAIL. After the install, it prints $ENFORCE as the enforce label, or fails
+// when that is FAIL. Each fake fails when $FAIL names its call. The fake helm
+// records every HELM_ variable it sees.
 func TestInstallScript(t *testing.T) {
 	t.Parallel()
 	const cluster, privileged = "asp", "privileged"
@@ -66,7 +68,13 @@ printf 'kubectl %s\n' "$*" >>"$CALLS"
 [[ ${KUBERC-} == off ]] || { echo "kubectl read KUBERC=${KUBERC-unset}" >&2; exit 1; }
 [[ $FAIL == apply && $* == *" apply "* ]] && exit 1
 [[ $FAIL == rollout && $* == *" rollout "* ]] && exit 1
-if [[ $* == *" get namespace "* ]]; then
+if [[ $* == *" --ignore-not-found "* ]]; then
+	[[ ${EXISTING-} == FAIL ]] && exit 1
+	args=$*
+	mode=${args##*io/}
+	existing=EXISTING_${mode%\}}
+	printf '%s' "${!existing-}"
+elif [[ $* == *" get namespace "* ]]; then
 	[[ $ENFORCE == FAIL ]] && exit 1
 	printf '%s' "$ENFORCE"
 fi
@@ -96,7 +104,14 @@ exit 0
 
 	install := filepath.Join(root, "install")
 	kube := "kubectl --context " + cluster
+	label := func(mode string) string {
+		return kube + " get namespace agents --ignore-not-found" +
+			` -o jsonpath={.metadata.labels.pod-security\.kubernetes\.io/` + mode + "}"
+	}
 	calls := []string{
+		label("enforce"),
+		label("audit"),
+		label("warn"),
 		kube + " apply --server-side -f " + install + "/agent-sandbox/sandbox-with-extensions.yaml",
 		kube + " -n agent-sandbox-system rollout status deployment/agent-sandbox-controller --timeout=180s",
 		"helm upgrade --install keycard-sandbox " + install + " --kube-context " + cluster + " --namespace agents" +
@@ -152,21 +167,56 @@ exit 0
 			context:   cluster,
 			fail:      "apply",
 			wantErr:   true,
-			wantCalls: upTo(1),
+			wantCalls: upTo(4),
 		},
 		{
 			name:      "stops when the controller rollout fails",
 			context:   cluster,
 			fail:      "rollout",
 			wantErr:   true,
-			wantCalls: upTo(2),
+			wantCalls: upTo(5),
 		},
 		{
 			name:      "stops when helm fails",
 			context:   cluster,
 			fail:      "helm",
 			wantErr:   true,
-			wantCalls: upTo(3),
+			wantCalls: upTo(6),
+		},
+		{
+			name:    "stops before any change when the namespace enforces another level",
+			context: cluster,
+			env:     []string{"EXISTING_enforce=baseline"},
+			wantErr: true,
+			wantOut: "If that is acceptable, run: kubectl --context " + cluster +
+				" label namespace agents pod-security.kubernetes.io/enforce=privileged --overwrite",
+			wantCalls: upTo(1),
+		},
+		{
+			name:      "stops before any change when the namespace audits another level",
+			context:   cluster,
+			env:       []string{"EXISTING_audit=restricted"},
+			wantErr:   true,
+			wantOut:   "install.sh: namespace agents sets pod-security.kubernetes.io/audit=restricted",
+			wantCalls: upTo(2),
+		},
+		{
+			name:      "stops before any change when the existing labels cannot be read",
+			context:   cluster,
+			env:       []string{"EXISTING=FAIL"},
+			wantErr:   true,
+			wantOut:   "install.sh: cannot read the labels of namespace agents",
+			wantCalls: upTo(1),
+		},
+		{
+			name:    "adopts a namespace that is already privileged",
+			context: cluster,
+			enforce: privileged,
+			env: []string{
+				"EXISTING_enforce=privileged", "EXISTING_audit=privileged", "EXISTING_warn=privileged",
+			},
+			wantOut:   "install.sh: installed keycard-sandbox into namespace agents on " + cluster,
+			wantCalls: all,
 		},
 		{
 			name:    "keeps kubectl and helm on the requested cluster",
