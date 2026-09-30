@@ -91,7 +91,7 @@ func TestInstall(t *testing.T) {
 		{APIGroups: []string{"agents.x-k8s.io"}, Resources: []string{"sandboxes"}, Verbs: crud},
 		{APIGroups: []string{"extensions.agents.x-k8s.io"}, Resources: []string{"sandboxtemplates"}, Verbs: read},
 		{APIGroups: []string{""}, Resources: []string{"serviceaccounts", "configmaps"}, Verbs: crud},
-		{APIGroups: []string{""}, Resources: []string{"pods", "pods/log"}, Verbs: read},
+		{APIGroups: []string{""}, Resources: []string{"pods", "pods/log", "events"}, Verbs: read},
 		{APIGroups: []string{""}, Resources: []string{"pods/exec"}, Verbs: []string{create, get}},
 	}
 	if !reflect.DeepEqual(role.Rules, wantRules) {
