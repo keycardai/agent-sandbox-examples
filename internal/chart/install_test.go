@@ -7,8 +7,11 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/yaml"
 
 	"github.com/keycardai/agent-sandbox-poc/internal/chart"
@@ -63,9 +66,10 @@ func TestInstall(t *testing.T) {
 	t.Parallel()
 	objects := render(t)
 	want := map[string]bool{
-		"Namespace/agents":                  true,
-		"Role/keycard-sandbox-admin":        true,
-		"RoleBinding/keycard-sandbox-admin": true,
+		"Namespace/agents":                     true,
+		"NetworkPolicy/keycard-sandbox-egress": true,
+		"Role/keycard-sandbox-admin":           true,
+		"RoleBinding/keycard-sandbox-admin":    true,
 	}
 	if got := keys(objects); !reflect.DeepEqual(got, want) {
 		t.Errorf("objects = %v, want %v", got, want)
@@ -98,12 +102,72 @@ func TestInstall(t *testing.T) {
 		t.Errorf("role rules = %+v\nwant %+v", role.Rules, wantRules)
 	}
 
+	var policy networkingv1.NetworkPolicy
+	decode(t, objects, "NetworkPolicy/keycard-sandbox-egress", &policy)
+	if got := policy.Annotations["helm.sh/resource-policy"]; got != "keep" {
+		t.Errorf("network policy resource-policy = %q, want keep, so sandboxes that outlive the release stay confined", got)
+	}
+	tcp, udp := corev1.ProtocolTCP, corev1.ProtocolUDP
+	https, dns := intstr.FromInt32(443), intstr.FromInt32(53)
+	wantSpec := networkingv1.NetworkPolicySpec{
+		PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress},
+		Egress: []networkingv1.NetworkPolicyEgressRule{
+			{
+				To: []networkingv1.NetworkPolicyPeer{
+					{IPBlock: &networkingv1.IPBlock{CIDR: "0.0.0.0/0", Except: []string{
+						"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16",
+						"100.64.0.0/10", "127.0.0.0/8", "0.0.0.0/8",
+					}}},
+					{IPBlock: &networkingv1.IPBlock{CIDR: "::/0", Except: []string{
+						"fc00::/7", "fe80::/10", "::1/128", "::/128",
+						"100::/64", "64:ff9b::/96", "64:ff9b:1::/48",
+					}}},
+				},
+				Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &https}},
+			},
+			{
+				To: []networkingv1.NetworkPolicyPeer{
+					{
+						NamespaceSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"kubernetes.io/metadata.name": "kube-system"},
+						},
+						PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"k8s-app": "kube-dns"}},
+					},
+				},
+				Ports: []networkingv1.NetworkPolicyPort{{Protocol: &udp, Port: &dns}, {Protocol: &tcp, Port: &dns}},
+			},
+		},
+	}
+	if !reflect.DeepEqual(policy.Spec, wantSpec) {
+		t.Errorf("network policy spec = %+v\nwant %+v", policy.Spec, wantSpec)
+	}
+
 	noSubjects := filepath.Join(t.TempDir(), "values.yaml")
 	if err := os.WriteFile(noSubjects, []byte("rbac:\n  subjects: []\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := render(t, noSubjects)["RoleBinding/keycard-sandbox-admin"]; ok {
 		t.Error("a RoleBinding is rendered with no subjects")
+	}
+}
+
+func TestInstallClusterCIDRs(t *testing.T) {
+	t.Parallel()
+	clusterCIDRs := filepath.Join(t.TempDir(), "values.yaml")
+	if err := os.WriteFile(
+		clusterCIDRs,
+		[]byte("network:\n  clusterCIDRs: [198.18.0.0/15, \"2001:db8:42::/56\"]\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	var policy networkingv1.NetworkPolicy
+	decode(t, render(t, clusterCIDRs), "NetworkPolicy/keycard-sandbox-egress", &policy)
+	for i, want := range []string{"198.18.0.0/15", "2001:db8:42::/56"} {
+		block := policy.Spec.Egress[0].To[i].IPBlock
+		if got := block.Except[len(block.Except)-1]; got != want {
+			t.Errorf("%s except ends with %q, want %q", block.CIDR, got, want)
+		}
 	}
 }
 

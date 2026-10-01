@@ -7,3 +7,9 @@ rbac:
   #  - kind: Group
   #    name: sandbox-admins
   #    apiGroup: rbac.authorization.k8s.io
+
+network:
+  # This cluster's pod and service ranges. Each is added to the ranges the
+  # sandbox NetworkPolicy blocks, in its own address family. They are usually
+  # already inside a private range.
+  clusterCIDRs: []

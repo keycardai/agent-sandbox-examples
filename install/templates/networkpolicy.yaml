@@ -1,0 +1,78 @@
+# NetworkPolicies add up, and agent-sandbox writes its own wider policy for a
+# SandboxTemplate left at networkPolicyManagement: Managed.
+# TODO(ACC-1090): set networkPolicyManagement: Unmanaged on the SandboxTemplate
+# so this is the only policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-egress
+  namespace: {{ include "keycard-sandbox.namespace" . }}
+  labels:
+    {{- include "keycard-sandbox.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  podSelector: {}
+  # The in-pod filter accepts established connections, so an inbound
+  # connection would give the workload a two-way channel (egress-proxy
+  # docs/security-model.md). Kubernetes always allows traffic between a pod
+  # and its own node, a host-network pod included, so no policy denies that.
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    # The proxy forwards no cleartext and dials upstreams on 443. Port 80 is
+    # captured in-pod only so the proxy can refuse it with
+    # cleartext_not_forwarded. List another port here only if the proxy dials
+    # upstreams on it.
+    # TODO(ACC-1094): the local lane needs an egress exception for its host
+    # gateway: single addresses, TCP 443 only, never covering 169.254.169.254.
+    # TODO(ACC-1096): on EKS the cluster's public API endpoint is a public
+    # address on 443, so it stays reachable.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+              - 0.0.0.0/8
+              {{- range .Values.network.clusterCIDRs }}
+              {{- if not (contains ":" .) }}
+              - {{ . | quote }}
+              {{- end }}
+              {{- end }}
+        - ipBlock:
+            cidr: "::/0"
+            except:
+              - "fc00::/7"
+              - "fe80::/10"
+              - "::1/128"
+              - "::/128"
+              - "100::/64"
+              - "64:ff9b::/96"
+              - "64:ff9b:1::/48"
+              {{- range .Values.network.clusterCIDRs }}
+              {{- if contains ":" . }}
+              - {{ . | quote }}
+              {{- end }}
+              {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+    # k3s and EKS both label CoreDNS k8s-app: kube-dns.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
