@@ -120,7 +120,7 @@ func serviceAccountToken(
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", ErrAuth, err)
 	}
-	req.SetBasicAuth(values.ServiceAccount.ClientID, secret)
+	req.SetBasicAuth(values.ManagementServiceAccount.ClientID, secret)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	res, err := httpClient.Do(req)
@@ -131,7 +131,7 @@ func serviceAccountToken(
 	if res.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("%w: the token endpoint returned HTTP %d for client %s. "+
 			"The client must be an organization service account",
-			ErrAuth, res.StatusCode, values.ServiceAccount.ClientID)
+			ErrAuth, res.StatusCode, values.ManagementServiceAccount.ClientID)
 	}
 	return tokenFromResponse(res.Body)
 }

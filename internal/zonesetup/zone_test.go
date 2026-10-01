@@ -373,10 +373,10 @@ func TestResolveZone(t *testing.T) {
 				fake.zones = tc.zones
 			}
 			values := &zonesetup.Values{
-				ManagementAPIURL: fake.serve(t),
-				ZoneURL:          tc.zoneURL,
-				ZoneID:           tc.zoneID,
-				ServiceAccount:   zonesetup.ServiceAccountValues{ClientID: fakeClientID},
+				ManagementAPIURL:         fake.serve(t),
+				ZoneURL:                  tc.zoneURL,
+				ZoneID:                   tc.zoneID,
+				ManagementServiceAccount: zonesetup.ManagementServiceAccountValues{ClientID: fakeClientID},
 			}
 			secret := fakeSecret
 			if tc.secret != "" {
