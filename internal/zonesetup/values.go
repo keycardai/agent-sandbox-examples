@@ -22,11 +22,11 @@ import (
 
 // The error classes the package returns. Every error wraps one of them.
 var (
-	// ErrValues is a values file that cannot be used as written.
-	ErrValues = errors.New("values file")
 	// ErrMissingSecret is a credential the values file names but the
 	// environment or filesystem does not hold.
 	ErrMissingSecret = errors.New("missing secret")
+	// ErrValues is a values file that cannot be used as written.
+	ErrValues = errors.New("values file")
 )
 
 const (
@@ -41,10 +41,10 @@ const (
 )
 
 var (
-	namespaceRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-	lineRE      = regexp.MustCompile(`^(?:error converting YAML to JSON: )?yaml: (?:unmarshal errors:\n\s*)?line (\d+):`)
 	envNameRE   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	fieldRE     = regexp.MustCompile(`^(?:json: )?(unknown|duplicate) field "([A-Za-z0-9_.\[\]-]*)"$`)
+	lineRE      = regexp.MustCompile(`^(?:error converting YAML to JSON: )?yaml: (?:unmarshal errors:\n\s*)?line (\d+):`)
+	namespaceRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 )
 
 // Values is the values file. It holds no credential. Every secret is named by
