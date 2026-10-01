@@ -6,6 +6,8 @@ The once-per-cluster Helm chart for Keycard agent sandboxes. It installs:
   `privileged` Pod Security level and kept when the release is deleted
 - the sandbox-admin Role in that namespace, and a RoleBinding to
   `rbac.subjects` when that list is not empty
+- a NetworkPolicy on every pod in the namespace that denies ingress and allows
+  egress only to TCP 443 on public addresses and to the cluster DNS
 
 `values.yaml` documents every key. `values.example.yaml` is a starting point.
 
