@@ -225,31 +225,32 @@ func TestResolveZone(t *testing.T) {
 		wantCalls  map[string]int
 	}{
 		{
+			name:  "a trailing slash on the issuer still matches",
+			zones: []fakeZone{{"zone-s", "https://s.keycard.cloud/"}}, zoneURL: "https://s.keycard.cloud", wantZone: "zone-s",
+		},
+		{name: "a trailing slash on zone_url still matches", zoneURL: "https://c.keycard.cloud/", wantZone: "zone-c"},
+		{name: "by id", zoneID: zoneD, wantZone: zoneD},
+		{name: "by id and url that match", zoneID: zoneB, zoneURL: issuerB, wantZone: zoneB},
+		{
 			name: "by url", zoneURL: issuerA, wantZone: zoneA,
 			wantCalls: map[string]int{exchangeCall: 1, listCall: 3},
 		},
 		{name: "by url on the last page", zoneURL: "https://e.keycard.cloud", wantZone: "zone-e"},
-		{name: "a trailing slash on zone_url still matches", zoneURL: "https://c.keycard.cloud/", wantZone: "zone-c"},
-		{
-			name:  "a trailing slash on the issuer still matches",
-			zones: []fakeZone{{"zone-s", "https://s.keycard.cloud/"}}, zoneURL: "https://s.keycard.cloud", wantZone: "zone-s",
-		},
-		{name: "by id", zoneID: zoneD, wantZone: zoneD},
-		{name: "by id and url that match", zoneID: zoneB, zoneURL: issuerB, wantZone: zoneB},
 		{
 			name: "id and url that disagree", zoneID: zoneB, zoneURL: issuerA,
 			wantErr: zonesetup.ErrZoneMismatch,
 		},
-		{name: "unknown zone url", zoneURL: "https://nope.keycard.cloud", wantErr: zonesetup.ErrZoneNotFound},
-		{name: "unknown zone id", zoneID: "zone-z", wantErr: zonesetup.ErrZoneNotFound},
 		{
 			name:    "two zones issue from zone_url",
 			zones:   []fakeZone{{"zone-1", "https://x.keycard.cloud"}, {"zone-2", "https://x.keycard.cloud/"}},
 			zoneURL: "https://x.keycard.cloud", wantErr: zonesetup.ErrZoneAmbiguous,
 		},
+		{name: "unknown zone id", zoneID: "zone-z", wantErr: zonesetup.ErrZoneNotFound},
+		{name: "unknown zone url", zoneURL: "https://nope.keycard.cloud", wantErr: zonesetup.ErrZoneNotFound},
 		{
-			name: "wrong secret", zoneID: zoneA, secret: "wrong", wantErr: zonesetup.ErrAuth,
-			wantCalls: map[string]int{exchangeCall: 1, getACall: 0},
+			name: "a failed list request is sent once", zoneURL: issuerA,
+			failPath: listPath, failStatus: http.StatusServiceUnavailable, wantErr: zonesetup.ErrAPI,
+			wantCalls: map[string]int{listCall: 1},
 		},
 		{
 			name: "a failed token request is sent once", zoneID: zoneA,
@@ -262,9 +263,21 @@ func TestResolveZone(t *testing.T) {
 			wantCalls: map[string]int{getACall: 1},
 		},
 		{
-			name: "a failed list request is sent once", zoneURL: issuerA,
-			failPath: listPath, failStatus: http.StatusServiceUnavailable, wantErr: zonesetup.ErrAPI,
-			wantCalls: map[string]int{listCall: 1},
+			name: "a zone request dropped without a response is sent once", zoneID: zoneA,
+			handlers: map[string]http.HandlerFunc{getAPath: dropOnce(rawBody(`{"id":"zone-a"}`))},
+			wantErr:  zonesetup.ErrAPI, wantCalls: map[string]int{getACall: 1},
+		},
+		{
+			name: "wrong secret", zoneID: zoneA, secret: "wrong", wantErr: zonesetup.ErrAuth,
+			wantCalls: map[string]int{exchangeCall: 1, getACall: 0},
+		},
+		{
+			name: "a malformed redirect on the token request is refused", zoneID: zoneA,
+			handlers: map[string]http.HandlerFunc{tokenPath: badRedirect}, wantErr: zonesetup.ErrAuth,
+		},
+		{
+			name: "a malformed redirect on the zone request is refused", zoneID: zoneA,
+			handlers: map[string]http.HandlerFunc{getAPath: badRedirect}, wantErr: zonesetup.ErrAPI,
 		},
 		{
 			name: "a redirected token request is refused", zoneID: zoneA,
@@ -277,25 +290,12 @@ func TestResolveZone(t *testing.T) {
 			wantCalls: map[string]int{getACall: 1, "GET /redirected": 0},
 		},
 		{
-			name: "a malformed redirect on the token request is refused", zoneID: zoneA,
-			handlers: map[string]http.HandlerFunc{tokenPath: badRedirect}, wantErr: zonesetup.ErrAuth,
-		},
-		{
-			name: "a malformed redirect on the zone request is refused", zoneID: zoneA,
-			handlers: map[string]http.HandlerFunc{getAPath: badRedirect}, wantErr: zonesetup.ErrAPI,
-		},
-		{
-			name: "a zone error body that repeats the token", zoneID: zoneA,
-			handlers: map[string]http.HandlerFunc{getAPath: echoToken}, wantErr: zonesetup.ErrAPI,
-		},
-		{
 			name: "a list error body that repeats the token", zoneURL: issuerA,
 			handlers: map[string]http.HandlerFunc{listPath: echoToken}, wantErr: zonesetup.ErrAPI,
 		},
 		{
-			name: "a zone request dropped without a response is sent once", zoneID: zoneA,
-			handlers: map[string]http.HandlerFunc{getAPath: dropOnce(rawBody(`{"id":"zone-a"}`))},
-			wantErr:  zonesetup.ErrAPI, wantCalls: map[string]int{getACall: 1},
+			name: "a zone error body that repeats the token", zoneID: zoneA,
+			handlers: map[string]http.HandlerFunc{getAPath: echoToken}, wantErr: zonesetup.ErrAPI,
 		},
 		{
 			name: "a null zone", zoneID: zoneA, wantErr: zonesetup.ErrAPI,
@@ -306,9 +306,9 @@ func TestResolveZone(t *testing.T) {
 			handlers: map[string]http.HandlerFunc{listPath: rawBody("null")},
 		},
 		{
-			name: "a token_type that repeats the secret", zoneID: zoneA, wantErr: zonesetup.ErrAuth,
+			name: "a lowercase bearer token_type is accepted", zoneID: zoneA, wantZone: zoneA,
 			handlers: map[string]http.HandlerFunc{
-				tokenPath: rawBody(`{"access_token":"sa-token","token_type":"` + fakeSecret + `"}`),
+				tokenPath: rawBody(`{"access_token":"sa-token","token_type":"bearer"}`),
 			},
 		},
 		{
@@ -316,10 +316,6 @@ func TestResolveZone(t *testing.T) {
 			handlers: map[string]http.HandlerFunc{tokenPath: rawBody(
 				`{"access_token":"sa-token","token_type":"Bearer"}` + strings.Repeat(" ", 1<<20) + `{"x":1}`,
 			)},
-		},
-		{
-			name: "a token response without token_type", zoneID: zoneA, wantErr: zonesetup.ErrAuth,
-			handlers: map[string]http.HandlerFunc{tokenPath: rawBody(`{"access_token":"sa-token"}`)},
 		},
 		{
 			name: "a token response with another token_type", zoneID: zoneA, wantErr: zonesetup.ErrAuth,
@@ -334,18 +330,14 @@ func TestResolveZone(t *testing.T) {
 			},
 		},
 		{
-			name: "a lowercase bearer token_type is accepted", zoneID: zoneA, wantZone: zoneA,
+			name: "a token response without token_type", zoneID: zoneA, wantErr: zonesetup.ErrAuth,
+			handlers: map[string]http.HandlerFunc{tokenPath: rawBody(`{"access_token":"sa-token"}`)},
+		},
+		{
+			name: "a token_type that repeats the secret", zoneID: zoneA, wantErr: zonesetup.ErrAuth,
 			handlers: map[string]http.HandlerFunc{
-				tokenPath: rawBody(`{"access_token":"sa-token","token_type":"bearer"}`),
+				tokenPath: rawBody(`{"access_token":"sa-token","token_type":"` + fakeSecret + `"}`),
 			},
-		},
-		{
-			name: "zone_id returns another zone", zoneID: zoneA, wantErr: zonesetup.ErrAPI,
-			handlers: map[string]http.HandlerFunc{getAPath: rawBody(`{"id":"zone-b"}`)},
-		},
-		{
-			name: "zone_id returns an error body with status 200", zoneID: zoneA, wantErr: zonesetup.ErrAPI,
-			handlers: map[string]http.HandlerFunc{getAPath: rawBody(`{"error":"server failed"}`)},
 		},
 		{
 			name: "a cursor cycle is refused", zoneURL: issuerA, wantErr: zonesetup.ErrAPI,
@@ -363,6 +355,14 @@ func TestResolveZone(t *testing.T) {
 				"A": `{"items":[{"id":"zone-a","protocols":{"oauth2":{"issuer":"` + issuerA +
 					`"}}}],"pagination":{"after_cursor":""}}`,
 			})},
+		},
+		{
+			name: "zone_id returns an error body with status 200", zoneID: zoneA, wantErr: zonesetup.ErrAPI,
+			handlers: map[string]http.HandlerFunc{getAPath: rawBody(`{"error":"server failed"}`)},
+		},
+		{
+			name: "zone_id returns another zone", zoneID: zoneA, wantErr: zonesetup.ErrAPI,
+			handlers: map[string]http.HandlerFunc{getAPath: rawBody(`{"id":"zone-b"}`)},
 		},
 	}
 	for _, tc := range cases {

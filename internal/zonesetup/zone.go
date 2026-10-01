@@ -18,9 +18,9 @@ import (
 )
 
 const (
+	maxTokenResponseBytes = 1 << 20
 	requestTimeout        = 30 * time.Second
 	zonePageSize          = 100
-	maxTokenResponseBytes = 1 << 20
 )
 
 // ResolveZone authenticates as the organization service account and returns
@@ -77,8 +77,8 @@ func refuseRedirect(*http.Request, []*http.Request) error {
 // credential, so neither reaches the caller.
 func requestError(err error) error {
 	var apiErr *keycard.Error
-	var urlErr *url.Error
 	var opErr *net.OpError
+	var urlErr *url.Error
 	switch {
 	case errors.Is(err, errRedirect):
 		return errRedirect
