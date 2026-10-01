@@ -430,9 +430,9 @@ func checkURL(key, value string) error {
 	return nil
 }
 
-// LoadSecrets reads every credential the values file names, and refuses when
-// any is missing or empty. A secret file keeps its exact bytes less one
-// trailing line ending.
+// LoadSecrets reads every credential listed in the values file, and refuses
+// when any is missing or empty. It removes the whitespace around a secret
+// read from a file.
 func LoadSecrets(
 	values *Values,
 	lookupEnv func(string) (string, bool),
@@ -471,10 +471,7 @@ func managementSecret(
 		if err != nil {
 			return "", fmt.Errorf("%w: management_service_account.client_secret_file %s", ErrMissingSecret, readFailure(err))
 		}
-		secret, found := strings.CutSuffix(string(raw), "\r\n")
-		if !found {
-			secret = strings.TrimSuffix(secret, "\n")
-		}
+		secret := strings.TrimSpace(string(raw))
 		if secret == "" {
 			return "", fmt.Errorf("%w: management_service_account.client_secret_file is empty", ErrMissingSecret)
 		}

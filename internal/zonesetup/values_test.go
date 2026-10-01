@@ -362,7 +362,7 @@ func TestLoadSecretsKeepsFileTextOut(t *testing.T) {
 	}
 }
 
-func TestSecretFileKeepsBytes(t *testing.T) {
+func TestSecretFileTrimsWhitespace(t *testing.T) {
 	t.Parallel()
 	values, err := zonesetup.ParseValues(strings.NewReader(
 		strings.Replace(minimal, "client_id: sa-1\n", "client_id: sa-1\n  client_secret_file: /secret\n", 1),
@@ -370,7 +370,8 @@ func TestSecretFileKeepsBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for file, want := range map[string]string{"  s3cret  \n": "  s3cret  ", "s3cret\r\n": "s3cret"} {
+	const want = "s3cret"
+	for _, file := range []string{"\t" + want + "\n\n", "  " + want + "  \n", want + "\r\n"} {
 		read := func(string) ([]byte, error) { return []byte(file), nil }
 		got, loadErr := zonesetup.LoadSecrets(values, func(string) (string, bool) { return "", false }, read)
 		if loadErr != nil {
@@ -380,10 +381,12 @@ func TestSecretFileKeepsBytes(t *testing.T) {
 			t.Errorf("secret from %q = %q, want %q", file, got.ManagementClientSecret, want)
 		}
 	}
-	empty := func(string) ([]byte, error) { return []byte("\n"), nil }
-	_, err = zonesetup.LoadSecrets(values, func(string) (string, bool) { return "", false }, empty)
-	if !errors.Is(err, zonesetup.ErrMissingSecret) || !strings.Contains(err.Error(), "is empty") {
-		t.Fatalf("error = %v, want ErrMissingSecret for an empty file", err)
+	for _, file := range []string{"\n", " \t\r\n"} {
+		empty := func(string) ([]byte, error) { return []byte(file), nil }
+		_, err = zonesetup.LoadSecrets(values, func(string) (string, bool) { return "", false }, empty)
+		if !errors.Is(err, zonesetup.ErrMissingSecret) || !strings.Contains(err.Error(), "is empty") {
+			t.Errorf("file %q: error = %v, want ErrMissingSecret for an empty file", file, err)
+		}
 	}
 }
 

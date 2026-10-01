@@ -18,9 +18,10 @@ zone_url: https://acme.keycard.cloud
 # The organization service account zone-setup authenticates with. It is
 # NEVER the sidecar's identity.
 #
-# The secret comes from KEYCARD_MANAGEMENT_CLIENT_SECRET, or from the
-# variable client_secret_env names, or from the file client_secret_file
-# names. A named file is the only source read.
+# The secret comes from KEYCARD_MANAGEMENT_CLIENT_SECRET, from the variable
+# set in client_secret_env, or from the file set in client_secret_file. When
+# client_secret_file is set, it is the only source read. The file holds the
+# secret alone. Whitespace around it, such as a trailing newline, is ignored.
 management_service_account:
   client_id: replace-me
   # client_secret_env: KEYCARD_MANAGEMENT_CLIENT_SECRET
