@@ -31,8 +31,7 @@ const (
 	// DefaultManagementSecretEnv is the environment variable that holds the
 	// service account secret when the values file names no other source.
 	DefaultManagementSecretEnv = "KEYCARD_MANAGEMENT_CLIENT_SECRET"
-	// DefaultNamespace is the namespace the sandboxes run in when the values
-	// file names none.
+	// DefaultNamespace is the default sandbox namespace used when not configured in the values file.
 	DefaultNamespace = "agents"
 	// maxNamespaceLength is the length limit of a DNS-1123 label.
 	maxNamespaceLength = 63
