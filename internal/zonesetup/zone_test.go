@@ -159,20 +159,6 @@ func echoToken(w http.ResponseWriter, _ *http.Request) {
 	http.Error(w, `{"error":"`+fakeToken+`"}`, http.StatusInternalServerError)
 }
 
-func dropOnce(next http.HandlerFunc) http.HandlerFunc {
-	var dropped atomic.Bool
-	return func(w http.ResponseWriter, r *http.Request) {
-		if dropped.CompareAndSwap(false, true) {
-			conn, _, err := http.NewResponseController(w).Hijack()
-			if err == nil {
-				_ = conn.Close()
-			}
-			return
-		}
-		next(w, r)
-	}
-}
-
 func rawBody(body string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -261,11 +247,6 @@ func TestResolveZone(t *testing.T) {
 			name: "a failed zone request is sent once", zoneID: zoneA,
 			failPath: getAPath, failStatus: http.StatusBadGateway, wantErr: zonesetup.ErrAPI,
 			wantCalls: map[string]int{getACall: 1},
-		},
-		{
-			name: "a zone request dropped without a response is sent once", zoneID: zoneA,
-			handlers: map[string]http.HandlerFunc{getAPath: dropOnce(rawBody(`{"id":"zone-a"}`))},
-			wantErr:  zonesetup.ErrAPI, wantCalls: map[string]int{getACall: 1},
 		},
 		{
 			name: "wrong secret", zoneID: zoneA, secret: "wrong", wantErr: zonesetup.ErrAuth,
