@@ -79,6 +79,22 @@ func TestCheck(t *testing.T) {
 			},
 		},
 		{
+			name: "another subject", signer: cluster, want: errSubject, wantText: "sub is",
+			claims: func(issuer string, now time.Time) map[string]any {
+				claims := validClaims(issuer, now)
+				claims["sub"] = "system:serviceaccount:agents:other"
+				return claims
+			},
+		},
+		{
+			name: "missing sub", signer: cluster, want: errSubject, wantText: `sub is ""`,
+			claims: func(issuer string, now time.Time) map[string]any {
+				claims := validClaims(issuer, now)
+				delete(claims, "sub")
+				return claims
+			},
+		},
+		{
 			name: "oversized discovery", padDiscovery: true, signer: cluster, claims: validClaims,
 			want: errDiscovery, wantText: "request body too large",
 		},
