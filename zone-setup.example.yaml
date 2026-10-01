@@ -38,7 +38,8 @@ issuer_url: https://oidc.eks.us-west-2.amazonaws.com/id/EXAMPLE
 namespace: agents
 
 # The zone-wide policy set the impersonation policies go in. Defaults to
-# "Kubernetes Sandbox".
+# "Kubernetes Sandbox". A zone has one active policy set. zone-setup refuses
+# to replace another active set unless run with --replace-active-policy-set.
 # policy_set: Kubernetes Sandbox
 
 # The sandbox users, one per email.

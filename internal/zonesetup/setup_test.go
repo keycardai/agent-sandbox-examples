@@ -21,6 +21,8 @@ func testValues(f *zoneAPI) *zonesetup.Values {
 		ManagementServiceAccount: zonesetup.ManagementServiceAccountValues{ClientID: testClientID},
 		IssuerURL:                testIssuer,
 		Namespace:                zonesetup.DefaultNamespace,
+		PolicySet:                zonesetup.DefaultPolicySetName,
+		Users:                    []zonesetup.UserValues{{Email: "casey@example.com"}},
 		Resources: []zonesetup.ResourceValues{
 			{Identifier: githubURL, Name: "GitHub API", Prefix: true, CredentialProvider: githubProvider},
 			{
@@ -41,10 +43,11 @@ func testSecrets() *zonesetup.Secrets {
 // runCase is one scenario: a seeded zone, one run, and the writes, outputs,
 // log lines and error it must produce.
 type runCase struct {
-	name   string
-	seed   func(f *zoneAPI)
-	values func(v *zonesetup.Values)
-	dryRun bool
+	name    string
+	seed    func(f *zoneAPI)
+	values  func(v *zonesetup.Values)
+	dryRun  bool
+	replace bool
 
 	wantWrites []string
 	wantErr    string
@@ -62,7 +65,18 @@ func freshWrites() []string {
 		"POST /zones/zone-1/secrets",
 		"PUT /zones/zone-1/applications/app-1/dependencies/res-1",
 		"PUT /zones/zone-1/applications/app-1/dependencies/res-2",
+		"POST /zones/zone-1/application-credentials",
+		"POST /zones/zone-1/policies",
+		"POST /zones/zone-1/policies/pol-1/versions",
+		"POST /zones/zone-1/policy-sets",
+		"POST /zones/zone-1/policy-sets/set-1/versions",
+		"PATCH /zones/zone-1/policy-sets/set-1/versions/sv-1",
 	}
+}
+
+// perZoneWrites are the writes that happen before any per-user step.
+func perZoneWrites() []string {
+	return freshWrites()[:7]
 }
 
 func completeOutputs() *zonesetup.Outputs {
@@ -71,6 +85,10 @@ func completeOutputs() *zonesetup.Outputs {
 			ProviderID: "prov-1", ApplicationID: "app-1",
 			ApplicationIdentifier: "urn:keycard:sandbox-proxy:agents", Namespace: zonesetup.DefaultNamespace,
 		},
+		SandboxUserAccess: []zonesetup.SandboxUserAccessOutputs{{
+			UserEmail: "casey@example.com", UserID: "usr-1",
+			ServiceAccount: "system:serviceaccount:agents:usr-1", ClientID: "cred-1", Namespace: zonesetup.DefaultNamespace,
+		}},
 	}
 }
 
@@ -90,10 +108,11 @@ func runCases(t *testing.T, cases []runCase) {
 			}
 			var log bytes.Buffer
 			setup := &zonesetup.Setup{
-				Values:  values,
-				Secrets: testSecrets(),
-				DryRun:  tc.dryRun,
-				Log:     &log,
+				Values:                 values,
+				Secrets:                testSecrets(),
+				DryRun:                 tc.dryRun,
+				ReplaceActivePolicySet: tc.replace,
+				Log:                    &log,
 			}
 			out, err := setup.Run(t.Context())
 			checkRunError(t, err, tc.wantErr, log.String())
@@ -128,10 +147,11 @@ func TestRunZone(t *testing.T) {
 			seed:       func(f *zoneAPI) { f.seedComplete() },
 			wantWrites: []string{"PATCH /zones/zone-1/secrets/sec-1"},
 			wantOut:    completeOutputs(),
+			wantLog:    []string{"policy set set-1 version 1 is active and holds every impersonation policy"},
 			check:      checkSecretRestored,
 		},
 		{
-			name: "drift is patched",
+			name: "drift is patched and a changed policy publishes new versions",
 			seed: func(f *zoneAPI) {
 				f.seedComplete()
 				(*f.find(f.providers, "prov-1"))[keyProtocols] = record{
@@ -140,6 +160,12 @@ func TestRunZone(t *testing.T) {
 				(*f.find(f.applications, "app-1"))["consent"] = "required"
 				(*f.find(f.resources, "res-1"))["prefix"] = false
 				f.dependencies["app-1"] = []string{"res-1"}
+				(*f.find(f.policyVers, "pv-1"))["cedar_raw"] = "permit (principal, action, resource);"
+				// An entry this run does not manage stays in the manifest.
+				(*f.find(f.setVers, "sv-1"))["manifest"] = record{"entries": []any{
+					record{"policy_id": "pol-other", "policy_version_id": "pv-other"},
+					record{"policy_id": "pol-1", "policy_version_id": "pv-1"},
+				}}
 			},
 			wantWrites: []string{
 				"PATCH /zones/zone-1/providers/prov-1",
@@ -147,6 +173,9 @@ func TestRunZone(t *testing.T) {
 				"PATCH /zones/zone-1/resources/res-1",
 				"PATCH /zones/zone-1/secrets/sec-1",
 				"PUT /zones/zone-1/applications/app-1/dependencies/res-2",
+				"POST /zones/zone-1/policies/pol-1/versions",
+				"POST /zones/zone-1/policy-sets/set-1/versions",
+				"PATCH /zones/zone-1/policy-sets/set-1/versions/sv-2",
 			},
 			wantOut: completeOutputs(),
 			check:   checkDrift,
@@ -160,6 +189,9 @@ func TestRunZone(t *testing.T) {
 				"would create resource https://api.github.com/ (prefix=true, provider=prov-github)",
 				"would store the OPENROUTER_API_KEY credential for https://openrouter.ai/api/v1",
 				"would make 2 resources dependencies of the application",
+				"would create token credential for system:serviceaccount:agents:usr-1",
+				`would create policy "Sandbox impersonation: usr-1" and publish its version`,
+				`would publish a version of policy set "Kubernetes Sandbox" with 1 impersonation policies and activate it`,
 			},
 		},
 		{
@@ -167,11 +199,14 @@ func TestRunZone(t *testing.T) {
 			seed: func(f *zoneAPI) {
 				f.seedComplete()
 				(*f.find(f.resources, "res-1"))["prefix"] = false
+				(*f.find(f.policyVers, "pv-1"))["cedar_raw"] = "permit (principal, action, resource);"
 			},
 			dryRun: true,
 			wantLog: []string{
 				`would patch resource res-1 (prefix false -> true, provider "prov-github" -> "prov-github")`,
 				"would update secret sec-1 from OPENROUTER_API_KEY",
+				"would publish a new version of policy pol-1",
+				`would publish a version of policy set "Kubernetes Sandbox" with 1 impersonation policies and activate it`,
 			},
 		},
 		{
@@ -222,6 +257,7 @@ func checkLogLines(t *testing.T, log string, lines []string) {
 func checkFreshZone(t *testing.T, f *zoneAPI) {
 	t.Helper()
 	checkFreshZoneIdentities(t, f)
+	checkFreshZonePolicy(t, f)
 	checkFreshZoneResources(t, f)
 }
 
@@ -287,6 +323,14 @@ func checkDrift(t *testing.T, f *zoneAPI) {
 	res := f.bodyOf("PATCH /zones/zone-1/resources/res-1")
 	if res["prefix"] != true || res["credential_provider_id"] != "prov-github" {
 		t.Errorf("resource patch = %v", res)
+	}
+	sv := f.bodyOf("POST /zones/zone-1/policy-sets/set-1/versions")
+	wantManifest := map[string]any{"entries": []any{
+		map[string]any{"policy_id": "pol-other", "policy_version_id": "pv-other"},
+		map[string]any{"policy_id": "pol-1", "policy_version_id": "pv-2"},
+	}}
+	if !reflect.DeepEqual(sv["manifest"], wantManifest) {
+		t.Errorf("policy set version manifest = %v, want %v", sv["manifest"], wantManifest)
 	}
 }
 

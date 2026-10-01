@@ -23,9 +23,7 @@ var (
 	ErrNotFound = errors.New("not found")
 )
 
-// Setup creates or corrects the per-zone entities the values file describes:
-// the cluster's OIDC provider, the egress proxy application, and its
-// resources with their secrets and dependencies.
+// Setup creates or corrects every zone entity the values file describes.
 //
 // Every step is create-or-patch. An entity that already matches is left
 // alone, one whose settings disagree with the values file is patched, and
@@ -36,17 +34,23 @@ type Setup struct {
 	Secrets *Secrets
 	// DryRun reports what each step would do and writes nothing.
 	DryRun bool
+	// ReplaceActivePolicySet permits activating the sandbox policy set while
+	// another policy set is active in the zone. A zone has one active policy
+	// set, so the activation replaces the other set's binding.
+	ReplaceActivePolicySet bool
 	// Log receives one line per step. Nil discards them.
 	Log io.Writer
 
 	zones           *keycard.ZoneService
+	schemaVersion   string
 	vaultProviderID string
 }
 
 // Outputs are the ids new-sandbox needs, in the shape of the catalog
 // installs' outputs.
 type Outputs struct {
-	K8sSandbox K8sSandboxOutputs `json:"k8s_sandbox"`
+	K8sSandbox        K8sSandboxOutputs          `json:"k8s_sandbox"`
+	SandboxUserAccess []SandboxUserAccessOutputs `json:"sandbox_user_access"`
 }
 
 // K8sSandboxOutputs are the once-per-zone install's outputs.
@@ -89,6 +93,15 @@ func (s *Setup) Run(ctx context.Context) (*Outputs, error) {
 	if err = s.ensureDependencies(ctx, zone.ID, appID, resourceIDs); err != nil {
 		return nil, fmt.Errorf("dependencies: %w", err)
 	}
+	users, entries, err := s.ensureUsers(ctx, zone.ID, appID, providerID)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) > 0 {
+		if err = s.ensurePolicySet(ctx, zone.ID, entries); err != nil {
+			return nil, fmt.Errorf("policy set: %w", err)
+		}
+	}
 	return &Outputs{
 		K8sSandbox: K8sSandboxOutputs{
 			ProviderID:            providerID,
@@ -96,6 +109,7 @@ func (s *Setup) Run(ctx context.Context) (*Outputs, error) {
 			ApplicationIdentifier: ApplicationIdentifier(s.Values.Namespace),
 			Namespace:             s.Values.Namespace,
 		},
+		SandboxUserAccess: users,
 	}, nil
 }
 

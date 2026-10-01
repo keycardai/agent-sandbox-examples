@@ -23,12 +23,20 @@ type zoneAPI struct {
 	calls   []call
 	counter map[string]int
 
-	zone         map[string]any
-	providers    []*record
-	applications []*record
-	dependencies map[string][]string
-	resources    []*record
-	secrets      []*record
+	zone          map[string]any
+	providers     []*record
+	applications  []*record
+	dependencies  map[string][]string
+	resources     []*record
+	secrets       []*record
+	credentials   []*record
+	users         []*record
+	schemaVersion string
+	policies      []*record
+	policyVers    []*record
+	sets          []*record
+	setVers       []*record
+	activeVersion string
 }
 
 type record = map[string]any
@@ -40,15 +48,16 @@ type call struct {
 }
 
 const (
-	testZoneID       = "zone-1"
-	testZoneURL      = "https://acme.keycard.cloud"
-	testIssuer       = "https://oidc.eks.example.com/id/ABC123"
-	testToken        = "tok-1"
-	testClientID     = "sa-1"
-	testClientSecret = "sa-secret"
-	tokenLifetime    = 3600
-	firstVersion     = 1
-	applicationName  = "Sandbox egress proxy"
+	testZoneID        = "zone-1"
+	testZoneURL       = "https://acme.keycard.cloud"
+	testIssuer        = "https://oidc.eks.example.com/id/ABC123"
+	testSchemaVersion = "2026-03-16"
+	testToken         = "tok-1"
+	testClientID      = "sa-1"
+	testClientSecret  = "sa-secret"
+	tokenLifetime     = 3600
+	firstVersion      = 1
+	applicationName   = "Sandbox egress proxy"
 
 	githubProvider     = "github"
 	githubURL          = "https://api.github.com/"
@@ -65,9 +74,10 @@ const (
 func newZoneAPI(t *testing.T) *zoneAPI {
 	t.Helper()
 	f := &zoneAPI{
-		t:            t,
-		counter:      map[string]int{},
-		dependencies: map[string][]string{},
+		t:             t,
+		counter:       map[string]int{},
+		dependencies:  map[string][]string{},
+		schemaVersion: testSchemaVersion,
 		zone: record{
 			"id":         testZoneID,
 			"name":       "Acme",
@@ -89,6 +99,10 @@ func newZoneAPI(t *testing.T) *zoneAPI {
 			keyProtocols: record{keyOAuth2: record{keyIssuer: "https://github.com"}},
 		},
 	)
+	f.users = append(
+		f.users,
+		&record{"id": "usr-1", "email": "casey@example.com", "identifier": "usr-1", "email_verified": true},
+	)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /service-account-token", f.token)
@@ -97,6 +111,7 @@ func newZoneAPI(t *testing.T) *zoneAPI {
 	f.routeApplications(mux)
 	f.routeResources(mux)
 	f.routeSecrets(mux)
+	f.routeUserAccess(mux)
 
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -399,6 +414,7 @@ func (f *zoneAPI) seedComplete() {
 		"version": firstVersion, "zone_id": testZoneID, "token": "old",
 	})
 	f.dependencies["app-1"] = []string{"res-1", "res-2"}
+	f.seedCompleteUsers()
 	f.counter["prov"], f.counter["app"], f.counter["res"], f.counter["sec"] = 1, 1, 2, 1
 }
 
