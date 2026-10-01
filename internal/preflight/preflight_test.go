@@ -36,6 +36,7 @@ func TestCheckRefuses(t *testing.T) {
 		{"env Allowed", preflight.RuleEnvInjection, template + "  envVarsInjectionPolicy: Allowed\n" + podTemplate},
 		{"env Overrides", preflight.RuleEnvInjection, template + "  envVarsInjectionPolicy: Overrides\n" + podTemplate},
 		{"a Pod with no spec", preflight.RuleNoPodSpec, "apiVersion: v1\nkind: Pod\n"},
+		{"a Sandbox with no pod spec", preflight.RuleNoPodSpec, sandbox + "  podTemplate: {}\n"},
 		{
 			"nothing judged beside empty and null documents", preflight.RuleNothingJudged,
 			"---\n# a comment\n---\nnull\n---\napiVersion: v1\nkind: ConfigMap\n---\n",
@@ -130,6 +131,11 @@ func TestCheckRefuses(t *testing.T) {
 			pod + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {&x a: b}\n",
 		},
 		{"an anchored null document", preflight.RuleUnreadableDocument, pod + "---\n&x null\n"},
+		{
+			"a SandboxTemplate volume claim template that swaps a pod volume", preflight.RuleVolumeClaimTemplates,
+			template + podTemplate + "  volumeClaimTemplates:\n    - metadata:\n        name: shared-ca\n" +
+				"      spec:\n        accessModes: [ReadWriteOnce]\n",
+		},
 		{
 			"a volume claim template that swaps a pod volume", preflight.RuleVolumeClaimTemplates,
 			sandbox + podTemplate + "  volumeClaimTemplates:\n    - metadata:\n        name: shared-ca\n" +
