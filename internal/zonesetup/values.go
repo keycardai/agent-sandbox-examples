@@ -4,7 +4,6 @@ package zonesetup
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,13 +11,12 @@ import (
 	"net"
 	"net/mail"
 	"net/url"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 
 	yamlv3 "go.yaml.in/yaml/v3"
-	kjson "sigs.k8s.io/json"
-	"sigs.k8s.io/yaml"
 )
 
 // The error classes the package returns. Every error wraps one of them.
@@ -45,8 +43,7 @@ const (
 	// DefaultManagementSecretEnv is the environment variable that holds the
 	// service account secret when the values file names no other source.
 	DefaultManagementSecretEnv = "KEYCARD_MANAGEMENT_CLIENT_SECRET"
-	// DefaultNamespace is the namespace the sandboxes run in when the values
-	// file names none.
+	// DefaultNamespace is the default sandbox namespace used when not configured in the values file.
 	DefaultNamespace = "agents"
 	// maxNamespaceLength is the length limit of a DNS-1123 label.
 	maxNamespaceLength = 63
@@ -54,47 +51,53 @@ const (
 
 var (
 	envNameRE   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-	fieldRE     = regexp.MustCompile(`^(?:json: )?(unknown|duplicate) field "([A-Za-z0-9_.\[\]-]*)"$`)
-	lineRE      = regexp.MustCompile(`^(?:error converting YAML to JSON: )?yaml: (?:unmarshal errors:\n\s*)?line (\d+):`)
 	namespaceRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+	plainKeyRE  = regexp.MustCompile(`^[A-Za-z0-9_.\[\]-]*$`)
+	repeatedRE  = regexp.MustCompile(
+		`(?s)^line \d+: (?:mapping key .* already defined at line \d+|field .* already set in (?:map|type) \S+)$`,
+	)
+	typeLineRE  = regexp.MustCompile(`^line (\d+): `)
+	unknownRE   = regexp.MustCompile(`(?s)^line \d+: field (.*) not found in type \S+$`)
+	wrongTypeRE = regexp.MustCompile(`^line \d+: cannot unmarshal `)
+	yamlLineRE  = regexp.MustCompile(`^yaml: line (\d+):`)
 )
 
 // Values is the values file. It holds no credential. Every secret is named by
 // the environment variable or file that holds it.
 type Values struct {
 	// ManagementAPIURL is the management API, a separate host from the zone.
-	ManagementAPIURL string `json:"management_api_url"`
+	ManagementAPIURL string `yaml:"management_api_url"`
 	// ZoneURL is the zone's issuer URL.
-	ZoneURL string `json:"zone_url"`
+	ZoneURL string `yaml:"zone_url"`
 	// ZoneID names the zone directly.
-	ZoneID string `json:"zone_id"`
-	// ServiceAccount is the organization service account zone-setup
+	ZoneID string `yaml:"zone_id"`
+	// ManagementServiceAccount is the organization service account zone-setup
 	// authenticates with. It is NEVER the sidecar's identity.
-	ServiceAccount ServiceAccountValues `json:"service_account"`
+	ManagementServiceAccount ManagementServiceAccountValues `yaml:"management_service_account"`
 	// IssuerURL is the cluster's OIDC issuer, kept byte for byte.
-	IssuerURL string `json:"issuer_url"`
+	IssuerURL string `yaml:"issuer_url"`
 	// Namespace is the sandbox namespace. It defaults to DefaultNamespace.
-	Namespace string `json:"namespace"`
+	Namespace string `yaml:"namespace"`
 	// Users are the sandbox users, one per email.
-	Users []UserValues `json:"users"`
+	Users []UserValues `yaml:"users"`
 	// Resources are the destinations the proxy mints credentials for.
-	Resources []ResourceValues `json:"resources"`
+	Resources []ResourceValues `yaml:"resources"`
 }
 
-// ServiceAccountValues is the organization service account.
-type ServiceAccountValues struct {
-	ClientID string `json:"client_id"`
+// ManagementServiceAccountValues is the organization service account.
+type ManagementServiceAccountValues struct {
+	ClientID string `yaml:"client_id"`
 	// ClientSecretEnv names the environment variable holding the secret. It
 	// defaults to DefaultManagementSecretEnv when no file is named.
-	ClientSecretEnv string `json:"client_secret_env"`
+	ClientSecretEnv string `yaml:"client_secret_env"`
 	// ClientSecretFile names a file holding the secret. When set, it is the
 	// only source read.
-	ClientSecretFile string `json:"client_secret_file"`
+	ClientSecretFile string `yaml:"client_secret_file"`
 }
 
 // UserValues is one sandbox user.
 type UserValues struct {
-	Email string `json:"email"`
+	Email string `yaml:"email"`
 }
 
 // ResourceValues is one destination. Exactly one of CredentialProvider and
@@ -102,16 +105,16 @@ type UserValues struct {
 type ResourceValues struct {
 	// Identifier is what the proxy sends as the exchange's `resource`
 	// parameter, verbatim.
-	Identifier string `json:"identifier"`
+	Identifier string `yaml:"identifier"`
 	// Name is the display name. It defaults to Identifier.
-	Name string `json:"name"`
+	Name string `yaml:"name"`
 	// Prefix makes the identifier match every URL it is a prefix of.
-	Prefix bool `json:"prefix"`
+	Prefix bool `yaml:"prefix"`
 	// CredentialProvider is the identifier of an existing provider in the zone.
-	CredentialProvider string `json:"credential_provider"`
+	CredentialProvider string `yaml:"credential_provider"`
 	// SecretEnv names the environment variable holding a static token for
 	// this resource.
-	SecretEnv string `json:"secret_env"`
+	SecretEnv string `yaml:"secret_env"`
 }
 
 // Secrets holds every credential value the values file names.
@@ -135,21 +138,15 @@ func ParseValues(reader io.Reader) (*Values, error) {
 	if err = singleDocument(raw); err != nil {
 		return nil, err
 	}
-	data, err := yaml.YAMLToJSONStrict(raw)
-	if err != nil {
-		return nil, parseError(err)
-	}
 	var values Values
-	strict, err := kjson.UnmarshalStrict(data, &values, kjson.DisallowUnknownFields)
-	if err != nil {
+	decoder := yamlv3.NewDecoder(bytes.NewReader(raw))
+	decoder.KnownFields(true)
+	if err = decoder.Decode(&values); err != nil && !errors.Is(err, io.EOF) {
 		return nil, parseError(err)
-	}
-	if len(strict) > 0 {
-		return nil, parseError(strict[0])
 	}
 	steps := []func() error{
 		values.checkConnection,
-		values.checkServiceAccount,
+		values.checkManagementServiceAccount,
 		values.checkSandbox,
 		values.checkUsers,
 		values.checkResources,
@@ -175,6 +172,11 @@ func singleDocument(raw []byte) error {
 	if err := plainStructure(&doc); err != nil {
 		return err
 	}
+	if len(doc.Content) > 0 && !isNull(doc.Content[0]) {
+		if err := checkKinds(doc.Content[0], reflect.TypeFor[Values]()); err != nil {
+			return err
+		}
+	}
 	var next yamlv3.Node
 	err := decoder.Decode(&next)
 	switch {
@@ -188,13 +190,16 @@ func singleDocument(raw []byte) error {
 
 // plainStructure refuses anchors, aliases and merge keys, which the values
 // file has no use for, and which apply keys the duplicate check never sees.
+// It refuses a null key, which the decoder skips without an error.
 func plainStructure(node *yamlv3.Node) error {
 	if node.Kind == yamlv3.AliasNode || node.Anchor != "" {
 		return fmt.Errorf("%w: line %d: anchors and aliases are not allowed", ErrValues, node.Line)
 	}
 	for i, child := range node.Content {
-		if node.Kind == yamlv3.MappingNode && i%2 == 0 && child.Tag == "!!merge" {
-			return fmt.Errorf("%w: line %d: merge keys are not allowed", ErrValues, child.Line)
+		if node.Kind == yamlv3.MappingNode && i%2 == 0 {
+			if err := checkKey(child); err != nil {
+				return err
+			}
 		}
 		if err := plainStructure(child); err != nil {
 			return err
@@ -203,25 +208,137 @@ func plainStructure(node *yamlv3.Node) error {
 	return nil
 }
 
+// checkKinds refuses a value whose kind or tag does not fit the field it
+// fills, because the decoder coerces a scalar into a string or bool field. A
+// null value leaves its field unset. A key that names no field is left for the
+// decoder to report.
+func checkKinds(node *yamlv3.Node, typ reflect.Type) error {
+	if isNull(node) {
+		return nil
+	}
+	switch {
+	case typ.Kind() == reflect.Struct:
+		return checkMapping(node, typ)
+	case typ.Kind() == reflect.Slice:
+		return checkSequence(node, typ.Elem())
+	case typ.Kind() == reflect.String:
+		return checkScalar(node, "!!str")
+	case typ.Kind() == reflect.Bool:
+		return checkScalar(node, "!!bool")
+	default:
+		return wrongType(node)
+	}
+}
+
+func checkMapping(node *yamlv3.Node, typ reflect.Type) error {
+	if node.Kind != yamlv3.MappingNode || node.ShortTag() != "!!map" {
+		return wrongType(node)
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		field, ok := fieldByKey(typ, node.Content[i].Value)
+		if !ok {
+			continue
+		}
+		if err := checkKinds(node.Content[i+1], field.Type); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkSequence refuses a null item, which the decoder drops without an error.
+func checkSequence(node *yamlv3.Node, elem reflect.Type) error {
+	if node.Kind != yamlv3.SequenceNode || node.ShortTag() != "!!seq" {
+		return wrongType(node)
+	}
+	for _, item := range node.Content {
+		if isNull(item) {
+			return fmt.Errorf("%w: a list item is missing at line %d", ErrValues, item.Line)
+		}
+		if err := checkKinds(item, elem); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkScalar(node *yamlv3.Node, tag string) error {
+	if node.Kind != yamlv3.ScalarNode || node.ShortTag() != tag {
+		return wrongType(node)
+	}
+	return nil
+}
+
+// fieldByKey finds the field whose yaml tag names key.
+func fieldByKey(typ reflect.Type, key string) (reflect.StructField, bool) {
+	for field := range typ.Fields() {
+		if name, _, _ := strings.Cut(field.Tag.Get("yaml"), ","); name == key {
+			return field, true
+		}
+	}
+	return reflect.StructField{}, false
+}
+
+func isNull(node *yamlv3.Node) bool {
+	return node.Kind == yamlv3.ScalarNode && node.ShortTag() == "!!null"
+}
+
+// wrongType names only the line, because the value can hold a credential.
+func wrongType(node *yamlv3.Node) error {
+	return fmt.Errorf("%w: a value has the wrong type at line %d", ErrValues, node.Line)
+}
+
+// checkKey refuses a mapping key that is not a plain string. The decoder
+// applies a merge key, skips a null key, and matches a field by a
+// binary-tagged key's decoded value.
+func checkKey(key *yamlv3.Node) error {
+	switch {
+	case key.ShortTag() == "!!merge":
+		return fmt.Errorf("%w: line %d: merge keys are not allowed", ErrValues, key.Line)
+	case isNull(key):
+		return fmt.Errorf("%w: line %d: null keys are not allowed", ErrValues, key.Line)
+	case key.Kind != yamlv3.ScalarNode || key.ShortTag() != "!!str":
+		return fmt.Errorf("%w: line %d: a key must be a plain string", ErrValues, key.Line)
+	}
+	return nil
+}
+
 // parseError describes a parse error in fixed words, with the line it names
 // and a key only when the key is a plain name. NEVER repeat the error's text,
 // because it can quote the file, which may hold a credential in a URL.
 func parseError(err error) error {
-	msg := err.Error()
-	if match := fieldRE.FindStringSubmatch(msg); match != nil {
-		return fmt.Errorf("%w: %s field %q", ErrValues, match[1], match[2])
+	if typeErr, ok := errors.AsType[*yamlv3.TypeError](err); ok && len(typeErr.Errors) > 0 {
+		return fmt.Errorf("%w: %s", ErrValues, typeProblem(typeErr.Errors[0]))
 	}
-	if typeErr, ok := errors.AsType[*json.UnmarshalTypeError](err); ok {
-		return fmt.Errorf("%w: %s must be %s", ErrValues, typeErr.Field, typeErr.Type)
+	return fmt.Errorf("%w: not valid YAML or JSON%s", ErrValues, atLine(yamlLineRE, err.Error()))
+}
+
+// typeProblem names the problem a yaml/v3 TypeError entry reports, in fixed
+// words with its line, or by the key alone when the key is a plain name.
+func typeProblem(msg string) string {
+	where := atLine(typeLineRE, msg)
+	if match := unknownRE.FindStringSubmatch(msg); match != nil {
+		if plainKeyRE.MatchString(match[1]) {
+			return fmt.Sprintf("unknown field %q", match[1])
+		}
+		return "an unknown key" + where
 	}
-	where := ""
+	switch {
+	case repeatedRE.MatchString(msg):
+		return "a key is repeated" + where
+	case wrongTypeRE.MatchString(msg):
+		return "a value has the wrong type" + where
+	default:
+		return "not valid YAML or JSON" + where
+	}
+}
+
+// atLine returns " at line N" when lineRE captures N at the start of msg.
+func atLine(lineRE *regexp.Regexp, msg string) string {
 	if match := lineRE.FindStringSubmatch(msg); match != nil {
-		where = " at line " + match[1]
+		return " at line " + match[1]
 	}
-	if strings.Contains(msg, "already set in map") || strings.Contains(msg, "already defined") {
-		return fmt.Errorf("%w: a key is repeated%s", ErrValues, where)
-	}
-	return fmt.Errorf("%w: not valid YAML or JSON%s", ErrValues, where)
+	return ""
 }
 
 func (v *Values) checkConnection() error {
@@ -239,15 +356,16 @@ func (v *Values) checkConnection() error {
 	return nil
 }
 
-func (v *Values) checkServiceAccount() error {
-	if v.ServiceAccount.ClientID == "" {
-		return fmt.Errorf("%w: service_account.client_id is required", ErrValues)
+func (v *Values) checkManagementServiceAccount() error {
+	if v.ManagementServiceAccount.ClientID == "" {
+		return fmt.Errorf("%w: management_service_account.client_id is required", ErrValues)
 	}
-	if v.ServiceAccount.ClientSecretEnv == "" && v.ServiceAccount.ClientSecretFile == "" {
-		v.ServiceAccount.ClientSecretEnv = DefaultManagementSecretEnv
+	if v.ManagementServiceAccount.ClientSecretEnv == "" && v.ManagementServiceAccount.ClientSecretFile == "" {
+		v.ManagementServiceAccount.ClientSecretEnv = DefaultManagementSecretEnv
 	}
-	if v.ServiceAccount.ClientSecretEnv != "" && !envNameRE.MatchString(v.ServiceAccount.ClientSecretEnv) {
-		return fmt.Errorf("%w: service_account.client_secret_env is not an environment variable name", ErrValues)
+	if v.ManagementServiceAccount.ClientSecretEnv != "" &&
+		!envNameRE.MatchString(v.ManagementServiceAccount.ClientSecretEnv) {
+		return fmt.Errorf("%w: management_service_account.client_secret_env is not an environment variable name", ErrValues)
 	}
 	return nil
 }
@@ -351,7 +469,7 @@ func LoadSecrets(
 	lookupEnv func(string) (string, bool),
 	readFile func(string) ([]byte, error),
 ) (*Secrets, error) {
-	management, err := managementSecret(values.ServiceAccount, lookupEnv, readFile)
+	management, err := managementSecret(values.ManagementServiceAccount, lookupEnv, readFile)
 	if err != nil {
 		return nil, err
 	}
@@ -375,28 +493,28 @@ func LoadSecrets(
 }
 
 func managementSecret(
-	account ServiceAccountValues,
+	account ManagementServiceAccountValues,
 	lookupEnv func(string) (string, bool),
 	readFile func(string) ([]byte, error),
 ) (string, error) {
 	if account.ClientSecretFile != "" {
 		raw, err := readFile(account.ClientSecretFile)
 		if err != nil {
-			return "", fmt.Errorf("%w: service_account.client_secret_file %s", ErrMissingSecret, readFailure(err))
+			return "", fmt.Errorf("%w: management_service_account.client_secret_file %s", ErrMissingSecret, readFailure(err))
 		}
 		secret, found := strings.CutSuffix(string(raw), "\r\n")
 		if !found {
 			secret = strings.TrimSuffix(secret, "\n")
 		}
 		if secret == "" {
-			return "", fmt.Errorf("%w: service_account.client_secret_file is empty", ErrMissingSecret)
+			return "", fmt.Errorf("%w: management_service_account.client_secret_file is empty", ErrMissingSecret)
 		}
 		return secret, nil
 	}
 	secret, ok := lookupEnv(account.ClientSecretEnv)
 	if !ok || secret == "" {
 		return "", fmt.Errorf(
-			"%w: service_account.client_secret_env %s is unset",
+			"%w: management_service_account.client_secret_env %s is unset",
 			ErrMissingSecret,
 			account.ClientSecretEnv,
 		)

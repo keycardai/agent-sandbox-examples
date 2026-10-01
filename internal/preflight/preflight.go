@@ -1,0 +1,506 @@
+// Package preflight refuses a rendered sandbox manifest it cannot vouch for.
+//
+// The lint denies by default. It judges a Pod, a Sandbox and a
+// SandboxTemplate, each pinned to one apiVersion. It passes a short
+// allowlist of objects that hold no pod as unjudged and lists each one in
+// the report. Every other object is refused. It decodes every object it
+// judges or passes strictly into its API type, case-sensitively as the API
+// server does, so a field that type does not hold is refused. A manifest in
+// which nothing was judged is refused.
+package preflight
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"maps"
+	"slices"
+	"strconv"
+	"strings"
+
+	yamlv3 "go.yaml.in/yaml/v3"
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
+	kjson "sigs.k8s.io/json"
+	"sigs.k8s.io/yaml"
+)
+
+// Rule names a refusal. The codes are a stable contract that CI and
+// operators key on, so add a code rather than reword one.
+type Rule string
+
+// The rules the lint enforces.
+const (
+	// RuleEnvInjection is a SandboxTemplate whose envVarsInjectionPolicy
+	// lets a claim set environment variables on the pod's containers.
+	RuleEnvInjection Rule = "env_injection"
+	// RuleNoPodSpec is a Pod with no spec, or a Sandbox or SandboxTemplate
+	// with no spec.podTemplate.spec.
+	RuleNoPodSpec Rule = "no_pod_spec"
+	// RuleNothingJudged is a manifest that holds no Pod, Sandbox or
+	// SandboxTemplate.
+	RuleNothingJudged Rule = "nothing_judged"
+	// RuleUnknownField is a key the judged object's API type does not hold.
+	// A key that differs from a field only in case is one.
+	RuleUnknownField Rule = "unknown_field"
+	// RuleUnknownKind is an object whose apiVersion and kind the lint
+	// neither judges nor passes as unjudged.
+	RuleUnknownKind Rule = "unknown_kind"
+	// RuleUnreadableDocument is a document that is not YAML or JSON, is not
+	// an object, repeats a key, or holds a value its API type cannot take.
+	// In a JSON stream it is also a truncated value or trailing bytes.
+	RuleUnreadableDocument Rule = "unreadable_document"
+	// RuleVolumeClaimTemplates is a volume claim template named after a pod
+	// volume, which the controller replaces with the claim, or a
+	// volumeClaimTemplatesPolicy that lets a claim add or replace templates.
+	RuleVolumeClaimTemplates Rule = "volume_claim_templates"
+)
+
+// Refusal is one reason the manifest is refused.
+type Refusal struct {
+	Rule Rule
+	// Where names the document by its position among the non-empty
+	// documents, and by kind and name when it has them.
+	Where  string
+	Detail string
+}
+
+// Unjudged is an allowlisted object the lint passes without judging it.
+type Unjudged struct {
+	Where      string
+	APIVersion string
+	Kind       string
+}
+
+// Report is what the lint found in one manifest.
+type Report struct {
+	Refusals []Refusal
+	Unjudged []Unjudged
+}
+
+// OK reports whether the manifest has no refusals.
+func (r Report) OK() bool { return len(r.Refusals) == 0 }
+
+// jsonSniffSize is how far into a manifest kubectl looks for the "{" that
+// makes it a JSON stream.
+const jsonSniffSize = 4096
+
+// Check reads every document of a manifest and judges each one. It picks
+// the format as kubectl does. A manifest whose first jsonSniffSize bytes
+// start with "{" after whitespace is a stream of JSON values, and any other
+// manifest is a stream of YAML documents. It skips a document that holds
+// nothing or null.
+func Check(manifest []byte) Report {
+	var build builder
+	if utilyaml.IsJSONBuffer(manifest[:min(len(manifest), jsonSniffSize)]) {
+		build.jsonStream(manifest)
+	} else {
+		build.yamlStream(manifest)
+	}
+	if build.judged == 0 && len(build.refusals) == 0 {
+		build.refuse(RuleNothingJudged, "the manifest", "it holds no Pod, Sandbox or SandboxTemplate")
+	}
+	return Report{Refusals: build.refusals, Unjudged: build.unjudged}
+}
+
+// jsonStream judges every JSON value of the stream in order. It refuses the
+// first bytes that are not a whole JSON value, and stops there. It refuses
+// a value that repeats a key.
+func (b *builder) jsonStream(manifest []byte) {
+	decoder := json.NewDecoder(bytes.NewReader(manifest))
+	for index := 1; ; {
+		var value json.RawMessage
+		err := decoder.Decode(&value)
+		if errors.Is(err, io.EOF) {
+			return
+		}
+		where := fmt.Sprintf("document %d", index)
+		if err != nil {
+			b.refuse(RuleUnreadableDocument, where, err.Error())
+			return
+		}
+		if bytes.Equal(value, []byte("null")) {
+			continue
+		}
+		index++
+		var parsed any
+		if strict, err := kjson.UnmarshalStrict(value, &parsed); err != nil || len(strict) > 0 {
+			b.refuse(RuleUnreadableDocument, where, errors.Join(append(strict, err)...).Error())
+			continue
+		}
+		b.document(value, where)
+	}
+}
+
+// yamlStream splits the stream into documents at "---" lines, as kubectl
+// does, and judges each document. It refuses the manifest unless a YAML
+// stream parser reads documents of the same shape, because a document that
+// kubectl's reader drops or splits would go unjudged.
+func (b *builder) yamlStream(manifest []byte) {
+	reader := utilyaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(manifest)))
+	for index := 1; ; {
+		doc, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			b.sameDocuments(manifest)
+			return
+		}
+		where := fmt.Sprintf("document %d", index)
+		if err != nil {
+			b.refuse(RuleUnreadableDocument, where, err.Error())
+			return
+		}
+		data, err := yaml.YAMLToJSONStrict(doc)
+		if err == nil && bytes.Equal(data, []byte("null")) {
+			continue
+		}
+		index++
+		var value any
+		if err == nil {
+			err = json.Unmarshal(data, &value)
+		}
+		if err != nil {
+			b.refuse(RuleUnreadableDocument, where, err.Error())
+			continue
+		}
+		b.shapes = append(b.shapes, shape(value))
+		b.document(data, where)
+	}
+}
+
+// sameDocuments refuses the manifest unless a YAML stream parser reads the
+// documents b.shapes records. A manifest already refused needs no check.
+func (b *builder) sameDocuments(manifest []byte) {
+	if len(b.refusals) > 0 {
+		return
+	}
+	shapes, err := yamlShapes(manifest)
+	switch {
+	case err != nil:
+		b.refuse(RuleUnreadableDocument, "the manifest", err.Error())
+	case !slices.Equal(shapes, b.shapes):
+		b.refuse(RuleUnreadableDocument, "the manifest",
+			"a YAML parser reads other documents than kubectl's reader. Separate documents with --- lines")
+	}
+}
+
+// yamlShapes returns the shape of each document that is not null in a YAML
+// stream. It refuses anchors, aliases and merge keys, and a key that is not
+// a string, which a manifest has no use for.
+func yamlShapes(manifest []byte) ([]string, error) {
+	decoder := yamlv3.NewDecoder(bytes.NewReader(manifest))
+	var shapes []string
+	for {
+		var doc yamlv3.Node
+		err := decoder.Decode(&doc)
+		if errors.Is(err, io.EOF) {
+			return shapes, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("a YAML parser cannot read the manifest: %w", err)
+		}
+		if len(doc.Content) == 0 {
+			continue
+		}
+		if root := doc.Content[0]; root.Anchor != "" {
+			return nil, fmt.Errorf("line %d: %w", root.Line, errAnchor)
+		} else if root.Kind == yamlv3.ScalarNode && root.Tag == "!!null" {
+			continue
+		}
+		var out strings.Builder
+		if err := writeNodeShape(&out, doc.Content[0]); err != nil {
+			return nil, err
+		}
+		shapes = append(shapes, out.String())
+	}
+}
+
+// The constructs yamlShapes refuses.
+var (
+	errAnchor    = errors.New("anchors and aliases are not allowed")
+	errKeyString = errors.New("a key must be a string")
+	errMergeKey  = errors.New("merge keys are not allowed")
+)
+
+func writeNodeShape(out *strings.Builder, node *yamlv3.Node) error {
+	if node.Anchor != "" {
+		return fmt.Errorf("line %d: %w", node.Line, errAnchor)
+	}
+	switch node.Kind {
+	case yamlv3.MappingNode:
+		return writeMappingShape(out, node)
+	case yamlv3.SequenceNode:
+		out.WriteByte('[')
+		for _, child := range node.Content {
+			if err := writeNodeShape(out, child); err != nil {
+				return err
+			}
+		}
+		out.WriteByte(']')
+	case yamlv3.DocumentNode, yamlv3.ScalarNode, yamlv3.AliasNode:
+		out.WriteByte('_')
+	}
+	return nil
+}
+
+// writeMappingShape writes a mapping's entries in key order.
+func writeMappingShape(out *strings.Builder, node *yamlv3.Node) error {
+	var keys, values []*yamlv3.Node
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		if key.Anchor != "" {
+			return fmt.Errorf("line %d: %w", key.Line, errAnchor)
+		}
+		if key.Tag == "!!merge" {
+			return fmt.Errorf("line %d: %w", key.Line, errMergeKey)
+		}
+		if key.Kind != yamlv3.ScalarNode || key.Tag != "!!str" {
+			return fmt.Errorf("line %d: %w", key.Line, errKeyString)
+		}
+		keys = append(keys, key)
+		values = append(values, node.Content[i+1])
+	}
+	order := make([]int, len(keys))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortFunc(order, func(a, b int) int { return strings.Compare(keys[a].Value, keys[b].Value) })
+	out.WriteByte('{')
+	for _, i := range order {
+		out.WriteString(strconv.Quote(keys[i].Value) + ":")
+		if err := writeNodeShape(out, values[i]); err != nil {
+			return err
+		}
+	}
+	out.WriteByte('}')
+	return nil
+}
+
+// shape renders a decoded document's keys, nesting and list lengths, and
+// no scalar. kubectl's reader parses YAML 1.1 and yaml/v3 parses YAML 1.2,
+// so the two can read one scalar differently, as with yes or 0777.
+func shape(value any) string {
+	var out strings.Builder
+	writeShape(&out, value)
+	return out.String()
+}
+
+func writeShape(out *strings.Builder, value any) {
+	switch value := value.(type) {
+	case map[string]any:
+		out.WriteByte('{')
+		for _, key := range slices.Sorted(maps.Keys(value)) {
+			out.WriteString(strconv.Quote(key) + ":")
+			writeShape(out, value[key])
+		}
+		out.WriteByte('}')
+	case []any:
+		out.WriteByte('[')
+		for _, v := range value {
+			writeShape(out, v)
+		}
+		out.WriteByte(']')
+	default:
+		out.WriteByte('_')
+	}
+}
+
+type builder struct {
+	judged int
+	// shapes holds the shape of each document kubectl's reader returned.
+	shapes   []string
+	refusals []Refusal
+	unjudged []Unjudged
+}
+
+func (b *builder) refuse(rule Rule, where, detail string) {
+	b.refusals = append(b.refusals, Refusal{Rule: rule, Where: where, Detail: detail})
+}
+
+// objectType is an apiVersion and kind pair.
+type objectType struct{ apiVersion, kind string }
+
+func (b *builder) document(data []byte, where string) {
+	var head struct {
+		metav1.TypeMeta `json:",inline"`
+
+		Metadata struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
+	}
+	if err := kjson.UnmarshalCaseSensitivePreserveInts(data, &head); err != nil {
+		b.refuse(RuleUnreadableDocument, where, err.Error())
+		return
+	}
+	if head.Metadata.Name != "" {
+		where += " (" + head.Kind + "/" + head.Metadata.Name + ")"
+	}
+	b.judge(objectType{head.APIVersion, head.Kind}, data, where)
+}
+
+// judge decodes an object by its type. It judges a Pod, a Sandbox and a
+// SandboxTemplate. It decodes an allowlisted type strictly into its API type
+// and lists it as unjudged. It refuses every other type.
+func (b *builder) judge(typ objectType, data []byte, where string) {
+	switch typ {
+	case objectType{"v1", "Pod"}:
+		if _, ok := decode[corev1.PodSpec](b, data, where); ok {
+			b.judged++
+		}
+	case objectType{"agents.x-k8s.io/v1beta1", "Sandbox"}:
+		if spec, ok := decode[sandboxSpec](b, data, where); ok {
+			b.podTemplate(where, spec.PodTemplate, spec.VolumeClaimTemplates)
+		}
+	case objectType{"extensions.agents.x-k8s.io/v1beta1", "SandboxTemplate"}:
+		if spec, ok := decode[sandboxTemplateSpec](b, data, where); ok {
+			b.sandboxTemplate(where, spec)
+		}
+	default:
+		if admitType, ok := allowlist()[typ]; ok {
+			admitType(b, data, where, typ)
+			return
+		}
+		b.refuse(RuleUnknownKind, where, fmt.Sprintf(
+			"the lint neither judges nor passes kind %q from apiVersion %q", typ.kind, typ.apiVersion,
+		))
+	}
+}
+
+// allowlist maps each type the lint passes unjudged to its strict decoder.
+func allowlist() map[objectType]func(*builder, []byte, string, objectType) {
+	return map[objectType]func(*builder, []byte, string, objectType){
+		{"networking.k8s.io/v1", "NetworkPolicy"}:       admit[networkingv1.NetworkPolicy],
+		{"rbac.authorization.k8s.io/v1", "Role"}:        admit[rbacv1.Role],
+		{"rbac.authorization.k8s.io/v1", "RoleBinding"}: admit[rbacv1.RoleBinding],
+		{"v1", "ConfigMap"}:                             admit[corev1.ConfigMap],
+		{"v1", "Namespace"}:                             admit[corev1.Namespace],
+		{"v1", "ServiceAccount"}:                        admit[corev1.ServiceAccount],
+	}
+}
+
+// admit decodes an allowlisted object strictly into T and lists it as
+// unjudged. A field T does not hold is refused, so an items list is refused.
+func admit[T any](build *builder, data []byte, where string, typ objectType) {
+	var obj T
+	strict, err := kjson.UnmarshalStrict(data, &obj, kjson.DisallowUnknownFields)
+	switch {
+	case err != nil:
+		build.refuse(RuleUnreadableDocument, where, err.Error())
+	case len(strict) > 0:
+		build.refuse(RuleUnknownField, where, errors.Join(strict...).Error())
+	default:
+		build.unjudged = append(build.unjudged, Unjudged{Where: where, APIVersion: typ.apiVersion, Kind: typ.kind})
+	}
+}
+
+// object is a judged object whose spec has type S. It has no status, so a
+// manifest that sets one is refused.
+type object[S any] struct {
+	metav1.TypeMeta `json:",inline"`
+
+	Metadata metav1.ObjectMeta `json:"metadata"`
+	Spec     *S                `json:"spec"`
+}
+
+// decode reads a judged object strictly and returns its spec.
+func decode[S any](build *builder, data []byte, where string) (*S, bool) {
+	var obj object[S]
+	strict, err := kjson.UnmarshalStrict(data, &obj, kjson.DisallowUnknownFields)
+	switch {
+	case err != nil:
+		build.refuse(RuleUnreadableDocument, where, err.Error())
+	case len(strict) > 0:
+		build.refuse(RuleUnknownField, where, errors.Join(strict...).Error())
+	case obj.Spec == nil:
+		build.refuse(RuleNoPodSpec, where, "spec is absent")
+	default:
+		return obj.Spec, true
+	}
+	return nil, false
+}
+
+// sandboxSpec is the spec of an agents.x-k8s.io/v1beta1 Sandbox in
+// agent-sandbox v1.0.4.
+type sandboxSpec struct {
+	OperatingMode        string                `json:"operatingMode,omitempty"`
+	PodTemplate          *podTemplate          `json:"podTemplate"`
+	Service              *bool                 `json:"service,omitempty"`
+	ShutdownPolicy       string                `json:"shutdownPolicy,omitempty"`
+	ShutdownTime         string                `json:"shutdownTime,omitempty"`
+	VolumeClaimTemplates []volumeClaimTemplate `json:"volumeClaimTemplates,omitempty"`
+}
+
+// sandboxTemplateSpec is the spec of an extensions.agents.x-k8s.io/v1beta1
+// SandboxTemplate in agent-sandbox v1.0.4.
+type sandboxTemplateSpec struct {
+	EnvVarsInjectionPolicy     string                `json:"envVarsInjectionPolicy,omitempty"`
+	NetworkPolicy              *sandboxNetworkPolicy `json:"networkPolicy,omitempty"`
+	NetworkPolicyManagement    string                `json:"networkPolicyManagement,omitempty"`
+	PodTemplate                *podTemplate          `json:"podTemplate"`
+	Service                    *bool                 `json:"service,omitempty"`
+	VolumeClaimTemplates       []volumeClaimTemplate `json:"volumeClaimTemplates,omitempty"`
+	VolumeClaimTemplatesPolicy string                `json:"volumeClaimTemplatesPolicy,omitempty"`
+}
+
+type podTemplate struct {
+	Metadata struct {
+		Annotations map[string]string `json:"annotations,omitempty"`
+		Labels      map[string]string `json:"labels,omitempty"`
+	} `json:"metadata"`
+	Spec *corev1.PodSpec `json:"spec"`
+}
+
+type volumeClaimTemplate struct {
+	Metadata struct {
+		Annotations map[string]string `json:"annotations,omitempty"`
+		Labels      map[string]string `json:"labels,omitempty"`
+		Name        string            `json:"name,omitempty"`
+	} `json:"metadata"`
+	Spec corev1.PersistentVolumeClaimSpec `json:"spec"`
+}
+
+type sandboxNetworkPolicy struct {
+	Egress  []networkingv1.NetworkPolicyEgressRule  `json:"egress,omitempty"`
+	Ingress []networkingv1.NetworkPolicyIngressRule `json:"ingress,omitempty"`
+}
+
+// policyDisallowed is the one explicit value of envVarsInjectionPolicy and
+// volumeClaimTemplatesPolicy the lint passes. It is also the CRD default.
+const policyDisallowed = "Disallowed"
+
+func (b *builder) sandboxTemplate(where string, spec *sandboxTemplateSpec) {
+	if policy := spec.EnvVarsInjectionPolicy; policy != "" && policy != policyDisallowed {
+		b.refuse(RuleEnvInjection, where, fmt.Sprintf(
+			"spec.envVarsInjectionPolicy is %q and must be %s or absent", policy, policyDisallowed,
+		))
+	}
+	if policy := spec.VolumeClaimTemplatesPolicy; policy != "" && policy != policyDisallowed {
+		b.refuse(RuleVolumeClaimTemplates, where, fmt.Sprintf(
+			"spec.volumeClaimTemplatesPolicy is %q and must be %s or absent", policy, policyDisallowed,
+		))
+	}
+	b.podTemplate(where, spec.PodTemplate, spec.VolumeClaimTemplates)
+}
+
+// podTemplate judges the pod a Sandbox or SandboxTemplate holds, together
+// with the volume claim templates that change its volumes.
+func (b *builder) podTemplate(where string, template *podTemplate, claims []volumeClaimTemplate) {
+	if template == nil || template.Spec == nil {
+		b.refuse(RuleNoPodSpec, where, "spec.podTemplate.spec is absent")
+		return
+	}
+	for i, claim := range claims {
+		name := claim.Metadata.Name
+		if slices.ContainsFunc(template.Spec.Volumes, func(v corev1.Volume) bool { return v.Name == name }) {
+			b.refuse(RuleVolumeClaimTemplates, where, fmt.Sprintf(
+				"spec.volumeClaimTemplates[%d] is named %q and replaces the pod volume of that name", i, name,
+			))
+		}
+	}
+	b.judged++
+}
