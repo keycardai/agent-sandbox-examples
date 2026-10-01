@@ -44,6 +44,7 @@ var (
 	errInsecure  = errors.New("non-https URL refused")
 	errSubject   = errors.New("subject refused")
 	errToken     = errors.New("token refused")
+	errTransport = errors.New("transport unavailable")
 )
 
 func main() {
@@ -173,7 +174,7 @@ func newClient(caFile string) (*http.Client, error) {
 	}
 	base, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
-		return nil, fmt.Errorf("%w: the default transport is not an *http.Transport", errCA)
+		return nil, fmt.Errorf("%w: the default transport is not an *http.Transport", errTransport)
 	}
 	transport := base.Clone()
 	transport.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
