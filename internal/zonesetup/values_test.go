@@ -80,19 +80,24 @@ func TestParseValues(t *testing.T) {
 		check     func(*zonesetup.Values) bool
 	}{
 		{
-			name:  "a null namespace defaults to agents",
-			doc:   minimal + "namespace: null\n",
-			check: func(v *zonesetup.Values) bool { return v.Namespace == zonesetup.DefaultNamespace },
+			name:  "a namespace YAML 1.1 reads as a boolean",
+			doc:   minimal + "namespace: no\n",
+			check: func(v *zonesetup.Values) bool { return v.Namespace == "no" },
 		},
 		{
-			name:  "a trailing end marker",
-			doc:   minimal + "...\n",
+			name:  "a null namespace defaults to agents",
+			doc:   minimal + "namespace: null\n",
 			check: func(v *zonesetup.Values) bool { return v.Namespace == zonesetup.DefaultNamespace },
 		},
 		{
 			name:  "an AKS issuer keeps its trailing slash",
 			doc:   strings.Replace(minimal, "https://oidc.eks.us-west-2.amazonaws.com/id/EXAMPLE", aksIssuer, 1),
 			check: func(v *zonesetup.Values) bool { return v.IssuerURL == aksIssuer },
+		},
+		{
+			name:  "an end marker with no document after it",
+			doc:   minimal + "...\n",
+			check: func(v *zonesetup.Values) bool { return v.ManagementAPIURL == "https://api.keycard.ai" },
 		},
 		{
 			name: "both zone fields",
@@ -118,11 +123,6 @@ func TestParseValues(t *testing.T) {
 			wantField: "zone_url",
 		},
 		{name: "a bad namespace", doc: minimal + "namespace: Agents_1\n", wantField: "namespace"},
-		{
-			name:  "a namespace YAML 1.1 reads as a boolean",
-			doc:   minimal + "namespace: no\n",
-			check: func(v *zonesetup.Values) bool { return v.Namespace == "no" },
-		},
 		{name: "a case-variant key", doc: minimal + "MANAGEMENT_API_URL: x\n", wantField: "MANAGEMENT_API_URL"},
 		{name: "a port", doc: withAPI("https://api.keycard.ai:8443"), wantField: "management_api_url must not set a port"},
 		{name: "a port with no host", doc: withAPI("https://:443"), wantField: "management_api_url"},
