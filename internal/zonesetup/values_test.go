@@ -74,11 +74,14 @@ func TestParseValues(t *testing.T) {
 		check     func(*zonesetup.Values) bool
 	}{
 		{
-			name: "both zone fields",
-			doc:  minimal + "zone_id: zone-1\n",
-			check: func(v *zonesetup.Values) bool {
-				return v.ZoneURL == "https://acme.keycard.cloud" && v.ZoneID == "zone-1"
-			},
+			name:  "a loopback host may use http",
+			doc:   withAPI("http://127.0.0.1:8080"),
+			check: func(v *zonesetup.Values) bool { return v.ManagementAPIURL == "http://127.0.0.1:8080" },
+		},
+		{
+			name:  "a trailing end marker",
+			doc:   minimal + "...\n",
+			check: func(v *zonesetup.Values) bool { return v.Namespace == zonesetup.DefaultNamespace },
 		},
 		{
 			name:  "an AKS issuer keeps its trailing slash",
@@ -86,9 +89,11 @@ func TestParseValues(t *testing.T) {
 			check: func(v *zonesetup.Values) bool { return v.IssuerURL == aksIssuer },
 		},
 		{
-			name:  "a loopback host may use http",
-			doc:   withAPI("http://127.0.0.1:8080"),
-			check: func(v *zonesetup.Values) bool { return v.ManagementAPIURL == "http://127.0.0.1:8080" },
+			name: "both zone fields",
+			doc:  minimal + "zone_id: zone-1\n",
+			check: func(v *zonesetup.Values) bool {
+				return v.ZoneURL == "https://acme.keycard.cloud" && v.ZoneID == "zone-1"
+			},
 		},
 		{
 			name:  "namespace defaults to agents",
@@ -172,11 +177,6 @@ func TestParseValues(t *testing.T) {
 		{name: "a merge key", doc: minimal + "<<: {namespace: first}\n", wantField: "merge keys"},
 		{name: "two merge keys", doc: minimal + "<<: {namespace: a}\n<<: {zone_id: z}\n", wantField: "merge keys"},
 		{
-			name:  "a trailing end marker",
-			doc:   minimal + "...\n",
-			check: func(v *zonesetup.Values) bool { return v.Namespace == zonesetup.DefaultNamespace },
-		},
-		{
 			name:      "a value of the wrong type",
 			doc:       minimal + "resources: [{identifier: r, secret_env: K, prefix: wrong}]\n",
 			wantField: "resources.prefix must be bool",
@@ -231,21 +231,21 @@ func TestParseErrorsKeepFileTextOut(t *testing.T) {
 	t.Parallel()
 	const url = "https://sa:hunter2@api.keycard.ai" //nolint:gosec // A fake credential no error may repeat.
 	for name, doc := range map[string]string{
-		"a value with the wrong tag": strings.Replace(minimal, "https://api.keycard.ai", "!!int "+url, 1),
-		"a null key":                 minimal + "null: " + url + "\n",
-		"an unknown key":             minimal + url + ": 1\n",
-		"a value of the wrong type":  minimal + "users: [" + url + "]\n",
+		"a URL as an email":      minimal + "users: [{email: '" + url + "'}]\n",
+		"a URL as the namespace": minimal + "namespace: " + url + "\n",
+		"a URL identifier listed twice": minimal + "resources: [{identifier: '" + url + "', secret_env: K}, " +
+			"{identifier: '" + url + "', secret_env: K}]\n",
 		"a backtick in a mistagged value": strings.Replace(
 			minimal, "https://api.keycard.ai", "!!int 'x`"+url+"'", 1,
 		),
-		"a URL as the namespace": minimal + "namespace: " + url + "\n",
-		"a URL as an email":      minimal + "users: [{email: '" + url + "'}]\n",
-		"a URL identifier listed twice": minimal + "resources: [{identifier: '" + url + "', secret_env: K}, " +
-			"{identifier: '" + url + "', secret_env: K}]\n",
 		"a line number inside a key": minimal + "'https://sa:line 8675309@api.keycard.ai': 1\n",
 		"a line number inside a mistagged value": strings.Replace(
 			minimal, "https://api.keycard.ai", "!!int 'https://sa:line 8675309@api.keycard.ai'", 1,
 		),
+		"a null key":                 minimal + "null: " + url + "\n",
+		"a value of the wrong type":  minimal + "users: [" + url + "]\n",
+		"a value with the wrong tag": strings.Replace(minimal, "https://api.keycard.ai", "!!int "+url, 1),
+		"an unknown key":             minimal + url + ": 1\n",
 	} {
 		_, err := zonesetup.ParseValues(strings.NewReader(doc))
 		if !errors.Is(err, zonesetup.ErrValues) {
