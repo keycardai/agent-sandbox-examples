@@ -8,12 +8,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"net/mail"
 	"net/url"
 	"reflect"
 	"regexp"
-	"strconv"
 	"strings"
 
 	yamlv3 "go.yaml.in/yaml/v3"
@@ -349,7 +347,7 @@ func (v *Values) checkConnection() error {
 		return fmt.Errorf("%w: one of zone_url or zone_id is required", ErrValues)
 	}
 	if v.ZoneURL != "" {
-		if err := checkURL("zone_url", v.ZoneURL); err != nil {
+		if err := checkIssuer("zone_url", v.ZoneURL); err != nil {
 			return err
 		}
 	}
@@ -371,7 +369,7 @@ func (v *Values) checkManagementServiceAccount() error {
 }
 
 func (v *Values) checkSandbox() error {
-	if err := checkURL("issuer_url", v.IssuerURL); err != nil {
+	if err := checkIssuer("issuer_url", v.IssuerURL); err != nil {
 		return err
 	}
 	if v.Namespace == "" {
@@ -421,49 +419,45 @@ func (v *Values) checkResources() error {
 	return nil
 }
 
-// checkURL requires an absolute https URL with a host, no userinfo and either
-// no port or a valid one. Only a loopback host may use http. NEVER put the value in an error, because
-// a URL can carry a credential.
+// checkIssuer applies checkURL and refuses a query or a fragment, which an
+// OAuth issuer must not have (RFC 8414 section 2).
+func checkIssuer(key, value string) error {
+	if err := checkURL(key, value); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.RawQuery != "" || parsed.ForceQuery || strings.Contains(value, "#") {
+		return fmt.Errorf("%w: %s must not have a query or a fragment", ErrValues, key)
+	}
+	return nil
+}
+
+// checkURL requires an absolute https URL with a host, no userinfo and no
+// port. NEVER put the value in an error, because a URL can carry a
+// credential.
 func checkURL(key, value string) error {
 	if value == "" {
 		return fmt.Errorf("%w: %s is required", ErrValues, key)
 	}
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Hostname() == "" {
-		return fmt.Errorf("%w: %s is not an absolute URL with a host and a valid port", ErrValues, key)
+		return fmt.Errorf("%w: %s is not an absolute URL with a host", ErrValues, key)
 	}
 	if parsed.User != nil {
 		return fmt.Errorf("%w: %s must not carry userinfo", ErrValues, key)
 	}
-	if strings.HasSuffix(parsed.Host, ":") || !validPort(parsed.Port()) {
-		return fmt.Errorf("%w: %s port must be 1-65535", ErrValues, key)
+	if parsed.Scheme != "https" {
+		return fmt.Errorf("%w: %s must use https", ErrValues, key)
 	}
-	if parsed.Scheme == "https" || parsed.Scheme == "http" && isLoopback(parsed.Hostname()) {
-		return nil
+	if parsed.Port() != "" || strings.HasSuffix(parsed.Host, ":") {
+		return fmt.Errorf("%w: %s must not set a port", ErrValues, key)
 	}
-	return fmt.Errorf("%w: %s must use https unless its host is loopback", ErrValues, key)
+	return nil
 }
 
-// validPort accepts an absent port or a number from 1 to 65535.
-func validPort(port string) bool {
-	if port == "" {
-		return true
-	}
-	n, err := strconv.Atoi(port)
-	return err == nil && n >= 1 && n <= 65535
-}
-
-func isLoopback(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
-// LoadSecrets reads every credential the values file names, and refuses when
-// any is missing or empty. A secret file keeps its exact bytes less one
-// trailing line ending.
+// LoadSecrets reads every credential listed in the values file, and refuses
+// when any is missing or empty. It removes the whitespace around a secret
+// read from a file.
 func LoadSecrets(
 	values *Values,
 	lookupEnv func(string) (string, bool),
@@ -502,10 +496,7 @@ func managementSecret(
 		if err != nil {
 			return "", fmt.Errorf("%w: management_service_account.client_secret_file %s", ErrMissingSecret, readFailure(err))
 		}
-		secret, found := strings.CutSuffix(string(raw), "\r\n")
-		if !found {
-			secret = strings.TrimSuffix(secret, "\n")
-		}
+		secret := strings.TrimSpace(string(raw))
 		if secret == "" {
 			return "", fmt.Errorf("%w: management_service_account.client_secret_file is empty", ErrMissingSecret)
 		}

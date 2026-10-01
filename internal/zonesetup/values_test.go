@@ -80,9 +80,9 @@ func TestParseValues(t *testing.T) {
 		check     func(*zonesetup.Values) bool
 	}{
 		{
-			name:  "a loopback host may use http",
-			doc:   withAPI("http://127.0.0.1:8080"),
-			check: func(v *zonesetup.Values) bool { return v.ManagementAPIURL == "http://127.0.0.1:8080" },
+			name:  "a namespace YAML 1.1 reads as a boolean",
+			doc:   minimal + "namespace: no\n",
+			check: func(v *zonesetup.Values) bool { return v.Namespace == "no" },
 		},
 		{
 			name:  "a null namespace defaults to agents",
@@ -90,14 +90,14 @@ func TestParseValues(t *testing.T) {
 			check: func(v *zonesetup.Values) bool { return v.Namespace == zonesetup.DefaultNamespace },
 		},
 		{
-			name:  "a trailing end marker",
-			doc:   minimal + "...\n",
-			check: func(v *zonesetup.Values) bool { return v.Namespace == zonesetup.DefaultNamespace },
-		},
-		{
 			name:  "an AKS issuer keeps its trailing slash",
 			doc:   strings.Replace(minimal, "https://oidc.eks.us-west-2.amazonaws.com/id/EXAMPLE", aksIssuer, 1),
 			check: func(v *zonesetup.Values) bool { return v.IssuerURL == aksIssuer },
+		},
+		{
+			name:  "an end marker with no document after it",
+			doc:   minimal + "...\n",
+			check: func(v *zonesetup.Values) bool { return v.ManagementAPIURL == "https://api.keycard.ai" },
 		},
 		{
 			name: "both zone fields",
@@ -118,21 +118,40 @@ func TestParseValues(t *testing.T) {
 		},
 		{name: "an unknown key", doc: minimal + "policy_set: Sandboxes\n", wantField: `"policy_set"`},
 		{
+			name:      "a query on the issuer url",
+			doc:       strings.Replace(minimal, "id/EXAMPLE", "id/EXAMPLE?x=1", 1),
+			wantField: "issuer_url must not have a query or a fragment",
+		},
+		{
+			name:      "an empty query on the issuer url",
+			doc:       strings.Replace(minimal, "id/EXAMPLE", "id/EXAMPLE?", 1),
+			wantField: "issuer_url must not have a query or a fragment",
+		},
+		{
+			name:      "a fragment on the zone url",
+			doc:       strings.Replace(minimal, "acme.keycard.cloud", "acme.keycard.cloud/#a", 1),
+			wantField: "zone_url must not have a query or a fragment",
+		},
+		{
+			name:      "an empty fragment on the zone url",
+			doc:       strings.Replace(minimal, "acme.keycard.cloud", "acme.keycard.cloud/#", 1),
+			wantField: "zone_url must not have a query or a fragment",
+		},
+		{
 			name:      "a plain http zone url, even beside a zone id",
 			doc:       strings.Replace(minimal, "https://acme", "http://acme", 1) + "zone_id: z\n",
 			wantField: "zone_url",
 		},
 		{name: "a bad namespace", doc: minimal + "namespace: Agents_1\n", wantField: "namespace"},
-		{
-			name:  "a namespace YAML 1.1 reads as a boolean",
-			doc:   minimal + "namespace: no\n",
-			check: func(v *zonesetup.Values) bool { return v.Namespace == "no" },
-		},
 		{name: "a case-variant key", doc: minimal + "MANAGEMENT_API_URL: x\n", wantField: "MANAGEMENT_API_URL"},
-		{name: "a port out of range", doc: withAPI("https://api.keycard.ai:65536"), wantField: "management_api_url port"},
-		{name: "a non-numeric port", doc: withAPI("https://api.keycard.ai:https"), wantField: "management_api_url"},
+		{name: "a port", doc: withAPI("https://api.keycard.ai:8443"), wantField: "management_api_url must not set a port"},
 		{name: "a port with no host", doc: withAPI("https://:443"), wantField: "management_api_url"},
-		{name: "an empty management port", doc: withAPI(`"https://api.keycard.ai:"`), wantField: "management_api_url port"},
+		{
+			name:      "an empty management port",
+			doc:       withAPI(`"https://api.keycard.ai:"`),
+			wantField: "management_api_url must not set a port",
+		},
+		{name: "a loopback http url", doc: withAPI("http://127.0.0.1"), wantField: "management_api_url must use https"},
 		{
 			name: "an empty issuer port",
 			doc: strings.Replace(
@@ -141,7 +160,7 @@ func TestParseValues(t *testing.T) {
 				`"https://i.example:"`,
 				1,
 			),
-			wantField: "issuer_url port",
+			wantField: "issuer_url must not set a port",
 		},
 		{name: "a second YAML document", doc: minimal + "---\nnamespace: other\n", wantField: moreThanOne},
 		{
@@ -363,7 +382,7 @@ func TestLoadSecretsKeepsFileTextOut(t *testing.T) {
 	}
 }
 
-func TestSecretFileKeepsBytes(t *testing.T) {
+func TestSecretFileTrimsWhitespace(t *testing.T) {
 	t.Parallel()
 	values, err := zonesetup.ParseValues(strings.NewReader(
 		strings.Replace(minimal, "client_id: sa-1\n", "client_id: sa-1\n  client_secret_file: /secret\n", 1),
@@ -371,7 +390,8 @@ func TestSecretFileKeepsBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for file, want := range map[string]string{"  s3cret  \n": "  s3cret  ", "s3cret\r\n": "s3cret"} {
+	const want = "s3cret"
+	for _, file := range []string{"\t" + want + "\n\n", "  " + want + "  \n", want + "\r\n"} {
 		read := func(string) ([]byte, error) { return []byte(file), nil }
 		got, loadErr := zonesetup.LoadSecrets(values, func(string) (string, bool) { return "", false }, read)
 		if loadErr != nil {
@@ -381,10 +401,12 @@ func TestSecretFileKeepsBytes(t *testing.T) {
 			t.Errorf("secret from %q = %q, want %q", file, got.ManagementClientSecret, want)
 		}
 	}
-	empty := func(string) ([]byte, error) { return []byte("\n"), nil }
-	_, err = zonesetup.LoadSecrets(values, func(string) (string, bool) { return "", false }, empty)
-	if !errors.Is(err, zonesetup.ErrMissingSecret) || !strings.Contains(err.Error(), "is empty") {
-		t.Fatalf("error = %v, want ErrMissingSecret for an empty file", err)
+	for _, file := range []string{"\n", " \t\r\n"} {
+		empty := func(string) ([]byte, error) { return []byte(file), nil }
+		_, err = zonesetup.LoadSecrets(values, func(string) (string, bool) { return "", false }, empty)
+		if !errors.Is(err, zonesetup.ErrMissingSecret) || !strings.Contains(err.Error(), "is empty") {
+			t.Errorf("file %q: error = %v, want ErrMissingSecret for an empty file", file, err)
+		}
 	}
 }
 
