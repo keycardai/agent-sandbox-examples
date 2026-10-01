@@ -118,6 +118,26 @@ func TestParseValues(t *testing.T) {
 		},
 		{name: "an unknown key", doc: minimal + "policy_set: Sandboxes\n", wantField: `"policy_set"`},
 		{
+			name:      "a query on the issuer url",
+			doc:       strings.Replace(minimal, "id/EXAMPLE", "id/EXAMPLE?x=1", 1),
+			wantField: "issuer_url must not have a query or a fragment",
+		},
+		{
+			name:      "an empty query on the issuer url",
+			doc:       strings.Replace(minimal, "id/EXAMPLE", "id/EXAMPLE?", 1),
+			wantField: "issuer_url must not have a query or a fragment",
+		},
+		{
+			name:      "a fragment on the zone url",
+			doc:       strings.Replace(minimal, "acme.keycard.cloud", "acme.keycard.cloud/#a", 1),
+			wantField: "zone_url must not have a query or a fragment",
+		},
+		{
+			name:      "an empty fragment on the zone url",
+			doc:       strings.Replace(minimal, "acme.keycard.cloud", "acme.keycard.cloud/#", 1),
+			wantField: "zone_url must not have a query or a fragment",
+		},
+		{
 			name:      "a plain http zone url, even beside a zone id",
 			doc:       strings.Replace(minimal, "https://acme", "http://acme", 1) + "zone_id: z\n",
 			wantField: "zone_url",

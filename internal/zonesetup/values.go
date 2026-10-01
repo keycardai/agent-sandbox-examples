@@ -335,7 +335,7 @@ func (v *Values) checkConnection() error {
 		return fmt.Errorf("%w: one of zone_url or zone_id is required", ErrValues)
 	}
 	if v.ZoneURL != "" {
-		if err := checkURL("zone_url", v.ZoneURL); err != nil {
+		if err := checkIssuer("zone_url", v.ZoneURL); err != nil {
 			return err
 		}
 	}
@@ -357,7 +357,7 @@ func (v *Values) checkManagementServiceAccount() error {
 }
 
 func (v *Values) checkSandbox() error {
-	if err := checkURL("issuer_url", v.IssuerURL); err != nil {
+	if err := checkIssuer("issuer_url", v.IssuerURL); err != nil {
 		return err
 	}
 	if v.Namespace == "" {
@@ -403,6 +403,19 @@ func (v *Values) checkResources() error {
 		if resource.SecretEnv != "" && !envNameRE.MatchString(resource.SecretEnv) {
 			return fmt.Errorf("%w: resources[%d].secret_env is not an environment variable name", ErrValues, i)
 		}
+	}
+	return nil
+}
+
+// checkIssuer applies checkURL and refuses a query or a fragment, which an
+// OAuth issuer must not have (RFC 8414 section 2).
+func checkIssuer(key, value string) error {
+	if err := checkURL(key, value); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.RawQuery != "" || parsed.ForceQuery || strings.Contains(value, "#") {
+		return fmt.Errorf("%w: %s must not have a query or a fragment", ErrValues, key)
 	}
 	return nil
 }
