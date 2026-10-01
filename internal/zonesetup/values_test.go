@@ -41,6 +41,7 @@ func TestParseExample(t *testing.T) {
 		},
 		IssuerURL: "https://oidc.eks.us-west-2.amazonaws.com/id/EXAMPLE",
 		Namespace: "agents",
+		PolicySet: zonesetup.DefaultPolicySetName,
 		Users:     []zonesetup.UserValues{{Email: "someone@example.com"}},
 		Resources: []zonesetup.ResourceValues{
 			{Identifier: "https://api.github.com/", Name: "GitHub", Prefix: true, CredentialProvider: "github"},
@@ -116,7 +117,17 @@ func TestParseValues(t *testing.T) {
 			doc:       strings.Replace(minimal, "zone_url: https://acme.keycard.cloud\n", "", 1),
 			wantField: "zone_url or zone_id",
 		},
-		{name: "an unknown key", doc: minimal + "policy_set: Sandboxes\n", wantField: `"policy_set"`},
+		{
+			name:  "a null policy_set defaults to Kubernetes Sandbox",
+			doc:   minimal + "policy_set: null\n",
+			check: func(v *zonesetup.Values) bool { return v.PolicySet == "Kubernetes Sandbox" },
+		},
+		{
+			name:  "a named policy_set",
+			doc:   minimal + "policy_set: Sandboxes\n",
+			check: func(v *zonesetup.Values) bool { return v.PolicySet == "Sandboxes" },
+		},
+		{name: "an unknown key", doc: minimal + "policy_sets: Sandboxes\n", wantField: `"policy_sets"`},
 		{
 			name:      "a query on the issuer url",
 			doc:       strings.Replace(minimal, "id/EXAMPLE", "id/EXAMPLE?x=1", 1),
