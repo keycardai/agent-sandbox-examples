@@ -235,26 +235,34 @@ func (f *zoneAPI) seedCompleteUsers() {
 		"id": "cred-1", "application_id": "app-1", "provider_id": "prov-1", "type": "token",
 		"subject": "system:serviceaccount:agents:usr-1", "identifier": "system:serviceaccount:agents:usr-1",
 	})
-	f.policies = append(f.policies, &record{
-		"id": "pol-1", "name": zonesetup.PolicyName("usr-1"), "owner_type": "customer", "archived_at": nil,
-	})
-	f.policyVers = append(f.policyVers, &record{
-		"id":        "pv-1",
-		"policy_id": "pol-1",
-		"version":   firstVersion,
-		"cedar_raw": zonesetup.ImpersonationPolicy(
-			zonesetup.DefaultNamespace,
-			"usr-1",
-		),
-		"schema_version": testSchemaVersion,
-	})
+	// Both halves of the user's decision, in the order ensureUsers writes
+	// them: the actor policy first, then the subject grant.
+	f.policies = append(f.policies,
+		&record{"id": "pol-1", "name": zonesetup.PolicyName("usr-1"), "owner_type": "customer", "archived_at": nil},
+		&record{"id": "pol-2", "name": zonesetup.SubjectGrantName("usr-1"), "owner_type": "customer", "archived_at": nil},
+	)
+	f.policyVers = append(f.policyVers,
+		&record{
+			"id": "pv-1", "policy_id": "pol-1", "version": firstVersion,
+			"cedar_raw":      zonesetup.ImpersonationPolicy(zonesetup.DefaultNamespace, "usr-1"),
+			"schema_version": testSchemaVersion,
+		},
+		&record{
+			"id": "pv-2", "policy_id": "pol-2", "version": firstVersion,
+			"cedar_raw":      zonesetup.SubjectGrantPolicy("usr-1", testResourceIdentifiers()),
+			"schema_version": testSchemaVersion,
+		},
+	)
 	f.sets = append(f.sets, &record{
 		"id": "set-1", "name": zonesetup.DefaultPolicySetName, "target_type": "zone", "owner_type": "customer",
 	})
 	f.setVers = append(f.setVers, &record{
 		"id": "sv-1", "policy_set_id": "set-1", "version": firstVersion, "schema_version": testSchemaVersion,
-		"manifest": record{"entries": []any{record{"policy_id": "pol-1", "policy_version_id": "pv-1"}}},
+		"manifest": record{"entries": []any{
+			record{"policy_id": "pol-1", "policy_version_id": "pv-1"},
+			record{"policy_id": "pol-2", "policy_version_id": "pv-2"},
+		}},
 	})
 	f.activeVersion = "sv-1"
-	f.counter["cred"], f.counter["pol"], f.counter["pv"], f.counter["set"], f.counter["sv"] = 1, 1, 1, 1, 1
+	f.counter["cred"], f.counter["pol"], f.counter["pv"], f.counter["set"], f.counter["sv"] = 1, 2, 2, 1, 1
 }

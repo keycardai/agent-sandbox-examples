@@ -42,11 +42,25 @@ func (s *Setup) ensureUsers(
 		if err != nil {
 			return nil, nil, fmt.Errorf("user %s: credential: %w", user.Email, err)
 		}
-		entry, err := s.ensurePolicy(ctx, zoneID, user.Email, userID)
+		// Both halves of the decision go in the one set the zone activates.
+		// An exchange that has only the actor half is refused with
+		// access_denied naming the user.
+		actor, err := s.ensurePolicy(ctx, zoneID,
+			fmt.Sprintf("Lets the sandbox of %s impersonate that user, and nobody else", user.Email),
+			PolicyName(userID), ImpersonationPolicy(s.Values.Namespace, userID))
 		if err != nil {
 			return nil, nil, fmt.Errorf("user %s: policy: %w", user.Email, err)
 		}
-		entries = append(entries, entry)
+		entries = append(entries, actor)
+		if identifiers := s.resourceIdentifiers(); len(identifiers) > 0 {
+			subjectGrant, err := s.ensurePolicy(ctx, zoneID,
+				fmt.Sprintf("Lets %s reach the destinations the sandbox mints credentials for", user.Email),
+				SubjectGrantName(userID), SubjectGrantPolicy(userID, identifiers))
+			if err != nil {
+				return nil, nil, fmt.Errorf("user %s: subject grant: %w", user.Email, err)
+			}
+			entries = append(entries, subjectGrant)
+		}
 		outputs = append(outputs, SandboxUserAccessOutputs{
 			UserEmail:      user.Email,
 			UserID:         userID,
@@ -56,6 +70,16 @@ func (s *Setup) ensureUsers(
 		})
 	}
 	return outputs, entries, nil
+}
+
+// resourceIdentifiers are the resources the subject grant names, in the
+// order the values file lists them.
+func (s *Setup) resourceIdentifiers() []string {
+	identifiers := make([]string, 0, len(s.Values.Resources))
+	for _, resource := range s.Values.Resources {
+		identifiers = append(identifiers, resource.Identifier)
+	}
+	return identifiers
 }
 
 // resolveUser is the public id of the existing user with this email. The
@@ -150,25 +174,23 @@ type manifestEntry struct {
 // pending reports whether a dry run left the entry without ids.
 func (e manifestEntry) pending() bool { return e.policyID == pendingID || e.versionID == pendingID }
 
-// ensurePolicy creates or finds the user's impersonation policy and makes
-// sure its latest version holds the policy text the contract requires. A
-// version is immutable, so a change publishes a new one.
-func (s *Setup) ensurePolicy(ctx context.Context, zoneID, email, userID string) (manifestEntry, error) {
-	name := PolicyName(userID)
-	cedar := ImpersonationPolicy(s.Values.Namespace, userID)
+// ensurePolicy creates or finds the policy with this name and makes sure
+// its latest version holds this Cedar text. A version is immutable, so a
+// change publishes a new one.
+func (s *Setup) ensurePolicy(ctx context.Context, zoneID, description, name, cedar string) (manifestEntry, error) {
 	policy, found, err := s.findPolicy(ctx, zoneID, name)
 	if err != nil {
 		return manifestEntry{}, err
 	}
 	if !found {
-		return s.createPolicy(ctx, zoneID, name, email, cedar)
+		return s.createPolicy(ctx, zoneID, name, description, cedar)
 	}
 	latest, published, err := s.latestPolicyVersion(ctx, zoneID, policy.ID)
 	if err != nil {
 		return manifestEntry{}, err
 	}
 	if published && strings.TrimSpace(latest.CedarRaw) == strings.TrimSpace(cedar) {
-		s.sayf("policy %s version %d holds the impersonation policy", policy.ID, latest.Version)
+		s.sayf("policy %s version %d holds %q", policy.ID, latest.Version, name)
 		return manifestEntry{policyID: policy.ID, versionID: latest.ID}, nil
 	}
 	if s.DryRun {
@@ -178,14 +200,14 @@ func (s *Setup) ensurePolicy(ctx context.Context, zoneID, email, userID string) 
 	return s.publishPolicyVersion(ctx, zoneID, policy.ID, cedar)
 }
 
-func (s *Setup) createPolicy(ctx context.Context, zoneID, name, email, cedar string) (manifestEntry, error) {
+func (s *Setup) createPolicy(ctx context.Context, zoneID, name, description, cedar string) (manifestEntry, error) {
 	if s.DryRun {
 		s.sayf("would create policy %q and publish its version", name)
 		return manifestEntry{}, nil
 	}
 	policy, err := s.zones.Policies.New(ctx, zoneID, keycard.ZonePolicyNewParams{
 		Name:        name,
-		Description: param.NewOpt(fmt.Sprintf("Lets the sandbox of %s impersonate that user, and nobody else", email)),
+		Description: param.NewOpt(description),
 	})
 	if err != nil {
 		return manifestEntry{}, apiErrorf(err, "creating policy %q", name)
@@ -264,7 +286,7 @@ func (s *Setup) defaultSchemaVersion(ctx context.Context, zoneID string) (string
 }
 
 // ensurePolicySet publishes the sandbox policy set version that holds
-// every user's impersonation policy and activates it.
+// both of every user's policies and activates it.
 //
 // A zone has one active policy set. Activating the sandbox set while another
 // set is active replaces that set's binding, which is refused unless
@@ -284,14 +306,13 @@ func (s *Setup) ensurePolicySet(ctx context.Context, zoneID string, entries []ma
 	}
 	for _, entry := range entries {
 		if entry.pending() {
-			s.sayf("would publish a version of policy set %q with %d impersonation policies and activate it",
-				name, len(entries))
+			s.sayf("would publish a version of policy set %q with %d policies and activate it", name, len(entries))
 			return nil
 		}
 	}
 	if !found {
 		if s.DryRun {
-			s.sayf("would create policy set %q, publish its version with %d impersonation policies and activate it",
+			s.sayf("would create policy set %q, publish its version with %d policies and activate it",
 				name, len(entries))
 			return nil
 		}
@@ -350,7 +371,8 @@ func (s *Setup) reconcilePolicySetVersion(
 	desired, changed := mergeManifest(base, entries)
 	if !changed && baseVersionID != "" {
 		if set.Active && set.ActiveVersionID == baseVersionID {
-			s.sayf("policy set %s version %d is active and holds every impersonation policy", set.ID, set.ActiveVersion)
+			s.sayf("policy set %s version %d is active and holds every policy this run manages",
+				set.ID, set.ActiveVersion)
 			return nil
 		}
 		return s.activate(ctx, zoneID, set.ID, baseVersionID, set.LatestVersion)

@@ -47,8 +47,9 @@ const (
 	DefaultManagementSecretEnv = "KEYCARD_MANAGEMENT_CLIENT_SECRET"
 	// DefaultNamespace is the default sandbox namespace used when not configured in the values file.
 	DefaultNamespace = "agents"
-	// DefaultPolicySetName is the zone-wide policy set the impersonation
-	// policies go in when the values file names none.
+	// DefaultPolicySetName is the zone-wide policy set that holds the subject
+	// grant and the impersonation policy of every enrolled user, when the
+	// values file names none.
 	DefaultPolicySetName = "Kubernetes Sandbox"
 	// maxNamespaceLength is the length limit of a DNS-1123 label.
 	maxNamespaceLength = 63
@@ -83,8 +84,8 @@ type Values struct {
 	IssuerURL string `yaml:"issuer_url"`
 	// Namespace is the sandbox namespace. It defaults to DefaultNamespace.
 	Namespace string `yaml:"namespace"`
-	// PolicySet names the zone-wide policy set the impersonation policies go
-	// in. It defaults to DefaultPolicySetName.
+	// PolicySet names the zone-wide policy set the per-user policies go in.
+	// It defaults to DefaultPolicySetName.
 	PolicySet string `yaml:"policy_set"`
 	// Users are the sandbox users, one per email.
 	Users []UserValues `yaml:"users"`

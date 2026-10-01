@@ -33,6 +33,12 @@ func testValues(f *zoneAPI) *zonesetup.Values {
 	}
 }
 
+// testResourceIdentifiers are the identifiers of testValues' resources, in
+// the order it lists them. The subject grant names them in that order.
+func testResourceIdentifiers() []string {
+	return []string{githubURL, openRouterURL}
+}
+
 func testSecrets() *zonesetup.Secrets {
 	return &zonesetup.Secrets{
 		ManagementClientSecret: testClientSecret,
@@ -68,6 +74,8 @@ func freshWrites() []string {
 		"POST /zones/zone-1/application-credentials",
 		"POST /zones/zone-1/policies",
 		"POST /zones/zone-1/policies/pol-1/versions",
+		"POST /zones/zone-1/policies",
+		"POST /zones/zone-1/policies/pol-2/versions",
 		"POST /zones/zone-1/policy-sets",
 		"POST /zones/zone-1/policy-sets/set-1/versions",
 		"PATCH /zones/zone-1/policy-sets/set-1/versions/sv-1",
@@ -147,7 +155,7 @@ func TestRunZone(t *testing.T) {
 			seed:       func(f *zoneAPI) { f.seedComplete() },
 			wantWrites: []string{"PATCH /zones/zone-1/secrets/sec-1"},
 			wantOut:    completeOutputs(),
-			wantLog:    []string{"policy set set-1 version 1 is active and holds every impersonation policy"},
+			wantLog:    []string{"policy set set-1 version 1 is active and holds every policy this run manages"},
 			check:      checkSecretRestored,
 		},
 		{
@@ -165,6 +173,7 @@ func TestRunZone(t *testing.T) {
 				(*f.find(f.setVers, "sv-1"))["manifest"] = record{"entries": []any{
 					record{"policy_id": "pol-other", "policy_version_id": "pv-other"},
 					record{"policy_id": "pol-1", "policy_version_id": "pv-1"},
+					record{"policy_id": "pol-2", "policy_version_id": "pv-2"},
 				}}
 			},
 			wantWrites: []string{
@@ -191,7 +200,8 @@ func TestRunZone(t *testing.T) {
 				"would make 2 resources dependencies of the application",
 				"would create token credential for system:serviceaccount:agents:usr-1",
 				`would create policy "Sandbox impersonation: usr-1" and publish its version`,
-				`would publish a version of policy set "Kubernetes Sandbox" with 1 impersonation policies and activate it`,
+				`would create policy "Sandbox access: usr-1" and publish its version`,
+				`would publish a version of policy set "Kubernetes Sandbox" with 2 policies and activate it`,
 			},
 		},
 		{
@@ -206,7 +216,8 @@ func TestRunZone(t *testing.T) {
 				`would patch resource res-1 (prefix false -> true, provider "prov-github" -> "prov-github")`,
 				"would update secret sec-1 from OPENROUTER_API_KEY",
 				"would publish a new version of policy pol-1",
-				`would publish a version of policy set "Kubernetes Sandbox" with 1 impersonation policies and activate it`,
+				`policy pol-2 version 1 holds "Sandbox access: usr-1"`,
+				`would publish a version of policy set "Kubernetes Sandbox" with 2 policies and activate it`,
 			},
 		},
 		{
@@ -257,7 +268,8 @@ func checkLogLines(t *testing.T, log string, lines []string) {
 func checkFreshZone(t *testing.T, f *zoneAPI) {
 	t.Helper()
 	checkFreshZoneIdentities(t, f)
-	checkFreshZonePolicy(t, f)
+	checkFreshZonePolicies(t, f)
+	checkFreshZonePolicySet(t, f)
 	checkFreshZoneResources(t, f)
 }
 
@@ -327,7 +339,8 @@ func checkDrift(t *testing.T, f *zoneAPI) {
 	sv := f.bodyOf("POST /zones/zone-1/policy-sets/set-1/versions")
 	wantManifest := map[string]any{"entries": []any{
 		map[string]any{"policy_id": "pol-other", "policy_version_id": "pv-other"},
-		map[string]any{"policy_id": "pol-1", "policy_version_id": "pv-2"},
+		map[string]any{"policy_id": "pol-1", "policy_version_id": "pv-3"},
+		map[string]any{"policy_id": "pol-2", "policy_version_id": "pv-2"},
 	}}
 	if !reflect.DeepEqual(sv["manifest"], wantManifest) {
 		t.Errorf("policy set version manifest = %v, want %v", sv["manifest"], wantManifest)
