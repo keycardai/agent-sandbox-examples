@@ -65,6 +65,12 @@ const (
 	moreThanOne = "more than one document"
 )
 
+// The refusals of a value that does not fit its field.
+const (
+	missingItem = "a list item is missing at line"
+	wrongType   = "a value has the wrong type at line"
+)
+
 func TestParseValues(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -77,6 +83,11 @@ func TestParseValues(t *testing.T) {
 			name:  "a loopback host may use http",
 			doc:   withAPI("http://127.0.0.1:8080"),
 			check: func(v *zonesetup.Values) bool { return v.ManagementAPIURL == "http://127.0.0.1:8080" },
+		},
+		{
+			name:  "a null namespace defaults to agents",
+			doc:   minimal + "namespace: null\n",
+			check: func(v *zonesetup.Values) bool { return v.Namespace == zonesetup.DefaultNamespace },
 		},
 		{
 			name:  "a trailing end marker",
@@ -112,6 +123,11 @@ func TestParseValues(t *testing.T) {
 			wantField: "zone_url",
 		},
 		{name: "a bad namespace", doc: minimal + "namespace: Agents_1\n", wantField: "namespace"},
+		{
+			name:  "a namespace YAML 1.1 reads as a boolean",
+			doc:   minimal + "namespace: no\n",
+			check: func(v *zonesetup.Values) bool { return v.Namespace == "no" },
+		},
 		{name: "a case-variant key", doc: minimal + "MANAGEMENT_API_URL: x\n", wantField: "MANAGEMENT_API_URL"},
 		{name: "a port out of range", doc: withAPI("https://api.keycard.ai:65536"), wantField: "management_api_url port"},
 		{name: "a non-numeric port", doc: withAPI("https://api.keycard.ai:https"), wantField: "management_api_url"},
@@ -174,12 +190,55 @@ func TestParseValues(t *testing.T) {
 			doc:       minimal + "namespace: &ns agents\nzone_id: *ns\n",
 			wantField: "anchors and aliases",
 		},
+		{name: "an anchor", doc: minimal + "namespace: &ns agents\n", wantField: "anchors and aliases"},
+		{
+			name:      "a mapping tagged as a string",
+			doc:       minimal + "resources: [!!str {identifier: r, secret_env: K, prefix: true}]\n",
+			wantField: wrongType,
+		},
+		{
+			name:      "a list tagged as a mapping",
+			doc:       minimal + "resources: !!map [{identifier: r, secret_env: K, prefix: true}]\n",
+			wantField: wrongType,
+		},
 		{name: "a merge key", doc: minimal + "<<: {namespace: first}\n", wantField: "merge keys"},
+		{
+			name:      "a binary-tagged key",
+			doc:       minimal + "resources: [{identifier: r, secret_env: K, !!binary cHJlZml4: \"yes\"}]\n",
+			wantField: "a key must be a plain string",
+		},
+		{name: "a number key", doc: minimal + "1: x\n", wantField: "a key must be a plain string"},
 		{name: "two merge keys", doc: minimal + "<<: {namespace: a}\n<<: {zone_id: z}\n", wantField: "merge keys"},
 		{
 			name:      "a value of the wrong type",
 			doc:       minimal + "resources: [{identifier: r, secret_env: K, prefix: wrong}]\n",
-			wantField: "resources.prefix must be bool",
+			wantField: "a value has the wrong type at line",
+		},
+		{name: "a number as a string", doc: minimal + "namespace: 123\n", wantField: wrongType},
+		{name: "a boolean as a string", doc: minimal + "namespace: true\n", wantField: wrongType},
+		{
+			name:      "a quoted string as a boolean",
+			doc:       minimal + "resources: [{identifier: r, secret_env: K, prefix: \"yes\"}]\n",
+			wantField: wrongType,
+		},
+		{
+			name:      "a number as the client_id",
+			doc:       strings.Replace(minimal, "client_id: sa-1\n", "client_id: 12345\n", 1),
+			wantField: wrongType,
+		},
+		{name: "a binary string", doc: minimal + "namespace: !!binary YWdlbnRz\n", wantField: wrongType},
+		{name: "a null user", doc: minimal + "users: [null]\n", wantField: missingItem},
+		{
+			name:      "a null resource after a resource",
+			doc:       minimal + "resources: [{identifier: r, secret_env: K}, null]\n",
+			wantField: missingItem,
+		},
+		{
+			name: "a null user in JSON",
+			doc: `{"management_api_url": "https://api.keycard.ai", "zone_id": "z", ` +
+				`"service_account": {"client_id": "sa-1"}, ` +
+				`"issuer_url": "https://oidc.example.com", "users": [null]}`,
+			wantField: missingItem,
 		},
 		{
 			name:      "a secret_env that is not a variable name",
