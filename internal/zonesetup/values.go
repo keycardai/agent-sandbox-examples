@@ -7,12 +7,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"net/mail"
 	"net/url"
 	"reflect"
 	"regexp"
-	"strconv"
 	"strings"
 
 	yamlv3 "go.yaml.in/yaml/v3"
@@ -409,44 +407,27 @@ func (v *Values) checkResources() error {
 	return nil
 }
 
-// checkURL requires an absolute https URL with a host, no userinfo and either
-// no port or a valid one. Only a loopback host may use http. NEVER put the value in an error, because
-// a URL can carry a credential.
+// checkURL requires an absolute https URL with a host, no userinfo and no
+// port. NEVER put the value in an error, because a URL can carry a
+// credential.
 func checkURL(key, value string) error {
 	if value == "" {
 		return fmt.Errorf("%w: %s is required", ErrValues, key)
 	}
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Hostname() == "" {
-		return fmt.Errorf("%w: %s is not an absolute URL with a host and a valid port", ErrValues, key)
+		return fmt.Errorf("%w: %s is not an absolute URL with a host", ErrValues, key)
 	}
 	if parsed.User != nil {
 		return fmt.Errorf("%w: %s must not carry userinfo", ErrValues, key)
 	}
-	if strings.HasSuffix(parsed.Host, ":") || !validPort(parsed.Port()) {
-		return fmt.Errorf("%w: %s port must be 1-65535", ErrValues, key)
+	if parsed.Scheme != "https" {
+		return fmt.Errorf("%w: %s must use https", ErrValues, key)
 	}
-	if parsed.Scheme == "https" || parsed.Scheme == "http" && isLoopback(parsed.Hostname()) {
-		return nil
+	if parsed.Port() != "" || strings.HasSuffix(parsed.Host, ":") {
+		return fmt.Errorf("%w: %s must not set a port", ErrValues, key)
 	}
-	return fmt.Errorf("%w: %s must use https unless its host is loopback", ErrValues, key)
-}
-
-// validPort accepts an absent port or a number from 1 to 65535.
-func validPort(port string) bool {
-	if port == "" {
-		return true
-	}
-	n, err := strconv.Atoi(port)
-	return err == nil && n >= 1 && n <= 65535
-}
-
-func isLoopback(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return nil
 }
 
 // LoadSecrets reads every credential the values file names, and refuses when

@@ -80,11 +80,6 @@ func TestParseValues(t *testing.T) {
 		check     func(*zonesetup.Values) bool
 	}{
 		{
-			name:  "a loopback host may use http",
-			doc:   withAPI("http://127.0.0.1:8080"),
-			check: func(v *zonesetup.Values) bool { return v.ManagementAPIURL == "http://127.0.0.1:8080" },
-		},
-		{
 			name:  "a null namespace defaults to agents",
 			doc:   minimal + "namespace: null\n",
 			check: func(v *zonesetup.Values) bool { return v.Namespace == zonesetup.DefaultNamespace },
@@ -129,10 +124,14 @@ func TestParseValues(t *testing.T) {
 			check: func(v *zonesetup.Values) bool { return v.Namespace == "no" },
 		},
 		{name: "a case-variant key", doc: minimal + "MANAGEMENT_API_URL: x\n", wantField: "MANAGEMENT_API_URL"},
-		{name: "a port out of range", doc: withAPI("https://api.keycard.ai:65536"), wantField: "management_api_url port"},
-		{name: "a non-numeric port", doc: withAPI("https://api.keycard.ai:https"), wantField: "management_api_url"},
+		{name: "a port", doc: withAPI("https://api.keycard.ai:8443"), wantField: "management_api_url must not set a port"},
 		{name: "a port with no host", doc: withAPI("https://:443"), wantField: "management_api_url"},
-		{name: "an empty management port", doc: withAPI(`"https://api.keycard.ai:"`), wantField: "management_api_url port"},
+		{
+			name:      "an empty management port",
+			doc:       withAPI(`"https://api.keycard.ai:"`),
+			wantField: "management_api_url must not set a port",
+		},
+		{name: "a loopback http url", doc: withAPI("http://127.0.0.1"), wantField: "management_api_url must use https"},
 		{
 			name: "an empty issuer port",
 			doc: strings.Replace(
@@ -141,7 +140,7 @@ func TestParseValues(t *testing.T) {
 				`"https://i.example:"`,
 				1,
 			),
-			wantField: "issuer_url port",
+			wantField: "issuer_url must not set a port",
 		},
 		{name: "a second YAML document", doc: minimal + "---\nnamespace: other\n", wantField: moreThanOne},
 		{

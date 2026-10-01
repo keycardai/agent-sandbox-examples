@@ -3,8 +3,7 @@
 # service account.
 #
 # The file holds no credential. Every secret is named by the environment
-# variable or file that holds it. Every URL uses https. Only a loopback host
-# may use http.
+# variable or file that holds it. Every URL uses https and sets no port.
 
 # The management API. It is a separate host from the zone.
 #
