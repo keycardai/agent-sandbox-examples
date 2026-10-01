@@ -1,5 +1,9 @@
-// Package zonesetup reads the values file zone-setup configures a zone from
-// and resolves that zone through the management API.
+// Package zonesetup reads the values file zone-setup configures a zone from,
+// resolves that zone, and creates or corrects the zone entities the file
+// describes through the Keycard management API. It is the executable half of
+// the zone entity graph contract. The catalog package kinds in svc-catalog are
+// the declarative half and must produce the same entities under the same
+// identifiers.
 package zonesetup
 
 import (

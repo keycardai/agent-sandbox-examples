@@ -28,6 +28,17 @@ const (
 // nothing to the zone. Every error wraps ErrAuth, ErrAPI, ErrZoneNotFound,
 // ErrZoneAmbiguous or ErrZoneMismatch.
 func ResolveZone(ctx context.Context, values *Values, secrets *Secrets) (*keycard.Zone, error) {
+	zones, err := connect(ctx, values, secrets)
+	if err != nil {
+		return nil, err
+	}
+	return resolveZone(ctx, zones, values)
+}
+
+// connect authenticates as the organization service account and returns the
+// management API's zone service. The service follows no redirect and sends
+// each request once.
+func connect(ctx context.Context, values *Values, secrets *Secrets) (*keycard.ZoneService, error) {
 	httpClient := &http.Client{Timeout: requestTimeout, CheckRedirect: refuseRedirect}
 	token, err := serviceAccountToken(ctx, httpClient, values, secrets.ManagementClientSecret)
 	if err != nil {
@@ -40,10 +51,14 @@ func ResolveZone(ctx context.Context, values *Values, secrets *Secrets) (*keycar
 		option.WithAPIKey(token),
 		option.WithMaxRetries(0),
 	)
+	return &zones, nil
+}
+
+func resolveZone(ctx context.Context, zones *keycard.ZoneService, values *Values) (*keycard.Zone, error) {
 	if values.ZoneID != "" {
-		return zoneByID(ctx, &zones, values)
+		return zoneByID(ctx, zones, values)
 	}
-	return zoneByURL(ctx, &zones, values.ZoneURL)
+	return zoneByURL(ctx, zones, values.ZoneURL)
 }
 
 // refuseRedirect stops every redirect. net/http keeps the Authorization header
