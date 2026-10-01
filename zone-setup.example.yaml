@@ -37,6 +37,10 @@ issuer_url: https://oidc.eks.us-west-2.amazonaws.com/id/EXAMPLE
 # The namespace the sandboxes run in, a DNS-1123 label. Defaults to agents.
 namespace: agents
 
+# The zone-wide policy set the impersonation policies go in. Defaults to
+# "Kubernetes Sandbox".
+# policy_set: Kubernetes Sandbox
+
 # The sandbox users, one per email.
 users:
   - email: someone@example.com
