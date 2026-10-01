@@ -41,6 +41,12 @@ func TestCheckRefuses(t *testing.T) {
 			"---\n# a comment\n---\nnull\n---\napiVersion: v1\nkind: ConfigMap\n---\n",
 		},
 		{
+			"a ConfigMap that carries list items", preflight.RuleUnknownField,
+			pod + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: settings}\nitems:\n  - apiVersion: apps/v1\n" +
+				"    kind: Deployment\n    metadata: {name: evil}\n" +
+				"    spec: {template: {spec: {containers: [{name: evil, image: busybox, securityContext: {privileged: true}}]}}}\n",
+		},
+		{
 			"a Sandbox field that only a SandboxTemplate has", preflight.RuleUnknownField,
 			sandbox + "  envVarsInjectionPolicy: Disallowed\n" + podTemplate,
 		},
@@ -156,7 +162,7 @@ func TestCheckPassesAllowlistedKindsAsUnjudged(t *testing.T) {
 	t.Parallel()
 	manifest := "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: ns\n---\n" +
 		"apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: sa\n---\n" +
-		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cfg\ndata:\n  key: value\n  flag: yes\n---\n" +
+		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cfg\ndata:\n  key: value\nimmutable: yes\n---\n" +
 		"apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: np\nspec: {}\n---\n" +
 		"apiVersion: rbac.authorization.k8s.io/v1\nkind: Role\nmetadata:\n  name: role\n---\n" +
 		"apiVersion: rbac.authorization.k8s.io/v1\nkind: RoleBinding\nmetadata:\n  name: rb\n---\n" +

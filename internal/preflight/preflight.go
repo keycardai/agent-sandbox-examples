@@ -3,10 +3,10 @@
 // The lint denies by default. It judges a Pod, a Sandbox and a
 // SandboxTemplate, each pinned to one apiVersion. It passes a short
 // allowlist of objects that hold no pod as unjudged and lists each one in
-// the report. Every other object is refused. It decodes a judged object
-// strictly into its API types, case-sensitively as the API server does, so
-// a field those types do not hold is refused. A manifest in which nothing
-// was judged is refused.
+// the report. Every other object is refused. It decodes every object it
+// judges or passes strictly into its API type, case-sensitively as the API
+// server does, so a field that type does not hold is refused. A manifest in
+// which nothing was judged is refused.
 package preflight
 
 import (
@@ -24,6 +24,7 @@ import (
 	yamlv3 "go.yaml.in/yaml/v3"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	kjson "sigs.k8s.io/json"
@@ -343,8 +344,8 @@ func (b *builder) document(data []byte, where string) {
 }
 
 // judge decodes an object by its type. It judges a Pod, a Sandbox and a
-// SandboxTemplate, lists an allowlisted type as unjudged and refuses every
-// other type.
+// SandboxTemplate. It decodes an allowlisted type strictly into its API type
+// and lists it as unjudged. It refuses every other type.
 func (b *builder) judge(typ objectType, data []byte, where string) {
 	switch typ {
 	case objectType{"v1", "Pod"}:
@@ -359,17 +360,41 @@ func (b *builder) judge(typ objectType, data []byte, where string) {
 		if spec, ok := decode[sandboxTemplateSpec](b, data, where); ok {
 			b.sandboxTemplate(where, spec)
 		}
-	case objectType{"v1", "Namespace"},
-		objectType{"v1", "ServiceAccount"},
-		objectType{"v1", "ConfigMap"},
-		objectType{"networking.k8s.io/v1", "NetworkPolicy"},
-		objectType{"rbac.authorization.k8s.io/v1", "Role"},
-		objectType{"rbac.authorization.k8s.io/v1", "RoleBinding"}:
-		b.unjudged = append(b.unjudged, Unjudged{Where: where, APIVersion: typ.apiVersion, Kind: typ.kind})
 	default:
+		if admitType, ok := allowlist()[typ]; ok {
+			admitType(b, data, where, typ)
+			return
+		}
 		b.refuse(RuleUnknownKind, where, fmt.Sprintf(
 			"the lint neither judges nor passes kind %q from apiVersion %q", typ.kind, typ.apiVersion,
 		))
+	}
+}
+
+// allowlist maps each type the lint passes unjudged to its strict decoder.
+func allowlist() map[objectType]func(*builder, []byte, string, objectType) {
+	return map[objectType]func(*builder, []byte, string, objectType){
+		{"networking.k8s.io/v1", "NetworkPolicy"}:       admit[networkingv1.NetworkPolicy],
+		{"rbac.authorization.k8s.io/v1", "Role"}:        admit[rbacv1.Role],
+		{"rbac.authorization.k8s.io/v1", "RoleBinding"}: admit[rbacv1.RoleBinding],
+		{"v1", "ConfigMap"}:                             admit[corev1.ConfigMap],
+		{"v1", "Namespace"}:                             admit[corev1.Namespace],
+		{"v1", "ServiceAccount"}:                        admit[corev1.ServiceAccount],
+	}
+}
+
+// admit decodes an allowlisted object strictly into T and lists it as
+// unjudged. A field T does not hold is refused, so an items list is refused.
+func admit[T any](build *builder, data []byte, where string, typ objectType) {
+	var obj T
+	strict, err := kjson.UnmarshalStrict(data, &obj, kjson.DisallowUnknownFields)
+	switch {
+	case err != nil:
+		build.refuse(RuleUnreadableDocument, where, err.Error())
+	case len(strict) > 0:
+		build.refuse(RuleUnknownField, where, errors.Join(strict...).Error())
+	default:
+		build.unjudged = append(build.unjudged, Unjudged{Where: where, APIVersion: typ.apiVersion, Kind: typ.kind})
 	}
 }
 
