@@ -13,6 +13,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5
 	k8s.io/api v0.37.1
 	k8s.io/apimachinery v0.37.1
+	sigs.k8s.io/json v0.0.0-20260909141634-11ed52e25bc5
 	sigs.k8s.io/yaml v1.6.0
 )
 
@@ -241,7 +242,6 @@ require (
 	k8s.io/utils v0.0.0-20260626114624-be93311217bd // indirect
 	mvdan.cc/gofumpt v0.12.0 // indirect
 	mvdan.cc/unparam v0.0.0-20260823230713-2fa3d841b0c8 // indirect
-	sigs.k8s.io/json v0.0.0-20260909141634-11ed52e25bc5 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )
