@@ -15,35 +15,114 @@ import (
 
 	"github.com/keycardai/keycard-go"
 	"github.com/keycardai/keycard-go/option"
+	"github.com/keycardai/keycard-go/packages/param"
 )
 
 const (
 	maxTokenResponseBytes = 1 << 20
 	requestTimeout        = 30 * time.Second
-	zonePageSize          = 100
+	pageSize              = 100
 )
 
-// ResolveZone authenticates as the organization service account and returns
-// the zone the values file names by zone_url, zone_id or both. It writes
-// nothing to the zone. Every error wraps ErrAuth, ErrAPI, ErrZoneNotFound,
+// Session is one authenticated run against the zone the values file names.
+type Session struct {
+	Zone  *keycard.Zone
+	zones keycard.ZoneService
+}
+
+// Connect authenticates as the organization service account and resolves the
+// zone the values file names by zone_url, zone_id or both. It writes nothing
+// to the zone. Every error wraps ErrAuth, ErrAPI, ErrZoneNotFound,
 // ErrZoneAmbiguous or ErrZoneMismatch.
-func ResolveZone(ctx context.Context, values *Values, secrets *Secrets) (*keycard.Zone, error) {
+func Connect(ctx context.Context, values *Values, secrets *Secrets) (*Session, error) {
 	httpClient := &http.Client{Timeout: requestTimeout, CheckRedirect: refuseRedirect}
 	token, err := serviceAccountToken(ctx, httpClient, values, secrets.ManagementClientSecret)
 	if err != nil {
 		return nil, err
 	}
 	// NewZoneService reads no KEYCARD_API_* variable, unlike keycard.NewClient.
-	zones := keycard.NewZoneService(
+	session := &Session{zones: keycard.NewZoneService(
 		option.WithBaseURL(values.ManagementAPIURL),
 		option.WithHTTPClient(httpClient),
 		option.WithAPIKey(token),
 		option.WithMaxRetries(0),
-	)
+	)}
 	if values.ZoneID != "" {
-		return zoneByID(ctx, &zones, values)
+		session.Zone, err = zoneByID(ctx, &session.zones, values)
+	} else {
+		session.Zone, err = zoneByURL(ctx, &session.zones, values.ZoneURL)
 	}
-	return zoneByURL(ctx, &zones, values.ZoneURL)
+	if err != nil {
+		return nil, err
+	}
+	return session, nil
+}
+
+// FindProvider returns the id of the zone's provider whose OAuth issuer is
+// issuerURL, byte for byte, because svc-sts compares a token's iss to it
+// exactly. It returns "" when no provider matches. Every error wraps ErrAPI
+// or ErrProviderAmbiguous.
+func (s *Session) FindProvider(ctx context.Context, issuerURL string) (string, error) {
+	all, err := s.listProviders(ctx)
+	if err != nil {
+		return "", err
+	}
+	var found []keycard.Provider
+	for _, provider := range all {
+		if provider.Protocols.Oauth2.Issuer == issuerURL {
+			found = append(found, provider)
+		}
+	}
+	switch {
+	case len(found) > 1:
+		return "", fmt.Errorf("%w: %d providers have the issuer %s", ErrProviderAmbiguous, len(found), issuerURL)
+	case len(found) == 1 && found[0].ID == "":
+		return "", fmt.Errorf("%w: the provider with the issuer %s has no id", ErrAPI, issuerURL)
+	case len(found) == 1:
+		return found[0].ID, nil
+	default:
+		return "", nil
+	}
+}
+
+// CreateProvider creates an issuer-only provider for issuerURL. svc-sts
+// discovers the JWKS from the issuer, so the provider holds no jwks_uri and no
+// client credential.
+func (s *Session) CreateProvider(ctx context.Context, issuerURL string) (string, error) {
+	parsed, err := url.Parse(issuerURL)
+	if err != nil {
+		return "", fmt.Errorf("%w: issuer_url is not a URL", ErrValues)
+	}
+	provider, err := s.zones.Providers.New(ctx, s.Zone.ID, keycard.ZoneProviderNewParams{
+		Identifier:  issuerURL,
+		Name:        "Kubernetes cluster " + parsed.Host,
+		Description: keycard.String("OIDC issuer of the Kubernetes cluster that runs the sandboxes"),
+		Protocols: keycard.ZoneProviderNewParamsProtocols{
+			Oauth2: keycard.ZoneProviderNewParamsProtocolsOauth2{Issuer: keycard.String(issuerURL)},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("%w: create provider: %w", ErrAPI, requestError(err))
+	}
+	if provider == nil || provider.ID == "" {
+		return "", fmt.Errorf("%w: create provider: the response holds no provider id", ErrAPI)
+	}
+	return provider.ID, nil
+}
+
+func (s *Session) listProviders(ctx context.Context) ([]keycard.Provider, error) {
+	return listAll("providers", func(params pageParams) (listPage[keycard.Provider], error) {
+		page, err := s.zones.Providers.List(ctx, s.Zone.ID, keycard.ZoneProviderListParams{
+			After: params.After, Limit: params.Limit,
+		})
+		if err != nil || page == nil {
+			return listPage[keycard.Provider]{}, err //nolint:wrapcheck // listAll passes it through requestError.
+		}
+		return listPage[keycard.Provider]{
+			items: page.Items, after: page.Pagination.AfterCursor,
+			complete: page.JSON.Items.Valid() && page.JSON.Pagination.Valid(),
+		}, nil
+	})
 }
 
 // refuseRedirect stops every redirect. net/http keeps the Authorization header
@@ -78,6 +157,7 @@ func requestError(err error) error {
 var (
 	errRedirect   = errors.New("refused a redirect")
 	errStatus     = errors.New("returned HTTP status")
+	errNoPage     = errors.New("the response holds no complete page")
 	errUnreadable = errors.New("the request failed or its response could not be read")
 )
 
@@ -190,31 +270,52 @@ func zoneByURL(ctx context.Context, zones *keycard.ZoneService, zoneURL string) 
 }
 
 func listZones(ctx context.Context, zones *keycard.ZoneService) ([]keycard.Zone, error) {
-	var all []keycard.Zone
-	after := ""
+	return listAll("zones", func(params pageParams) (listPage[keycard.Zone], error) {
+		page, err := zones.List(ctx, keycard.ZoneListParams{After: params.After, Limit: params.Limit})
+		if err != nil || page == nil {
+			return listPage[keycard.Zone]{}, err //nolint:wrapcheck // listAll passes it through requestError.
+		}
+		return listPage[keycard.Zone]{
+			items: page.Items, after: page.Pagination.AfterCursor,
+			complete: page.JSON.Items.Valid() && page.JSON.Pagination.Valid(),
+		}, nil
+	})
+}
+
+type pageParams struct {
+	After param.Opt[string]
+	Limit param.Opt[int64]
+}
+
+// keycard-go decodes a null page, or one without items or pagination, without
+// an error.
+type listPage[T any] struct {
+	items    []T
+	after    string
+	complete bool
+}
+
+func listAll[T any](name string, request func(pageParams) (listPage[T], error)) ([]T, error) {
+	var all []T
+	params := pageParams{Limit: keycard.Int(pageSize)}
 	seen := map[string]bool{}
 	for {
-		params := keycard.ZoneListParams{Limit: keycard.Int(zonePageSize)}
-		if after != "" {
-			params.After = keycard.String(after)
-		}
-		page, err := zones.List(ctx, params)
+		page, err := request(params)
 		if err != nil {
-			return nil, fmt.Errorf("%w: list zones: %w", ErrAPI, requestError(err))
+			return nil, fmt.Errorf("%w: list %s: %w", ErrAPI, name, requestError(err))
 		}
-		if page == nil {
-			return nil, fmt.Errorf("%w: list zones: the response holds no page", ErrAPI)
+		if !page.complete {
+			return nil, fmt.Errorf("%w: list %s: %w", ErrAPI, name, errNoPage)
 		}
-		all = append(all, page.Items...)
-		next := page.Pagination.AfterCursor
-		if next == "" {
+		all = append(all, page.items...)
+		if page.after == "" {
 			return all, nil
 		}
-		if seen[next] {
-			return nil, fmt.Errorf("%w: list zones repeated the cursor %q", ErrAPI, next)
+		if seen[page.after] {
+			return nil, fmt.Errorf("%w: list %s repeated a cursor", ErrAPI, name)
 		}
-		seen[next] = true
-		after = next
+		seen[page.after] = true
+		params.After = keycard.String(page.after)
 	}
 }
 

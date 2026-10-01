@@ -3,8 +3,10 @@ package zonesetup_test
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -35,12 +37,14 @@ const (
 	zoneD        = "zone-d"
 )
 
-type fakeZone struct {
+type fakeItem struct {
 	id, issuer string
 }
 
 type fakeAPI struct {
-	zones      []fakeZone
+	zones      []fakeItem
+	providers  map[string][]fakeItem
+	posts      [][]byte
 	failPath   string
 	failStatus int
 	handlers   map[string]http.HandlerFunc
@@ -54,8 +58,14 @@ func (f *fakeAPI) serve(t *testing.T) string {
 	f.calls = map[string]int{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /service-account-token", f.token)
-	mux.HandleFunc("GET /zones", f.authed(f.list))
+	mux.HandleFunc("GET /zones", f.authed(func(w http.ResponseWriter, r *http.Request) { writePage(w, r, f.zones) }))
 	mux.HandleFunc("GET /zones/{id}", f.authed(f.get))
+	mux.HandleFunc("GET /zones/{id}/providers", f.authed(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		writePage(w, r, f.providers[r.PathValue("id")])
+	}))
+	mux.HandleFunc("POST /zones/{id}/providers", f.authed(f.createProvider))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.calls[r.Method+" "+r.URL.Path]++
@@ -100,19 +110,44 @@ func (f *fakeAPI) authed(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (f *fakeAPI) get(w http.ResponseWriter, r *http.Request) {
-	i := slices.IndexFunc(f.zones, func(z fakeZone) bool { return z.id == r.PathValue("id") })
+	i := slices.IndexFunc(f.zones, func(z fakeItem) bool { return z.id == r.PathValue("id") })
 	if i < 0 {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
-	writeJSON(w, zoneJSON(f.zones[i]))
+	writeJSON(w, itemJSON(f.zones[i]))
 }
 
-func (f *fakeAPI) list(w http.ResponseWriter, r *http.Request) {
+func (f *fakeAPI) createProvider(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Protocols struct {
+			Oauth2 struct {
+				Issuer string `json:"issuer"`
+			} `json:"oauth2"`
+		} `json:"protocols"`
+	}
+	raw, err := io.ReadAll(r.Body)
+	if err == nil {
+		err = json.Unmarshal(raw, &body)
+	}
+	if err != nil {
+		http.Error(w, `{"error":"bad body"}`, http.StatusBadRequest)
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.posts = append(f.posts, raw)
+	provider := fakeItem{"provider-new-" + strconv.Itoa(len(f.posts)), body.Protocols.Oauth2.Issuer}
+	zone := r.PathValue("id")
+	f.providers[zone] = append(f.providers[zone], provider)
+	writeJSON(w, itemJSON(provider))
+}
+
+func writePage(w http.ResponseWriter, r *http.Request, all []fakeItem) {
 	query := r.URL.Query()
 	start := 0
 	if after := query.Get("after"); after != "" {
-		i := slices.IndexFunc(f.zones, func(z fakeZone) bool { return z.id == after })
+		i := slices.IndexFunc(all, func(z fakeItem) bool { return z.id == after })
 		if i < 0 {
 			http.Error(w, `{"error":"bad cursor"}`, http.StatusBadRequest)
 			return
@@ -123,23 +158,26 @@ func (f *fakeAPI) list(w http.ResponseWriter, r *http.Request) {
 	if limit, err := strconv.Atoi(query.Get("limit")); err == nil && limit < size {
 		size = limit
 	}
-	end := min(start+size, len(f.zones))
+	end := min(start+size, len(all))
 	items := []any{}
-	for _, zone := range f.zones[start:end] {
-		items = append(items, zoneJSON(zone))
+	for _, item := range all[start:end] {
+		items = append(items, itemJSON(item))
 	}
 	cursor := ""
-	if end < len(f.zones) {
-		cursor = f.zones[end-1].id
+	if end < len(all) {
+		cursor = all[end-1].id
 	}
 	writeJSON(w, map[string]any{"items": items, "pagination": map[string]any{"after_cursor": cursor}})
 }
 
-const redirectSecret = "redirect-secret"
+const (
+	cursorSecret   = "cursor-secret"
+	redirectSecret = "redirect-secret"
+)
 
 func refuseLeaks(t *testing.T, err error) {
 	t.Helper()
-	for _, secret := range []string{fakeSecret, fakeToken, redirectSecret} {
+	for _, secret := range []string{fakeSecret, fakeToken, redirectSecret, cursorSecret} {
 		if err != nil && strings.Contains(err.Error(), secret) {
 			t.Errorf("err = %v, which holds %q", err, secret)
 		}
@@ -177,8 +215,8 @@ func pages(byCursor map[string]string) http.HandlerFunc {
 	}
 }
 
-func zoneJSON(zone fakeZone) map[string]any {
-	return map[string]any{"id": zone.id, "protocols": map[string]any{"oauth2": map[string]any{"issuer": zone.issuer}}}
+func itemJSON(item fakeItem) map[string]any {
+	return map[string]any{"id": item.id, "protocols": map[string]any{"oauth2": map[string]any{"issuer": item.issuer}}}
 }
 
 func writeJSON(w http.ResponseWriter, body any) {
@@ -188,9 +226,9 @@ func writeJSON(w http.ResponseWriter, body any) {
 	}
 }
 
-func TestResolveZone(t *testing.T) {
+func TestConnect(t *testing.T) {
 	t.Parallel()
-	zones := []fakeZone{
+	zones := []fakeItem{
 		{zoneA, issuerA},
 		{zoneB, issuerB},
 		{"zone-c", "https://c.keycard.cloud"},
@@ -199,7 +237,7 @@ func TestResolveZone(t *testing.T) {
 	}
 	cases := []struct {
 		name       string
-		zones      []fakeZone
+		zones      []fakeItem
 		zoneURL    string
 		zoneID     string
 		secret     string
@@ -212,7 +250,7 @@ func TestResolveZone(t *testing.T) {
 	}{
 		{
 			name:  "a trailing slash on the issuer still matches",
-			zones: []fakeZone{{"zone-s", "https://s.keycard.cloud/"}}, zoneURL: "https://s.keycard.cloud", wantZone: "zone-s",
+			zones: []fakeItem{{"zone-s", "https://s.keycard.cloud/"}}, zoneURL: "https://s.keycard.cloud", wantZone: "zone-s",
 		},
 		{name: "a trailing slash on zone_url still matches", zoneURL: "https://c.keycard.cloud/", wantZone: "zone-c"},
 		{name: "by id", zoneID: zoneD, wantZone: zoneD},
@@ -228,7 +266,7 @@ func TestResolveZone(t *testing.T) {
 		},
 		{
 			name:    "two zones issue from zone_url",
-			zones:   []fakeZone{{"zone-1", "https://x.keycard.cloud"}, {"zone-2", "https://x.keycard.cloud/"}},
+			zones:   []fakeItem{{"zone-1", "https://x.keycard.cloud"}, {"zone-2", "https://x.keycard.cloud/"}},
 			zoneURL: "https://x.keycard.cloud", wantErr: zonesetup.ErrZoneAmbiguous,
 		},
 		{name: "unknown zone id", zoneID: "zone-z", wantErr: zonesetup.ErrZoneNotFound},
@@ -323,9 +361,9 @@ func TestResolveZone(t *testing.T) {
 		{
 			name: "a cursor cycle is refused", zoneURL: issuerA, wantErr: zonesetup.ErrAPI,
 			handlers: map[string]http.HandlerFunc{listPath: pages(map[string]string{
-				"":  emptyPageToA,
-				"A": `{"items":[],"pagination":{"after_cursor":"B"}}`,
-				"B": emptyPageToA,
+				"":           `{"items":[],"pagination":{"after_cursor":"` + cursorSecret + `"}}`,
+				cursorSecret: emptyPageToA,
+				"A":          `{"items":[],"pagination":{"after_cursor":"` + cursorSecret + `"}}`,
 			})},
 			wantCalls: map[string]int{listCall: 3},
 		},
@@ -363,7 +401,7 @@ func TestResolveZone(t *testing.T) {
 			if tc.secret != "" {
 				secret = tc.secret
 			}
-			zone, err := zonesetup.ResolveZone(t.Context(), values, &zonesetup.Secrets{ManagementClientSecret: secret})
+			session, err := zonesetup.Connect(t.Context(), values, &zonesetup.Secrets{ManagementClientSecret: secret})
 			refuseLeaks(t, err)
 			switch {
 			case tc.wantErr != nil:
@@ -372,13 +410,112 @@ func TestResolveZone(t *testing.T) {
 				}
 			case err != nil:
 				t.Errorf("err = %v", err)
-			case zone.ID != tc.wantZone:
-				t.Errorf("zone = %s, want %s", zone.ID, tc.wantZone)
+			case session.Zone.ID != tc.wantZone:
+				t.Errorf("zone = %s, want %s", session.Zone.ID, tc.wantZone)
 			}
 			for call, want := range tc.wantCalls {
 				if got := fake.count(call); got != want {
 					t.Errorf("%s sent %d times, want %d", call, got, want)
 				}
+			}
+		})
+	}
+}
+
+const postProviderCall = "POST /zones/zone-a/providers"
+
+func createProvider(t *testing.T, session *zonesetup.Session, fake *fakeAPI, issuer string) string {
+	t.Helper()
+	providerID, err := session.CreateProvider(t.Context(), issuer)
+	if err != nil {
+		t.Fatalf("CreateProvider: %v", err)
+	}
+	if got := fake.count(postProviderCall); got != 1 {
+		t.Fatalf("CreateProvider sent %d POSTs, want 1", got)
+	}
+	want := map[string]any{
+		"identifier":  issuer,
+		"name":        "Kubernetes cluster oidc.example.com",
+		"description": "OIDC issuer of the Kubernetes cluster that runs the sandboxes",
+		"protocols":   map[string]any{"oauth2": map[string]any{"issuer": issuer}},
+	}
+	var got map[string]any
+	if err := json.Unmarshal(fake.posts[0], &got); err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("created provider %s, want %v", fake.posts[0], want)
+	}
+	return providerID
+}
+
+func TestProvider(t *testing.T) {
+	t.Parallel()
+	const (
+		cluster   = "https://oidc.example.com/id/X"
+		providerK = "provider-k"
+		created1  = "provider-new-1"
+	)
+	other := []fakeItem{{"provider-1", "https://github.com"}, {"provider-2", "https://other.example.com"}}
+	cases := []struct {
+		name      string
+		providers []fakeItem
+		handlers  map[string]http.HandlerFunc
+		create    bool
+		wantID    string
+		wantErr   error
+	}{
+		{
+			name: "one match on a later page", providers: append(other[:2:2], fakeItem{providerK, cluster}),
+			wantID: providerK,
+		},
+		{name: "FindProvider with none returns no id", providers: other},
+		{name: "none is created", providers: other, create: true, wantID: created1},
+		{
+			name:      "two matches are refused",
+			providers: []fakeItem{{providerK, cluster}, {"provider-l", cluster}}, wantErr: zonesetup.ErrProviderAmbiguous,
+		},
+		{
+			name: "a provider page of {} is refused", wantErr: zonesetup.ErrAPI,
+			handlers: map[string]http.HandlerFunc{"/zones/zone-a/providers": rawBody("{}")},
+		},
+		{
+			name: "a match without an id is refused", providers: []fakeItem{{"", cluster}},
+			wantErr: zonesetup.ErrAPI,
+		},
+		{
+			name: "a trailing slash is another issuer", providers: []fakeItem{{"provider-s", cluster + "/"}},
+			create: true, wantID: created1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeAPI{
+				zones: []fakeItem{{zoneA, issuerA}}, providers: map[string][]fakeItem{zoneA: tc.providers},
+				handlers: tc.handlers,
+			}
+			values := &zonesetup.Values{
+				ManagementAPIURL:         fake.serve(t),
+				ZoneID:                   zoneA,
+				ManagementServiceAccount: zonesetup.ManagementServiceAccountValues{ClientID: fakeClientID},
+			}
+			session, err := zonesetup.Connect(t.Context(), values, &zonesetup.Secrets{ManagementClientSecret: fakeSecret})
+			if err != nil {
+				t.Fatalf("Connect: %v", err)
+			}
+			providerID, err := session.FindProvider(t.Context(), cluster)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if got := fake.count(postProviderCall); got != 0 {
+				t.Fatalf("FindProvider sent %d POSTs", got)
+			}
+			if tc.create {
+				if providerID != "" {
+					t.Fatalf("FindProvider = %q, want no id", providerID)
+				}
+				providerID = createProvider(t, session, fake, cluster)
+			}
+			if providerID != tc.wantID {
+				t.Errorf("id = %q, want %q", providerID, tc.wantID)
 			}
 		})
 	}
