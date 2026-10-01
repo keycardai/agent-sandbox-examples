@@ -16,7 +16,7 @@ const openRouterKey = "OPENROUTER_API_KEY"
 const minimal = `
 management_api_url: https://api.keycard.ai
 zone_url: https://acme.keycard.cloud
-service_account:
+management_service_account:
   client_id: sa-1
 issuer_url: https://oidc.eks.us-west-2.amazonaws.com/id/EXAMPLE
 `
@@ -36,7 +36,7 @@ func TestParseExample(t *testing.T) {
 	want := &zonesetup.Values{
 		ManagementAPIURL: "https://api.keycard.ai",
 		ZoneURL:          "https://acme.keycard.cloud",
-		ServiceAccount: zonesetup.ServiceAccountValues{
+		ManagementServiceAccount: zonesetup.ManagementServiceAccountValues{
 			ClientID: "replace-me", ClientSecretEnv: zonesetup.DefaultManagementSecretEnv,
 		},
 		IssuerURL: "https://oidc.eks.us-west-2.amazonaws.com/id/EXAMPLE",
@@ -236,7 +236,7 @@ func TestParseValues(t *testing.T) {
 		{
 			name: "a null user in JSON",
 			doc: `{"management_api_url": "https://api.keycard.ai", "zone_id": "z", ` +
-				`"service_account": {"client_id": "sa-1"}, ` +
+				`"management_service_account": {"client_id": "sa-1"}, ` +
 				`"issuer_url": "https://oidc.example.com", "users": [null]}`,
 			wantField: missingItem,
 		},
@@ -348,7 +348,10 @@ func TestLoadSecretsKeepsFileTextOut(t *testing.T) {
 		t.Errorf("missing resource secret: error = %v, want ErrMissingSecret without the identifier", err)
 	}
 
-	values.ServiceAccount = zonesetup.ServiceAccountValues{ClientID: "sa-1", ClientSecretFile: "/" + url}
+	values.ManagementServiceAccount = zonesetup.ManagementServiceAccountValues{
+		ClientID:         "sa-1",
+		ClientSecretFile: "/" + url,
+	}
 	for name, read := range map[string]func(string) ([]byte, error){
 		"a read error":  func(string) ([]byte, error) { return nil, errReadURL },
 		"an empty file": func(string) ([]byte, error) { return nil, nil },

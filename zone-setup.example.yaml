@@ -22,7 +22,7 @@ zone_url: https://acme.keycard.cloud
 # The secret comes from KEYCARD_MANAGEMENT_CLIENT_SECRET, or from the
 # variable client_secret_env names, or from the file client_secret_file
 # names. A named file is the only source read.
-service_account:
+management_service_account:
   client_id: replace-me
   # client_secret_env: KEYCARD_MANAGEMENT_CLIENT_SECRET
   # client_secret_file: /run/secrets/keycard-management-client-secret

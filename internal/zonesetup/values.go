@@ -59,9 +59,9 @@ type Values struct {
 	ZoneURL string `yaml:"zone_url"`
 	// ZoneID names the zone directly.
 	ZoneID string `yaml:"zone_id"`
-	// ServiceAccount is the organization service account zone-setup
+	// ManagementServiceAccount is the organization service account zone-setup
 	// authenticates with. It is NEVER the sidecar's identity.
-	ServiceAccount ServiceAccountValues `yaml:"service_account"`
+	ManagementServiceAccount ManagementServiceAccountValues `yaml:"management_service_account"`
 	// IssuerURL is the cluster's OIDC issuer, kept byte for byte.
 	IssuerURL string `yaml:"issuer_url"`
 	// Namespace is the sandbox namespace. It defaults to DefaultNamespace.
@@ -72,8 +72,8 @@ type Values struct {
 	Resources []ResourceValues `yaml:"resources"`
 }
 
-// ServiceAccountValues is the organization service account.
-type ServiceAccountValues struct {
+// ManagementServiceAccountValues is the organization service account.
+type ManagementServiceAccountValues struct {
 	ClientID string `yaml:"client_id"`
 	// ClientSecretEnv names the environment variable holding the secret. It
 	// defaults to DefaultManagementSecretEnv when no file is named.
@@ -134,7 +134,7 @@ func ParseValues(reader io.Reader) (*Values, error) {
 	}
 	steps := []func() error{
 		values.checkConnection,
-		values.checkServiceAccount,
+		values.checkManagementServiceAccount,
 		values.checkSandbox,
 		values.checkUsers,
 		values.checkResources,
@@ -344,15 +344,16 @@ func (v *Values) checkConnection() error {
 	return nil
 }
 
-func (v *Values) checkServiceAccount() error {
-	if v.ServiceAccount.ClientID == "" {
-		return fmt.Errorf("%w: service_account.client_id is required", ErrValues)
+func (v *Values) checkManagementServiceAccount() error {
+	if v.ManagementServiceAccount.ClientID == "" {
+		return fmt.Errorf("%w: management_service_account.client_id is required", ErrValues)
 	}
-	if v.ServiceAccount.ClientSecretEnv == "" && v.ServiceAccount.ClientSecretFile == "" {
-		v.ServiceAccount.ClientSecretEnv = DefaultManagementSecretEnv
+	if v.ManagementServiceAccount.ClientSecretEnv == "" && v.ManagementServiceAccount.ClientSecretFile == "" {
+		v.ManagementServiceAccount.ClientSecretEnv = DefaultManagementSecretEnv
 	}
-	if v.ServiceAccount.ClientSecretEnv != "" && !envNameRE.MatchString(v.ServiceAccount.ClientSecretEnv) {
-		return fmt.Errorf("%w: service_account.client_secret_env is not an environment variable name", ErrValues)
+	if v.ManagementServiceAccount.ClientSecretEnv != "" &&
+		!envNameRE.MatchString(v.ManagementServiceAccount.ClientSecretEnv) {
+		return fmt.Errorf("%w: management_service_account.client_secret_env is not an environment variable name", ErrValues)
 	}
 	return nil
 }
@@ -456,7 +457,7 @@ func LoadSecrets(
 	lookupEnv func(string) (string, bool),
 	readFile func(string) ([]byte, error),
 ) (*Secrets, error) {
-	management, err := managementSecret(values.ServiceAccount, lookupEnv, readFile)
+	management, err := managementSecret(values.ManagementServiceAccount, lookupEnv, readFile)
 	if err != nil {
 		return nil, err
 	}
@@ -480,28 +481,28 @@ func LoadSecrets(
 }
 
 func managementSecret(
-	account ServiceAccountValues,
+	account ManagementServiceAccountValues,
 	lookupEnv func(string) (string, bool),
 	readFile func(string) ([]byte, error),
 ) (string, error) {
 	if account.ClientSecretFile != "" {
 		raw, err := readFile(account.ClientSecretFile)
 		if err != nil {
-			return "", fmt.Errorf("%w: service_account.client_secret_file %s", ErrMissingSecret, readFailure(err))
+			return "", fmt.Errorf("%w: management_service_account.client_secret_file %s", ErrMissingSecret, readFailure(err))
 		}
 		secret, found := strings.CutSuffix(string(raw), "\r\n")
 		if !found {
 			secret = strings.TrimSuffix(secret, "\n")
 		}
 		if secret == "" {
-			return "", fmt.Errorf("%w: service_account.client_secret_file is empty", ErrMissingSecret)
+			return "", fmt.Errorf("%w: management_service_account.client_secret_file is empty", ErrMissingSecret)
 		}
 		return secret, nil
 	}
 	secret, ok := lookupEnv(account.ClientSecretEnv)
 	if !ok || secret == "" {
 		return "", fmt.Errorf(
-			"%w: service_account.client_secret_env %s is unset",
+			"%w: management_service_account.client_secret_env %s is unset",
 			ErrMissingSecret,
 			account.ClientSecretEnv,
 		)
