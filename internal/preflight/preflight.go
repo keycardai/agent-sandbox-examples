@@ -222,8 +222,8 @@ func yamlShapes(manifest []byte) ([]string, error) {
 // The constructs yamlShapes refuses.
 var (
 	errAnchor    = errors.New("anchors and aliases are not allowed")
-	errMergeKey  = errors.New("merge keys are not allowed")
 	errKeyString = errors.New("a key must be a string")
+	errMergeKey  = errors.New("merge keys are not allowed")
 )
 
 func writeNodeShape(out *strings.Builder, node *yamlv3.Node) error {

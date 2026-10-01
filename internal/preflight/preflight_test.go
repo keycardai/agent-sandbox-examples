@@ -33,74 +33,31 @@ func TestCheckRefuses(t *testing.T) {
 		want preflight.Rule
 		yaml string
 	}{
-		{"a document that is not YAML", preflight.RuleUnreadableDocument, "kind: Pod\n  name: [unclosed\n"},
+		{"env Allowed", preflight.RuleEnvInjection, template + "  envVarsInjectionPolicy: Allowed\n" + podTemplate},
+		{"env Overrides", preflight.RuleEnvInjection, template + "  envVarsInjectionPolicy: Overrides\n" + podTemplate},
+		{"a Pod with no spec", preflight.RuleNoPodSpec, "apiVersion: v1\nkind: Pod\n"},
 		{
-			"a nested key that differs from a field only in case", preflight.RuleUnknownField,
-			pod + "      securityContext:\n        Privileged: true\n",
+			"nothing judged beside empty and null documents", preflight.RuleNothingJudged,
+			"---\n# a comment\n---\nnull\n---\napiVersion: v1\nkind: ConfigMap\n---\n",
 		},
 		{
 			"a Sandbox field that only a SandboxTemplate has", preflight.RuleUnknownField,
 			sandbox + "  envVarsInjectionPolicy: Disallowed\n" + podTemplate,
 		},
-		{"a custom resource", preflight.RuleUnknownKind, "apiVersion: example.com/v1\nkind: Widget\n"},
-		{"a Pod claiming another apiVersion", preflight.RuleUnknownKind, "apiVersion: example.com/v1\nkind: Pod\n"},
+		{
+			"a nested key that differs from a field only in case", preflight.RuleUnknownField,
+			pod + "      securityContext:\n        Privileged: true\n",
+		},
+		{"a JSON Pod and a JSON Deployment", preflight.RuleUnknownKind, jsonPod + "\n" + jsonDeployment},
+		{"a JSON Pod and an adjacent JSON Deployment", preflight.RuleUnknownKind, jsonPod + jsonDeployment},
 		{"a List", preflight.RuleUnknownKind, "apiVersion: v1\nkind: List\nitems:\n  - apiVersion: v1\n    kind: Pod\n"},
+		{"a Pod claiming another apiVersion", preflight.RuleUnknownKind, "apiVersion: example.com/v1\nkind: Pod\n"},
+		{"a custom resource", preflight.RuleUnknownKind, "apiVersion: example.com/v1\nkind: Widget\n"},
 		{
 			"a privileged Deployment", preflight.RuleUnknownKind,
 			"apiVersion: apps/v1\nkind: Deployment\nspec:\n  template:\n    spec:\n      containers:\n" +
 				"        - name: a\n          securityContext:\n            privileged: true\n",
 		},
-		{"env Allowed", preflight.RuleEnvInjection, template + "  envVarsInjectionPolicy: Allowed\n" + podTemplate},
-		{"env Overrides", preflight.RuleEnvInjection, template + "  envVarsInjectionPolicy: Overrides\n" + podTemplate},
-		{
-			"a volume claim template that swaps a pod volume", preflight.RuleVolumeClaimTemplates,
-			sandbox + podTemplate + "  volumeClaimTemplates:\n    - metadata:\n        name: shared-ca\n" +
-				"      spec:\n        accessModes: [ReadWriteOnce]\n",
-		},
-		{
-			"a volumeClaimTemplatesPolicy other than Disallowed", preflight.RuleVolumeClaimTemplates,
-			template + "  volumeClaimTemplatesPolicy: Allowed\n" + podTemplate,
-		},
-		{"a Pod with no spec", preflight.RuleNoPodSpec, "apiVersion: v1\nkind: Pod\n"},
-		{"a JSON Pod and a JSON Deployment", preflight.RuleUnknownKind, jsonPod + "\n" + jsonDeployment},
-		{"a JSON Pod and an adjacent JSON Deployment", preflight.RuleUnknownKind, jsonPod + jsonDeployment},
-		{
-			"a Deployment after an end marker", preflight.RuleUnreadableDocument,
-			pod + "...\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: evil\n",
-		},
-		{
-			"a Deployment behind bare CR line endings", preflight.RuleUnreadableDocument,
-			strings.ReplaceAll(pod+"---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: evil\n", "\n", "\r"),
-		},
-		{
-			"a JSON Pod and an adjacent JSON Deployment after a comment", preflight.RuleUnreadableDocument,
-			"# rendered\n" + jsonPod + jsonDeployment,
-		},
-		{
-			"an anchor and an alias",
-			preflight.RuleUnreadableDocument,
-			pod + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {a: &x b, c: *x}\n",
-		},
-		{
-			"a merge key",
-			preflight.RuleUnreadableDocument,
-			pod + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {<<: {a: b}}\n",
-		},
-		{
-			"an anchored key", preflight.RuleUnreadableDocument,
-			pod + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {&x a: b}\n",
-		},
-		{"an anchored null document", preflight.RuleUnreadableDocument, pod + "---\n&x null\n"},
-		{
-			"a number key", preflight.RuleUnreadableDocument,
-			pod + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {42: b}\n",
-		},
-		{
-			"a key that is not a string",
-			preflight.RuleUnreadableDocument,
-			pod + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {0777: b}\n",
-		},
-		{"a key that kubectl's reader takes for a separator", preflight.RuleUnreadableDocument, pod + "---#hidden: true\n"},
 		{
 			"a Deployment after a CR in a separator comment", preflight.RuleUnreadableDocument,
 			pod + "--- # split\r{apiVersion: apps/v1, kind: Deployment, metadata: {name: evil}}\n",
@@ -118,8 +75,20 @@ func TestCheckRefuses(t *testing.T) {
 			pod + "--- # split\u2029{apiVersion: apps/v1, kind: Deployment, metadata: {name: evil}}\n",
 		},
 		{
+			"a Deployment after an end marker", preflight.RuleUnreadableDocument,
+			pod + "...\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: evil\n",
+		},
+		{
+			"a Deployment behind bare CR line endings", preflight.RuleUnreadableDocument,
+			strings.ReplaceAll(pod+"---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: evil\n", "\n", "\r"),
+		},
+		{
 			"a JSON Pod and a truncated JSON object", preflight.RuleUnreadableDocument,
 			jsonPod + `{"apiVersion":"v1","kind":`,
+		},
+		{
+			"a JSON Pod and an adjacent JSON Deployment after a comment", preflight.RuleUnreadableDocument,
+			"# rendered\n" + jsonPod + jsonDeployment,
 		},
 		{
 			"a JSON object that repeats a key", preflight.RuleUnreadableDocument,
@@ -129,9 +98,40 @@ func TestCheckRefuses(t *testing.T) {
 			"a YAML document that repeats a key", preflight.RuleUnreadableDocument,
 			"apiVersion: v1\nkind: Pod\nkind: ConfigMap\n",
 		},
+		{"a document that is not YAML", preflight.RuleUnreadableDocument, "kind: Pod\n  name: [unclosed\n"},
 		{
-			"nothing judged beside empty and null documents", preflight.RuleNothingJudged,
-			"---\n# a comment\n---\nnull\n---\napiVersion: v1\nkind: ConfigMap\n---\n",
+			"a key that is not a string",
+			preflight.RuleUnreadableDocument,
+			pod + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {0777: b}\n",
+		},
+		{"a key that kubectl's reader takes for a separator", preflight.RuleUnreadableDocument, pod + "---#hidden: true\n"},
+		{
+			"a merge key",
+			preflight.RuleUnreadableDocument,
+			pod + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {<<: {a: b}}\n",
+		},
+		{
+			"a number key", preflight.RuleUnreadableDocument,
+			pod + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {42: b}\n",
+		},
+		{
+			"an anchor and an alias",
+			preflight.RuleUnreadableDocument,
+			pod + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {a: &x b, c: *x}\n",
+		},
+		{
+			"an anchored key", preflight.RuleUnreadableDocument,
+			pod + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {&x a: b}\n",
+		},
+		{"an anchored null document", preflight.RuleUnreadableDocument, pod + "---\n&x null\n"},
+		{
+			"a volume claim template that swaps a pod volume", preflight.RuleVolumeClaimTemplates,
+			sandbox + podTemplate + "  volumeClaimTemplates:\n    - metadata:\n        name: shared-ca\n" +
+				"      spec:\n        accessModes: [ReadWriteOnce]\n",
+		},
+		{
+			"a volumeClaimTemplatesPolicy other than Disallowed", preflight.RuleVolumeClaimTemplates,
+			template + "  volumeClaimTemplatesPolicy: Allowed\n" + podTemplate,
 		},
 	}
 	for _, tt := range tests {
