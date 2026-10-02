@@ -1,6 +1,6 @@
 // Package zonesetup reads the values file zone-setup configures a zone from
 // and resolves that zone through the management API, and finds or creates the
-// cluster's provider in it.
+// cluster's provider, the egress proxy Application and the resources in it.
 package zonesetup
 
 import (
@@ -30,13 +30,19 @@ var (
 	// ErrMissingSecret is a credential the values file names but the
 	// environment or filesystem does not hold.
 	ErrMissingSecret = errors.New("missing secret")
-	// ErrProviderAmbiguous is an issuer_url more than one provider in the
-	// zone has as its issuer.
+	// ErrProviderAmbiguous is an issuer_url, a credential_provider or the
+	// keycard-vault type that more than one provider in the zone has.
 	ErrProviderAmbiguous = errors.New("provider ambiguous")
 	// ErrProviderMismatch is a provider whose identifier is issuer_url but whose
 	// issuer is not. The identifier is unique in the zone, so zone-setup can
 	// neither use that provider nor create its own beside it.
 	ErrProviderMismatch = errors.New("provider issuer mismatch")
+	// ErrProviderNotFound is a credential provider a resource needs but the
+	// zone does not have.
+	ErrProviderNotFound = errors.New("provider not found")
+	// ErrResourceAmbiguous is a resource identifier more than one resource
+	// in the zone has.
+	ErrResourceAmbiguous = errors.New("resource ambiguous")
 	// ErrValues is a values file that cannot be used as written.
 	ErrValues = errors.New("values file")
 	// ErrZoneAmbiguous is a zone_url more than one zone issues from.
