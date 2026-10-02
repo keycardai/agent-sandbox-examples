@@ -31,7 +31,7 @@ const (
 var (
 	errNoLocaldevCA  = errors.New("~/.localdev/devcert.json holds no root_certificate_pem")
 	errNoAccessToken = errors.New("the token response has no access_token")
-	errZoneNotReady  = errors.New("the zone has no URL yet")
+	errZoneNotReady  = errors.New("the zone is not ready")
 )
 
 // Keycard calls the management API and svc-catalog as an organization service
@@ -46,6 +46,10 @@ type Keycard struct {
 	token   string
 	expires time.Time
 	orgID   string
+	// zonePoll is how often CreateZone checks a new zone, and zoneWait how
+	// long it waits for one.
+	zonePoll time.Duration
+	zoneWait time.Duration
 }
 
 // APIError is a non-success response from the management API.
@@ -59,12 +63,18 @@ func (e *APIError) Error() string { return fmt.Sprintf("HTTP %d: %s", e.Status, 
 // NewKeycard returns a client for the management API at base, trusting the
 // system roots plus the localdev root CA when it is installed.
 func NewKeycard(base, clientID, clientSecret string) *Keycard {
-	const requestTimeout = 60 * time.Second
+	const (
+		requestTimeout = 60 * time.Second
+		zonePoll       = 5 * time.Second
+		zoneWait       = 2 * time.Minute
+	)
 	return &Keycard{
 		base:         strings.TrimRight(base, "/"),
 		clientID:     clientID,
 		clientSecret: clientSecret,
 		http:         newHTTPClient(requestTimeout),
+		zonePoll:     zonePoll,
+		zoneWait:     zoneWait,
 	}
 }
 
@@ -148,13 +158,10 @@ func (k *Keycard) GetZone(ctx context.Context, zoneID string) (Zone, error) {
 	return zone, err
 }
 
-// CreateZone creates a zone. A new zone bootstraps asynchronously, so this
-// waits until its OAuth metadata names it.
+// CreateZone creates a zone and waits until it is ready to use. A new zone
+// gets its URL first, and the policy engine knows it only once svc-iam's zone
+// worker has bootstrapped it there.
 func (k *Keycard) CreateZone(ctx context.Context, name string) (Zone, error) {
-	const (
-		bootstrapTime = 2 * time.Minute
-		pollEvery     = 2 * time.Second
-	)
 	var zone Zone
 	body := struct {
 		Name string `json:"name"`
@@ -162,21 +169,24 @@ func (k *Keycard) CreateZone(ctx context.Context, name string) (Zone, error) {
 	if err := k.do(ctx, http.MethodPost, "/zones", body, &zone); err != nil {
 		return Zone{}, err
 	}
-	deadline := time.Now().Add(bootstrapTime)
-	for zone.URL() == "" && time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
+	deadline := time.Now().Add(k.zoneWait)
+	for {
+		// The policy engine remembers a zone it does not know for a minute,
+		// so each check comes after a pause that the bootstrap usually fits in.
+		if !sleep(ctx, k.zonePoll) {
 			return Zone{}, fmt.Errorf("wait for zone %s: %w", zone.ID, ctx.Err())
-		case <-time.After(pollEvery):
 		}
-		if got, err := k.GetZone(ctx, zone.ID); err == nil {
-			zone = got
+		ready, err := k.zoneReady(ctx, &zone)
+		if err != nil {
+			return Zone{}, fmt.Errorf("wait for zone %s: %w", zone.ID, err)
+		}
+		if ready {
+			return zone, nil
+		}
+		if time.Now().After(deadline) {
+			return Zone{}, fmt.Errorf("%w after %s: %s", errZoneNotReady, k.zoneWait, zone.ID)
 		}
 	}
-	if zone.URL() == "" {
-		return Zone{}, fmt.Errorf("%w after %s: %s", errZoneNotReady, bootstrapTime, zone.ID)
-	}
-	return zone, nil
 }
 
 // Package is a catalog package and its form fields.
@@ -371,6 +381,26 @@ func list[T any](ctx context.Context, k *Keycard, path string, query url.Values)
 		}
 		query.Set("after", page.Pagination.AfterCursor)
 	}
+}
+
+// zoneReady reports whether the zone has its URL and the policy engine knows
+// it, reading the zone again until it has the URL.
+func (k *Keycard) zoneReady(ctx context.Context, zone *Zone) (bool, error) {
+	if zone.URL() == "" {
+		got, err := k.GetZone(ctx, zone.ID)
+		if err != nil {
+			return false, err
+		}
+		if *zone = got; zone.URL() == "" {
+			return false, nil
+		}
+	}
+	_, _, err := k.ActiveBinding(ctx, zone.ID)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // bearer responds with a service account token, signing in again a minute

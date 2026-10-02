@@ -143,10 +143,8 @@ func (a *App) fetch(ctx context.Context, pod string, args []string) (Fetch, erro
 		if !curlTLSFailure(err) {
 			break
 		}
-		select {
-		case <-ctx.Done():
+		if !sleep(ctx, retryDelay) {
 			return Fetch{}, fmt.Errorf("wait to retry curl: %w", ctx.Err())
-		case <-time.After(retryDelay):
 		}
 	}
 	if err != nil {

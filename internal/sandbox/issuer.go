@@ -194,10 +194,8 @@ func VerifyIssuer(ctx context.Context, sandbox Kube, issuer string) error {
 		if err == nil || time.Now().After(deadline) {
 			break
 		}
-		select {
-		case <-ctx.Done():
+		if !sleep(ctx, retryEvery) {
 			return fmt.Errorf("wait for the issuer route: %w", ctx.Err())
-		case <-time.After(retryEvery):
 		}
 	}
 	if err != nil {

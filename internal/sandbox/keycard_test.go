@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/keycardai/agent-sandbox-poc/internal/sandbox"
 )
@@ -174,5 +177,61 @@ func TestKeycardCreatesATokenCredential(t *testing.T) {
 		CreateTokenCredential(context.Background(), testZone, "app_1", "prv_1", bobSubject)
 	if err != nil || cred.ID != "cred_1" || cred.Subject != bobSubject {
 		t.Errorf("CreateTokenCredential = %+v, %v", cred, err)
+	}
+}
+
+// newZoneServer answers zone creation the way a new zone bootstraps: the
+// zone gets its URL on the first read, and the policy engine answers 404
+// until the bootstrap has run, which is never when ready is zero.
+func newZoneServer(t *testing.T, ready int32) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var checks atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /service-account-token", signIn)
+	mux.HandleFunc("POST /zones", authorized(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"id":"zone_new","name":"demo"}`)
+	}))
+	mux.HandleFunc("GET /zones/zone_new", authorized(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(
+			w,
+			`{"id":"zone_new","name":"demo","protocols":{"oauth2":{"issuer":"https://zone-new.example/"}}}`,
+		)
+	}))
+	mux.HandleFunc("GET /zones/zone_new/policy-bindings", authorized(func(w http.ResponseWriter, _ *http.Request) {
+		if count := checks.Add(1); ready == 0 || count < ready {
+			http.Error(w, `{"message":"zone not found"}`, http.StatusNotFound)
+			return
+		}
+		_, _ = io.WriteString(w, `{"items":[],"pagination":{}}`)
+	}))
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server, &checks
+}
+
+func TestKeycardCreateZoneWaitsForThePolicyEngine(t *testing.T) {
+	t.Parallel()
+	server, checks := newZoneServer(t, 3)
+	keycard := sandbox.NewKeycard(server.URL, fakeClientID, fakeSecret)
+	keycard.SetZonePolling(time.Millisecond, time.Second)
+
+	zone, err := keycard.CreateZone(context.Background(), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if zone.URL() != "https://zone-new.example" || checks.Load() != 3 {
+		t.Errorf("zone URL %q after %d checks, want the zone's URL after the third", zone.URL(), checks.Load())
+	}
+}
+
+func TestKeycardCreateZoneGivesUpOnAZoneThatNeverBootstraps(t *testing.T) {
+	t.Parallel()
+	server, _ := newZoneServer(t, 0)
+	keycard := sandbox.NewKeycard(server.URL, fakeClientID, fakeSecret)
+	keycard.SetZonePolling(time.Millisecond, 20*time.Millisecond)
+
+	if _, err := keycard.CreateZone(context.Background(), "demo"); !errors.Is(err, sandbox.ErrZoneNotReady) {
+		t.Errorf("err = %v, want ErrZoneNotReady", err)
 	}
 }

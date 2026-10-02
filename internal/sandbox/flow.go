@@ -130,3 +130,15 @@ func accessText(access bool) string {
 	}
 	return "no access"
 }
+
+// sleep waits for d and reports true, or reports false once ctx is done.
+func sleep(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
