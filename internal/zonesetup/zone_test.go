@@ -41,6 +41,8 @@ const (
 	implicit      = "implicit"
 	identifierKey = "identifier"
 	required      = "required"
+	typeKey       = "type"
+	tokenType     = "token"
 )
 
 type fakeItem struct {
@@ -70,6 +72,8 @@ type fakeAPI struct {
 	filteredProviders []fakeProvider
 	resources         []fakeResource
 	secrets           []fakeVaultSecret
+	users             []fakeUser
+	credentials       []fakeCredential
 	posts             [][]byte
 	patches           [][]byte
 	failPath          string
@@ -93,6 +97,7 @@ func (f *fakeAPI) serve(t *testing.T) string {
 		f.listProviders(w, r)
 	}))
 	f.serveResources(mux)
+	f.serveUserAccess(mux)
 	mux.HandleFunc("POST /zones/{id}/providers", f.authed(f.createProvider))
 	mux.HandleFunc("GET /zones/{id}/applications", f.authed(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -304,6 +309,55 @@ func (f *fakeAPI) createSecret(w http.ResponseWriter, r *http.Request) {
 	secret := fakeVaultSecret{"secret-new-" + strconv.Itoa(len(f.posts)), body.EntityID}
 	f.secrets = append(f.secrets, secret)
 	writeJSON(w, secret.toJSON())
+}
+
+type fakeUser struct {
+	id, email string
+}
+
+func (u fakeUser) key() string { return u.id }
+
+func (u fakeUser) toJSON() map[string]any { return map[string]any{"id": u.id, "email": u.email} }
+
+type fakeCredential struct {
+	id, applicationID, typ, providerID, subject string
+}
+
+func (c fakeCredential) key() string { return c.id }
+
+func (c fakeCredential) toJSON() map[string]any {
+	credential := map[string]any{"id": c.id, "application_id": c.applicationID, typeKey: c.typ}
+	if c.typ == tokenType {
+		credential["provider_id"], credential["subject"] = c.providerID, c.subject
+	}
+	return credential
+}
+
+func (f *fakeAPI) serveUserAccess(mux *http.ServeMux) {
+	mux.HandleFunc("GET /zones/{id}/users", f.authed(func(w http.ResponseWriter, r *http.Request) {
+		var found []fakeUser
+		for _, user := range f.users {
+			if user.email == r.URL.Query().Get("filter[email]") {
+				found = append(found, user)
+			}
+		}
+		writePage(w, r, found)
+	}))
+	mux.HandleFunc("GET /zones/{id}/application-credentials", f.authed(func(w http.ResponseWriter, r *http.Request) {
+		var found []fakeCredential
+		for _, credential := range f.credentials {
+			if credential.applicationID == r.URL.Query().Get("applicationId") {
+				found = append(found, credential)
+			}
+		}
+		writePage(w, r, found)
+	}))
+	mux.HandleFunc("POST /zones/{id}/application-credentials", f.authed(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.posts = append(f.posts, readBody(w, r))
+		writeJSON(w, fakeCredential{id: "credential-new-" + strconv.Itoa(len(f.posts)), typ: tokenType}.toJSON())
+	}))
 }
 
 func readBody(w http.ResponseWriter, r *http.Request) []byte {
@@ -993,5 +1047,119 @@ func TestSecretErrorsHoldNoToken(t *testing.T) {
 		if !errors.Is(err, zonesetup.ErrAPI) {
 			t.Errorf("%s err = %v, want %v", name, err, zonesetup.ErrAPI)
 		}
+	}
+}
+
+func TestUserAccess(t *testing.T) {
+	t.Parallel()
+	const (
+		appK      = "application-k"
+		providerK = "provider-k"
+		subject   = "system:serviceaccount:agents:user-1"
+		email     = "ada@example.com"
+		existingK = "credential-k"
+	)
+	ada := fakeUser{"user-1", email}
+	bob := fakeUser{"user-2", "bob@example.com"}
+	cases := []struct {
+		name        string
+		users       []fakeUser
+		credentials []fakeCredential
+		handlers    map[string]http.HandlerFunc
+		wantID      string
+		wantErr     error
+		wantPost    string
+	}{
+		{
+			name: "found is not written", users: []fakeUser{bob, ada},
+			credentials: []fakeCredential{
+				{"credential-1", appK, tokenType, providerK, "system:serviceaccount:agents:user-2"},
+				{"credential-2", appK, "password", "", ""},
+				{existingK, appK, tokenType, providerK, subject},
+			},
+			wantID: existingK,
+		},
+		{
+			name: "a missing credential is created beside a bare-star one", users: []fakeUser{ada},
+			credentials: []fakeCredential{
+				{"credential-1", appK, tokenType, "provider-other", subject},
+				{"credential-star", appK, tokenType, providerK, "*"},
+			},
+			wantID: "credential-new-1",
+			wantPost: `{"application_id":"application-k","provider_id":"provider-k","type":"token",` +
+				`"subject":"system:serviceaccount:agents:user-1"}`,
+		},
+		{name: "a missing user is refused", users: []fakeUser{bob}, wantErr: zonesetup.ErrUserNotFound},
+		{
+			name: "an email that differs in case is not found", users: []fakeUser{{"user-1", "Ada@Example.com"}},
+			wantErr: zonesetup.ErrUserNotFound,
+		},
+		{
+			name: "two users are refused", users: []fakeUser{ada, {"user-3", email}},
+			wantErr: zonesetup.ErrUserAmbiguous,
+		},
+		{
+			name: "a wildcard credential for the provider is refused", users: []fakeUser{ada},
+			credentials: []fakeCredential{
+				{existingK, appK, tokenType, providerK, subject},
+				{"credential-any", appK, tokenType, providerK, "system:serviceaccount:agents:*"},
+			},
+			wantErr: zonesetup.ErrCredentialWildcard,
+		},
+		{
+			name: "two credentials for the subject are refused", users: []fakeUser{ada},
+			credentials: []fakeCredential{
+				{existingK, appK, tokenType, providerK, subject},
+				{"credential-j", appK, tokenType, providerK, subject},
+			},
+			wantErr: zonesetup.ErrAPI,
+		},
+		{
+			name: "a credential of another application is refused", users: []fakeUser{ada},
+			handlers: map[string]http.HandlerFunc{"/zones/zone-a/application-credentials": rawBody(`{"items":[` +
+				`{"id":"credential-x","application_id":"application-other","type":"token",` +
+				`"provider_id":"provider-k","subject":"system:serviceaccount:agents:user-1"}],` +
+				`"pagination":{"after_cursor":""}}`)},
+			wantErr: zonesetup.ErrAPI,
+		},
+		{
+			name: "a create response without an id is refused", users: []fakeUser{ada},
+			handlers: map[string]http.HandlerFunc{"/zones/zone-a/application-credentials": func(
+				w http.ResponseWriter, r *http.Request,
+			) {
+				if r.Method == http.MethodGet {
+					rawBody(`{"items":[],"pagination":{"after_cursor":""}}`)(w, r)
+					return
+				}
+				rawBody(`{"type":"token"}`)(w, r)
+			}},
+			wantErr: zonesetup.ErrAPI,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeAPI{
+				zones: []fakeItem{{zoneA, issuerA}}, users: tc.users, credentials: tc.credentials,
+				handlers: tc.handlers,
+			}
+			session := connectZoneA(t, fake)
+			var credentialID string
+			userID, err := session.FindUser(t.Context(), email)
+			if err == nil {
+				subject := zonesetup.ServiceAccountSubject("agents", userID)
+				credentialID, err = session.FindTokenCredential(t.Context(), appK, providerK, subject)
+				if err == nil && credentialID == "" {
+					credentialID, err = session.CreateTokenCredential(t.Context(), appK, providerK, subject)
+				}
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if credentialID != tc.wantID {
+				t.Errorf("id = %q, want %q", credentialID, tc.wantID)
+			}
+			assertBodies(t, "POST", fake.posts, tc.wantPost)
+		})
 	}
 }

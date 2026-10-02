@@ -22,6 +22,7 @@ const (
 	maxTokenResponseBytes = 1 << 20
 	requestTimeout        = 30 * time.Second
 	pageSize              = 100
+	tokenCredential       = "token"
 )
 
 // Session is one authenticated run against the zone the values file names.
@@ -390,6 +391,99 @@ func (s *Session) AddApplicationDependency(ctx context.Context, applicationID, r
 	return nil
 }
 
+// ServiceAccountSubject is the sub claim of a Kubernetes token for the
+// ServiceAccount named userID in namespace.
+func ServiceAccountSubject(namespace, userID string) string {
+	return "system:serviceaccount:" + namespace + ":" + userID
+}
+
+// FindUser returns the id of the zone's user whose email is exactly email,
+// as svc-iam's email filter matches it. Every error wraps ErrAPI,
+// ErrUserAmbiguous or ErrUserNotFound.
+func (s *Session) FindUser(ctx context.Context, email string) (string, error) {
+	all, err := s.listUsers(ctx, email)
+	if err != nil {
+		return "", err
+	}
+	var found []keycard.User
+	for _, user := range all {
+		if user.Email == email {
+			found = append(found, user)
+		}
+	}
+	switch {
+	case len(found) > 1:
+		return "", fmt.Errorf("%w: %d users have the email %s", ErrUserAmbiguous, len(found), email)
+	case len(found) == 0:
+		return "", fmt.Errorf("%w: no user has the email %s. Create the user in the zone first", ErrUserNotFound, email)
+	case found[0].ID == "":
+		return "", fmt.Errorf("%w: the user %s has no id", ErrAPI, email)
+	default:
+		return found[0].ID, nil
+	}
+}
+
+// FindTokenCredential returns the id of the application's token credential
+// that the provider verifies for subject, or "" when there is none. A bare
+// "*" subject, which svc-iam stores for a credential created without one,
+// matches only a literal "*" and is ignored. Every error wraps ErrAPI or
+// ErrCredentialWildcard.
+func (s *Session) FindTokenCredential(ctx context.Context, applicationID, providerID, subject string) (string, error) {
+	all, err := s.listCredentials(ctx, applicationID)
+	if err != nil {
+		return "", err
+	}
+	var found []string
+	for _, credential := range all {
+		switch {
+		case credential.Type != tokenCredential, credential.ProviderID != providerID:
+		case wildcardSubject(credential.Subject):
+			return "", fmt.Errorf("%w: credential %s of application %s, for provider %s, has the subject %s",
+				ErrCredentialWildcard, credential.ID, applicationID, providerID, credential.Subject)
+		case credential.Subject == subject:
+			found = append(found, credential.ID)
+		}
+	}
+	switch {
+	case len(found) > 1:
+		return "", fmt.Errorf("%w: application %s has %d token credentials for %s",
+			ErrAPI, applicationID, len(found), subject)
+	case len(found) == 0:
+		return "", nil
+	case found[0] == "":
+		return "", fmt.Errorf("%w: the token credential for %s has no id", ErrAPI, subject)
+	default:
+		return found[0], nil
+	}
+}
+
+func wildcardSubject(subject string) bool {
+	return len(subject) > 1 && strings.HasSuffix(subject, "*")
+}
+
+// CreateTokenCredential creates the application's token credential that the
+// provider verifies for subject, and returns its id.
+func (s *Session) CreateTokenCredential(
+	ctx context.Context,
+	applicationID, providerID, subject string,
+) (string, error) {
+	created, err := s.zones.ApplicationCredentials.New(ctx, s.Zone.ID, keycard.ZoneApplicationCredentialNewParams{
+		OfApplicationCredentialCreateToken: &keycard.ZoneApplicationCredentialNewParamsBodyApplicationCredentialCreateToken{
+			ApplicationID: applicationID,
+			ProviderID:    providerID,
+			Type:          tokenCredential,
+			Subject:       keycard.String(subject),
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("%w: create token credential for %s: %w", ErrAPI, subject, requestError(err))
+	}
+	if created == nil || created.ID == "" {
+		return "", fmt.Errorf("%w: create token credential for %s: the response holds no credential id", ErrAPI, subject)
+	}
+	return created.ID, nil
+}
+
 func (s *Session) vaultProvider(ctx context.Context) (string, error) {
 	if s.vaultProviderID != "" {
 		return s.vaultProviderID, nil
@@ -462,6 +556,47 @@ func (s *Session) listApplications(ctx context.Context, identifier string) ([]ke
 			complete: page.JSON.Items.Valid() && page.JSON.Pagination.Valid(),
 		}, nil
 	})
+}
+
+func (s *Session) listUsers(ctx context.Context, email string) ([]keycard.User, error) {
+	return listAll("users", func(params pageParams) (listPage[keycard.User], error) {
+		page, err := s.zones.Users.List(ctx, s.Zone.ID, keycard.ZoneUserListParams{
+			After: params.After, Limit: params.Limit,
+			FilterEmail: keycard.ZoneUserListParamsFilterEmailUnion{OfString: keycard.String(email)},
+		})
+		if err != nil || page == nil {
+			return listPage[keycard.User]{}, err //nolint:wrapcheck // listAll passes it through requestError.
+		}
+		return listPage[keycard.User]{
+			items: page.Items, after: page.Pagination.AfterCursor,
+			complete: page.JSON.Items.Valid() && page.JSON.Pagination.Valid(),
+		}, nil
+	})
+}
+
+func (s *Session) listCredentials(ctx context.Context, applicationID string) ([]keycard.CredentialUnion, error) {
+	all, err := listAll("application credentials", func(params pageParams) (listPage[keycard.CredentialUnion], error) {
+		page, err := s.zones.ApplicationCredentials.List(ctx, s.Zone.ID, keycard.ZoneApplicationCredentialListParams{
+			After: params.After, Limit: params.Limit, ApplicationID: keycard.String(applicationID),
+		})
+		if err != nil || page == nil {
+			return listPage[keycard.CredentialUnion]{}, err //nolint:wrapcheck // listAll passes it through requestError.
+		}
+		return listPage[keycard.CredentialUnion]{
+			items: page.Items, after: page.Pagination.AfterCursor,
+			complete: page.JSON.Items.Valid() && page.JSON.Pagination.Valid(),
+		}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, credential := range all {
+		if credential.ApplicationID != applicationID {
+			return nil, fmt.Errorf("%w: a credential listed for application %s has another application_id",
+				ErrAPI, applicationID)
+		}
+	}
+	return all, nil
 }
 
 func (s *Session) listProviders(
