@@ -27,6 +27,10 @@ var (
 	// ErrApplicationAmbiguous is an application identifier more than one
 	// application in the zone has.
 	ErrApplicationAmbiguous = errors.New("application ambiguous")
+	// ErrCredentialUnbound is a token credential on the Application for the
+	// cluster's provider that names no subject. Such a credential accepts a
+	// token from any ServiceAccount the provider's issuer signs.
+	ErrCredentialUnbound = errors.New("token credential bound to no subject")
 	// ErrMissingSecret is a credential the values file names but the
 	// environment or filesystem does not hold.
 	ErrMissingSecret = errors.New("missing secret")
@@ -45,6 +49,11 @@ var (
 	ErrResourceAmbiguous = errors.New("resource ambiguous")
 	// ErrValues is a values file that cannot be used as written.
 	ErrValues = errors.New("values file")
+	// ErrUserAmbiguous is an email more than one user in the zone has.
+	ErrUserAmbiguous = errors.New("user ambiguous")
+	// ErrUserNotFound is an email no user in the zone has. The user must
+	// already exist in the zone. The management API cannot create one.
+	ErrUserNotFound = errors.New("user not found")
 	// ErrZoneAmbiguous is a zone_url more than one zone issues from.
 	ErrZoneAmbiguous = errors.New("zone ambiguous")
 	// ErrZoneMismatch is a zone_id and a zone_url that name different zones.

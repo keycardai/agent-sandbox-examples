@@ -2,8 +2,10 @@
 // file. It finds or creates the provider for the cluster's OIDC issuer and the
 // egress proxy Application with implicit consent, finds, creates or patches
 // each resource, stores each secret_env credential, and makes each resource a
-// dependency of the Application. It prints the k8s_sandbox values as YAML. With
-// --dry-run it changes nothing and prints nothing on stdout.
+// dependency of the Application. For each user it binds the user's
+// ServiceAccount to the Application with a token credential. It prints the
+// k8s_sandbox and sandbox_user_access values as YAML. With --dry-run it changes
+// nothing and prints nothing on stdout.
 //
 //	zone-setup --values zone-setup.yaml > zone-setup.out.yaml
 package main
@@ -35,7 +37,7 @@ func main() {
 func newCommand() *cli.Command {
 	return &cli.Command{
 		Name:            "zone-setup",
-		Usage:           "find or create the zone's provider, egress proxy application and resources",
+		Usage:           "find or create the zone's provider, application, resources and users' token credentials",
 		HideHelpCommand: true,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "values", Required: true, Usage: "the values file, YAML or JSON"},
@@ -52,6 +54,15 @@ type output struct {
 		Namespace             string `json:"namespace"`
 		ProviderID            string `json:"provider_id"`
 	} `json:"k8s_sandbox"`
+	SandboxUserAccess []userAccess `json:"sandbox_user_access,omitempty"`
+}
+
+type userAccess struct {
+	UserEmail      string `json:"user_email"`
+	UserID         string `json:"user_id"`
+	ServiceAccount string `json:"service_account"`
+	ClientID       string `json:"client_id"`
+	Namespace      string `json:"namespace"`
 }
 
 func setup(ctx context.Context, cmd *cli.Command) error {
@@ -82,6 +93,10 @@ func setup(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	access, err := ensureUserAccess(ctx, cmd, session, applicationID, providerID, values)
+	if err != nil {
+		return err
+	}
 	if cmd.Bool("dry-run") {
 		sayf(cmd, "dry run: nothing was written")
 		return nil
@@ -91,6 +106,11 @@ func setup(ctx context.Context, cmd *cli.Command) error {
 	out.K8sSandbox.ApplicationIdentifier = identifier
 	out.K8sSandbox.Namespace = values.Namespace
 	out.K8sSandbox.ProviderID = providerID
+	out.SandboxUserAccess = access
+	return writeOutput(cmd, out)
+}
+
+func writeOutput(cmd *cli.Command, out output) error {
 	raw, err := yaml.Marshal(out)
 	if err != nil {
 		return fmt.Errorf("encoding the output: %w", err)
@@ -306,6 +326,64 @@ func ensureDependency(
 		sayf(cmd, "added resource %s as a dependency", resourceID)
 	}
 	return nil
+}
+
+func ensureUserAccess(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	applicationID, providerID string,
+	values *zonesetup.Values,
+) ([]userAccess, error) {
+	access := make([]userAccess, 0, len(values.Users))
+	for _, user := range values.Users {
+		userID, err := session.FindUser(ctx, user.Email)
+		if err != nil {
+			return nil, fmt.Errorf("finding the user %s: %w", user.Email, err)
+		}
+		sayf(cmd, "found user %s for %s", userID, user.Email)
+		subject := zonesetup.ServiceAccountSubject(values.Namespace, userID)
+		credentialID, err := ensureTokenCredential(ctx, cmd, session, applicationID, providerID, subject)
+		if err != nil {
+			return nil, err
+		}
+		access = append(access, userAccess{
+			UserEmail:      user.Email,
+			UserID:         userID,
+			ServiceAccount: subject,
+			ClientID:       credentialID,
+			Namespace:      values.Namespace,
+		})
+	}
+	return access, nil
+}
+
+func ensureTokenCredential(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	applicationID, providerID, subject string,
+) (string, error) {
+	if applicationID == "" || providerID == "" {
+		sayf(cmd, "would create a token credential for %s", subject)
+		return "", nil
+	}
+	credentialID, err := session.FindTokenCredential(ctx, applicationID, providerID, subject)
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("finding the token credential for %s: %w", subject, err)
+	case credentialID != "":
+		sayf(cmd, "found token credential %s for %s", credentialID, subject)
+		return credentialID, nil
+	case cmd.Bool("dry-run"):
+		sayf(cmd, "would create a token credential for %s", subject)
+		return "", nil
+	}
+	if credentialID, err = session.CreateTokenCredential(ctx, applicationID, providerID, subject); err != nil {
+		return "", fmt.Errorf("creating the token credential for %s: %w", subject, err)
+	}
+	sayf(cmd, "created token credential %s for %s", credentialID, subject)
+	return credentialID, nil
 }
 
 func sayf(cmd *cli.Command, format string, args ...any) {

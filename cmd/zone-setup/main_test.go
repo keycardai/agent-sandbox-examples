@@ -16,11 +16,13 @@ import (
 )
 
 const (
-	applicationK   = "application-k"
-	listStoredCall = "GET /zones/zone-a/secrets"
-	postResources  = "POST /zones/zone-a/resources"
-	storeCall      = "POST /zones/zone-a/secrets"
-	resourceToken  = "resource-token-secret"
+	applicationK     = "application-k"
+	bindCall         = "POST /zones/zone-a/application-credentials"
+	listBindingsCall = "GET /zones/zone-a/application-credentials"
+	listStoredCall   = "GET /zones/zone-a/secrets"
+	postResources    = "POST /zones/zone-a/resources"
+	storeCall        = "POST /zones/zone-a/secrets"
+	resourceToken    = "resource-token-secret"
 )
 
 type fakeZone struct {
@@ -56,6 +58,11 @@ func (f *fakeZone) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				`"credential_provider_id":"provider-gh"}`,
 		}[query.Get("filter[identifier]")]),
 		"GET /zones/zone-a/applications/application-k/dependencies": page(`{"id":"resource-gh"}`),
+		"GET /zones/zone-a/users": page(map[string]string{
+			"ada@example.com": `{"id":"user-1","email":"ada@example.com"}`,
+		}[query.Get("filter[email]")]),
+		listBindingsCall: page(""),
+		bindCall:         `{"id":"credential-new","type":"token"}`,
 	}[call]
 	if override, ok := f.bodies[call]; ok {
 		body = override
@@ -66,6 +73,94 @@ func (f *fakeZone) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = w.Write([]byte(body))
+}
+
+func TestEnsureUserAccess(t *testing.T) {
+	t.Parallel()
+	const (
+		email     = "ada@example.com"
+		namespace = "agents"
+		subject   = "system:serviceaccount:agents:user-1"
+	)
+	values := &zonesetup.Values{Namespace: namespace, Users: []zonesetup.UserValues{{Email: email}}}
+	pending := []userAccess{{UserEmail: email, UserID: "user-1", ServiceAccount: subject, Namespace: namespace}}
+	cases := []struct {
+		name          string
+		dryRun        bool
+		applicationID string
+		wantAccess    []userAccess
+		wantWrites    []string
+		wantLog       string
+	}{
+		{
+			name: "a run creates the missing credential", applicationID: applicationK,
+			wantAccess: []userAccess{{
+				UserEmail: email, UserID: "user-1", ServiceAccount: subject,
+				ClientID: "credential-new", Namespace: namespace,
+			}},
+			wantWrites: []string{bindCall},
+			wantLog: "found user user-1 for ada@example.com\n" +
+				"created token credential credential-new for " + subject + "\n",
+		},
+		{
+			name: "a dry run writes nothing", dryRun: true, applicationID: applicationK, wantAccess: pending,
+			wantLog: "found user user-1 for ada@example.com\nwould create a token credential for " + subject + "\n",
+		},
+		{
+			name: "a dry run without the application lists no credentials", dryRun: true, wantAccess: pending,
+			wantLog: "found user user-1 for ada@example.com\nwould create a token credential for " + subject + "\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeZone{}
+			session := connect(t, fake)
+			var stderr bytes.Buffer
+			cmd := newCommand()
+			cmd.ErrWriter = &stderr
+			var access []userAccess
+			cmd.Action = func(ctx context.Context, cmd *cli.Command) error {
+				var err error
+				access, err = ensureUserAccess(ctx, cmd, session, tc.applicationID, "provider-k", values)
+				return err
+			}
+			args := []string{"zone-setup", "--values", "unused"}
+			if tc.dryRun {
+				args = append(args, "--dry-run")
+			}
+			if err := cmd.Run(t.Context(), args); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if !slices.Equal(access, tc.wantAccess) {
+				t.Errorf("access = %+v, want %+v", access, tc.wantAccess)
+			}
+			if !slices.Equal(fake.writes, tc.wantWrites) {
+				t.Errorf("writes = %q, want %q", fake.writes, tc.wantWrites)
+			}
+			if got := stderr.String(); got != tc.wantLog {
+				t.Errorf("stderr = %q, want %q", got, tc.wantLog)
+			}
+			if listed := slices.Contains(fake.reads, listBindingsCall); listed != (tc.applicationID != "") {
+				t.Errorf("listed credentials = %t, want %t", listed, tc.applicationID != "")
+			}
+		})
+	}
+}
+
+func connect(t *testing.T, fake *fakeZone) *zonesetup.Session {
+	t.Helper()
+	server := httptest.NewServer(fake)
+	t.Cleanup(server.Close)
+	session, err := zonesetup.Connect(t.Context(), &zonesetup.Values{
+		ManagementAPIURL:         server.URL,
+		ZoneID:                   "zone-a",
+		ManagementServiceAccount: zonesetup.ManagementServiceAccountValues{ClientID: "sa-1"},
+	}, &zonesetup.Secrets{ManagementClientSecret: "sa-secret"})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	return session
 }
 
 func TestEnsureResources(t *testing.T) {
@@ -143,16 +238,7 @@ func TestEnsureResources(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			fake := &fakeZone{bodies: tc.bodies}
-			server := httptest.NewServer(fake)
-			t.Cleanup(server.Close)
-			session, err := zonesetup.Connect(t.Context(), &zonesetup.Values{
-				ManagementAPIURL:         server.URL,
-				ZoneID:                   "zone-a",
-				ManagementServiceAccount: zonesetup.ManagementServiceAccountValues{ClientID: "sa-1"},
-			}, &zonesetup.Secrets{ManagementClientSecret: "sa-secret"})
-			if err != nil {
-				t.Fatalf("Connect: %v", err)
-			}
+			session := connect(t, fake)
 			var stdout, stderr bytes.Buffer
 			cmd := newCommand()
 			cmd.Writer, cmd.ErrWriter = &stdout, &stderr
@@ -164,7 +250,7 @@ func TestEnsureResources(t *testing.T) {
 			if tc.dryRun {
 				args = append(args, "--dry-run")
 			}
-			if err = cmd.Run(t.Context(), args); (err != nil) != tc.wantErr {
+			if err := cmd.Run(t.Context(), args); (err != nil) != tc.wantErr {
 				t.Fatalf("Run: err = %v, want an error: %t", err, tc.wantErr)
 			}
 			if !slices.Equal(fake.writes, tc.wantWrites) {
