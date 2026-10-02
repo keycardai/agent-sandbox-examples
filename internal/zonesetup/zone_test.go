@@ -328,10 +328,7 @@ func (c fakeCredential) key() string { return c.id }
 func (c fakeCredential) toJSON() map[string]any {
 	credential := map[string]any{"id": c.id, "application_id": c.applicationID, typeKey: c.typ}
 	if c.typ == tokenType {
-		credential["provider_id"], credential["subject"] = c.providerID, nil
-		if c.subject != "" {
-			credential["subject"] = c.subject
-		}
+		credential["provider_id"], credential["subject"] = c.providerID, c.subject
 	}
 	return credential
 }
@@ -340,7 +337,7 @@ func (f *fakeAPI) serveUserAccess(mux *http.ServeMux) {
 	mux.HandleFunc("GET /zones/{id}/users", f.authed(func(w http.ResponseWriter, r *http.Request) {
 		var found []fakeUser
 		for _, user := range f.users {
-			if strings.EqualFold(user.email, r.URL.Query().Get("filter[email]")) {
+			if user.email == r.URL.Query().Get("filter[email]") {
 				found = append(found, user)
 			}
 		}
@@ -1060,8 +1057,9 @@ func TestUserAccess(t *testing.T) {
 		providerK = "provider-k"
 		subject   = "system:serviceaccount:agents:user-1"
 		email     = "ada@example.com"
+		existingK = "credential-k"
 	)
-	ada := fakeUser{"user-1", "Ada@Example.com"}
+	ada := fakeUser{"user-1", email}
 	bob := fakeUser{"user-2", "bob@example.com"}
 	cases := []struct {
 		name        string
@@ -1077,26 +1075,44 @@ func TestUserAccess(t *testing.T) {
 			credentials: []fakeCredential{
 				{"credential-1", appK, tokenType, providerK, "system:serviceaccount:agents:user-2"},
 				{"credential-2", appK, "password", "", ""},
-				{"credential-k", appK, tokenType, providerK, subject},
+				{existingK, appK, tokenType, providerK, subject},
 			},
-			wantID: "credential-k",
+			wantID: existingK,
 		},
 		{
-			name: "a missing credential is created", users: []fakeUser{ada},
-			credentials: []fakeCredential{{"credential-1", appK, tokenType, "provider-other", subject}},
-			wantID:      "credential-new-1",
+			name: "a missing credential is created beside a bare-star one", users: []fakeUser{ada},
+			credentials: []fakeCredential{
+				{"credential-1", appK, tokenType, "provider-other", subject},
+				{"credential-star", appK, tokenType, providerK, "*"},
+			},
+			wantID: "credential-new-1",
 			wantPost: `{"application_id":"application-k","provider_id":"provider-k","type":"token",` +
 				`"subject":"system:serviceaccount:agents:user-1"}`,
 		},
 		{name: "a missing user is refused", users: []fakeUser{bob}, wantErr: zonesetup.ErrUserNotFound},
 		{
+			name: "an email that differs in case is not found", users: []fakeUser{{"user-1", "Ada@Example.com"}},
+			wantErr: zonesetup.ErrUserNotFound,
+		},
+		{
 			name: "two users are refused", users: []fakeUser{ada, {"user-3", email}},
 			wantErr: zonesetup.ErrUserAmbiguous,
 		},
 		{
-			name: "an unbound credential for the provider is refused", users: []fakeUser{ada},
-			credentials: []fakeCredential{{"credential-any", appK, tokenType, providerK, ""}},
-			wantErr:     zonesetup.ErrCredentialUnbound,
+			name: "a wildcard credential for the provider is refused", users: []fakeUser{ada},
+			credentials: []fakeCredential{
+				{existingK, appK, tokenType, providerK, subject},
+				{"credential-any", appK, tokenType, providerK, "system:serviceaccount:agents:*"},
+			},
+			wantErr: zonesetup.ErrCredentialWildcard,
+		},
+		{
+			name: "two credentials for the subject are refused", users: []fakeUser{ada},
+			credentials: []fakeCredential{
+				{existingK, appK, tokenType, providerK, subject},
+				{"credential-j", appK, tokenType, providerK, subject},
+			},
+			wantErr: zonesetup.ErrAPI,
 		},
 		{
 			name: "a credential of another application is refused", users: []fakeUser{ada},
