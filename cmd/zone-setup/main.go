@@ -1,7 +1,8 @@
 // Command zone-setup configures a Keycard zone for the sandboxes from a values
-// file. It finds the zone's provider for the cluster's OIDC issuer, or
-// creates it, and prints its id as k8s_sandbox.provider_id in YAML. With
-// --dry-run it creates nothing and prints nothing on stdout.
+// file. It finds or creates the zone's provider for the cluster's OIDC issuer
+// and the egress proxy Application, with implicit consent, and prints their
+// ids under k8s_sandbox in YAML. With --dry-run it changes nothing and prints
+// nothing on stdout.
 //
 //	zone-setup --values zone-setup.yaml > zone-setup.out.yaml
 package main
@@ -13,6 +14,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/keycardai/keycard-go"
 	"github.com/urfave/cli/v3"
 	"sigs.k8s.io/yaml"
 
@@ -32,7 +34,7 @@ func main() {
 func newCommand() *cli.Command {
 	return &cli.Command{
 		Name:            "zone-setup",
-		Usage:           "find or create the zone's provider for the cluster's OIDC issuer",
+		Usage:           "find or create the zone's provider and egress proxy application",
 		HideHelpCommand: true,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "values", Required: true, Usage: "the values file, YAML or JSON"},
@@ -44,7 +46,9 @@ func newCommand() *cli.Command {
 
 type output struct {
 	K8sSandbox struct {
-		ProviderID string `json:"provider_id"`
+		ApplicationID         string `json:"application_id"`
+		ApplicationIdentifier string `json:"application_identifier"`
+		ProviderID            string `json:"provider_id"`
 	} `json:"k8s_sandbox"`
 }
 
@@ -67,11 +71,18 @@ func setup(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	identifier := zonesetup.ApplicationIdentifier(values.Namespace)
+	applicationID, err := ensureApplication(ctx, cmd, session, identifier, values.Namespace)
+	if err != nil {
+		return err
+	}
 	if cmd.Bool("dry-run") {
 		sayf(cmd, "dry run: nothing was written")
 		return nil
 	}
 	var out output
+	out.K8sSandbox.ApplicationID = applicationID
+	out.K8sSandbox.ApplicationIdentifier = identifier
 	out.K8sSandbox.ProviderID = providerID
 	raw, err := yaml.Marshal(out)
 	if err != nil {
@@ -105,6 +116,40 @@ func ensureProvider(
 	}
 	sayf(cmd, "created provider %s", providerID)
 	return providerID, nil
+}
+
+func ensureApplication(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	identifier, namespace string,
+) (string, error) {
+	app, err := session.FindApplication(ctx, identifier)
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("finding the application: %w", err)
+	case app.ID == "" && cmd.Bool("dry-run"):
+		sayf(cmd, "would create application %s", identifier)
+		return "", nil
+	case app.ID == "":
+		applicationID, err := session.CreateApplication(ctx, identifier, namespace)
+		if err != nil {
+			return "", fmt.Errorf("creating the application: %w", err)
+		}
+		sayf(cmd, "created application %s", applicationID)
+		return applicationID, nil
+	case app.Consent == keycard.ApplicationConsentImplicit:
+		sayf(cmd, "found application %s", app.ID)
+		return app.ID, nil
+	case cmd.Bool("dry-run"):
+		sayf(cmd, "would set consent to implicit on application %s", app.ID)
+		return app.ID, nil
+	}
+	if err := session.SetApplicationConsentImplicit(ctx, app.ID); err != nil {
+		return "", fmt.Errorf("setting consent on the application: %w", err)
+	}
+	sayf(cmd, "set consent to implicit on application %s", app.ID)
+	return app.ID, nil
 }
 
 func sayf(cmd *cli.Command, format string, args ...any) {

@@ -121,6 +121,94 @@ func (s *Session) CreateProvider(ctx context.Context, issuerURL string) (string,
 	return provider.ID, nil
 }
 
+// ApplicationIdentifier is the identifier of the egress proxy Application for
+// the sandboxes in namespace.
+func ApplicationIdentifier(namespace string) string {
+	return "urn:keycard:sandbox-proxy:" + namespace
+}
+
+// FindApplication returns the zone's application whose identifier is
+// identifier. Its ID is "" when no application matches. Every error wraps
+// ErrAPI or ErrApplicationAmbiguous.
+func (s *Session) FindApplication(ctx context.Context, identifier string) (keycard.Application, error) {
+	all, err := s.listApplications(ctx, identifier)
+	if err != nil {
+		return keycard.Application{}, err
+	}
+	var found []keycard.Application
+	for _, app := range all {
+		if app.Identifier == identifier {
+			found = append(found, app)
+		}
+	}
+	switch {
+	case len(found) > 1:
+		return keycard.Application{}, fmt.Errorf("%w: %d applications have the identifier %s",
+			ErrApplicationAmbiguous, len(found), identifier)
+	case len(found) == 1 && found[0].ID == "":
+		return keycard.Application{}, fmt.Errorf("%w: the application %s has no id", ErrAPI, identifier)
+	case len(found) == 1:
+		return found[0], nil
+	default:
+		return keycard.Application{}, nil
+	}
+}
+
+// CreateApplication creates the egress proxy Application for the sandboxes in
+// namespace with implicit consent, and returns its id.
+func (s *Session) CreateApplication(ctx context.Context, identifier, namespace string) (string, error) {
+	app, err := s.zones.Applications.New(ctx, s.Zone.ID, keycard.ZoneApplicationNewParams{
+		Identifier: identifier,
+		Name:       "Keycard egress proxy",
+		Description: keycard.String(
+			"Egress proxy sidecar that mints credentials for sandboxes in namespace " + namespace,
+		),
+		Consent: keycard.ZoneApplicationNewParamsConsentImplicit,
+	})
+	if err != nil {
+		return "", fmt.Errorf("%w: create application: %w", ErrAPI, requestError(err))
+	}
+	if app == nil || app.ID == "" {
+		return "", fmt.Errorf("%w: create application: the response holds no application id", ErrAPI)
+	}
+	return app.ID, nil
+}
+
+// SetApplicationConsentImplicit sets the application's consent to implicit.
+// The proxy acts for an absent user, so nobody can answer a consent prompt.
+func (s *Session) SetApplicationConsentImplicit(ctx context.Context, applicationID string) error {
+	app, err := s.zones.Applications.Update(ctx, applicationID, keycard.ZoneApplicationUpdateParams{
+		ZoneID:  s.Zone.ID,
+		Consent: keycard.ZoneApplicationUpdateParamsConsentImplicit,
+	})
+	if err != nil {
+		return fmt.Errorf("%w: update application %s: %w", ErrAPI, applicationID, requestError(err))
+	}
+	if app == nil || app.ID != applicationID {
+		return fmt.Errorf("%w: update application %s: the response holds another application or none",
+			ErrAPI, applicationID)
+	}
+	return nil
+}
+
+func (s *Session) listApplications(ctx context.Context, identifier string) ([]keycard.Application, error) {
+	return listAll("applications", func(params pageParams) (listPage[keycard.Application], error) {
+		page, err := s.zones.Applications.List(ctx, s.Zone.ID, keycard.ZoneApplicationListParams{
+			After: params.After, Limit: params.Limit,
+			FilterIdentifier: keycard.ZoneApplicationListParamsFilterIdentifierUnion{
+				OfString: keycard.String(identifier),
+			},
+		})
+		if err != nil || page == nil {
+			return listPage[keycard.Application]{}, err //nolint:wrapcheck // listAll passes it through requestError.
+		}
+		return listPage[keycard.Application]{
+			items: page.Items, after: page.Pagination.AfterCursor,
+			complete: page.JSON.Items.Valid() && page.JSON.Pagination.Valid(),
+		}, nil
+	})
+}
+
 func (s *Session) listProviders(ctx context.Context) ([]keycard.Provider, error) {
 	return listAll("providers", func(params pageParams) (listPage[keycard.Provider], error) {
 		page, err := s.zones.Providers.List(ctx, s.Zone.ID, keycard.ZoneProviderListParams{

@@ -36,19 +36,39 @@ const (
 	zoneA        = "zone-a"
 	zoneB        = "zone-b"
 	zoneD        = "zone-d"
+	implicit     = "implicit"
+	required     = "required"
 )
 
 type fakeItem struct {
 	id, issuer string
 }
 
+func (i fakeItem) key() string { return i.id }
+
+func (i fakeItem) toJSON() map[string]any {
+	return map[string]any{"id": i.id, "protocols": map[string]any{"oauth2": map[string]any{"issuer": i.issuer}}}
+}
+
+type fakeApp struct {
+	id, identifier, consent string
+}
+
+func (a fakeApp) key() string { return a.id }
+
+func (a fakeApp) toJSON() map[string]any {
+	return map[string]any{"id": a.id, "identifier": a.identifier, "consent": a.consent}
+}
+
 type fakeAPI struct {
-	zones      []fakeItem
-	providers  map[string][]fakeItem
-	posts      [][]byte
-	failPath   string
-	failStatus int
-	handlers   map[string]http.HandlerFunc
+	zones        []fakeItem
+	providers    map[string][]fakeItem
+	applications map[string][]fakeApp
+	posts        [][]byte
+	patches      [][]byte
+	failPath     string
+	failStatus   int
+	handlers     map[string]http.HandlerFunc
 
 	mu    sync.Mutex
 	calls map[string]int
@@ -67,6 +87,30 @@ func (f *fakeAPI) serve(t *testing.T) string {
 		writePage(w, r, f.providers[r.PathValue("id")])
 	}))
 	mux.HandleFunc("POST /zones/{id}/providers", f.authed(f.createProvider))
+	mux.HandleFunc("GET /zones/{id}/applications", f.authed(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		identifier := r.URL.Query().Get("filter[identifier]")
+		var apps []fakeApp
+		for _, app := range f.applications[r.PathValue("id")] {
+			if identifier == "" || app.identifier == identifier {
+				apps = append(apps, app)
+			}
+		}
+		writePage(w, r, apps)
+	}))
+	mux.HandleFunc("POST /zones/{id}/applications", f.authed(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.posts = append(f.posts, readBody(w, r))
+		writeJSON(w, fakeApp{id: "application-new-" + strconv.Itoa(len(f.posts))}.toJSON())
+	}))
+	mux.HandleFunc("PATCH /zones/{id}/applications/{appID}", f.authed(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.patches = append(f.patches, readBody(w, r))
+		writeJSON(w, fakeApp{id: r.PathValue("appID"), consent: implicit}.toJSON())
+	}))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.calls[r.Method+" "+r.URL.Path]++
@@ -116,7 +160,7 @@ func (f *fakeAPI) get(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
-	writeJSON(w, itemJSON(f.zones[i]))
+	writeJSON(w, f.zones[i].toJSON())
 }
 
 func (f *fakeAPI) createProvider(w http.ResponseWriter, r *http.Request) {
@@ -141,14 +185,25 @@ func (f *fakeAPI) createProvider(w http.ResponseWriter, r *http.Request) {
 	provider := fakeItem{"provider-new-" + strconv.Itoa(len(f.posts)), body.Protocols.Oauth2.Issuer}
 	zone := r.PathValue("id")
 	f.providers[zone] = append(f.providers[zone], provider)
-	writeJSON(w, itemJSON(provider))
+	writeJSON(w, provider.toJSON())
 }
 
-func writePage(w http.ResponseWriter, r *http.Request, all []fakeItem) {
+func readBody(w http.ResponseWriter, r *http.Request) []byte {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, `{"error":"bad body"}`, http.StatusBadRequest)
+	}
+	return raw
+}
+
+func writePage[T interface {
+	key() string
+	toJSON() map[string]any
+}](w http.ResponseWriter, r *http.Request, all []T) {
 	query := r.URL.Query()
 	start := 0
 	if after := query.Get("after"); after != "" {
-		i := slices.IndexFunc(all, func(z fakeItem) bool { return z.id == after })
+		i := slices.IndexFunc(all, func(item T) bool { return item.key() == after })
 		if i < 0 {
 			http.Error(w, `{"error":"bad cursor"}`, http.StatusBadRequest)
 			return
@@ -162,11 +217,11 @@ func writePage(w http.ResponseWriter, r *http.Request, all []fakeItem) {
 	end := min(start+size, len(all))
 	items := []any{}
 	for _, item := range all[start:end] {
-		items = append(items, itemJSON(item))
+		items = append(items, item.toJSON())
 	}
 	cursor := ""
 	if end < len(all) {
-		cursor = all[end-1].id
+		cursor = all[end-1].key()
 	}
 	writeJSON(w, map[string]any{"items": items, "pagination": map[string]any{"after_cursor": cursor}})
 }
@@ -214,10 +269,6 @@ func pages(byCursor map[string]string) http.HandlerFunc {
 		}
 		rawBody(byCursor[r.URL.Query().Get("after")])(w, r)
 	}
-}
-
-func itemJSON(item fakeItem) map[string]any {
-	return map[string]any{"id": item.id, "protocols": map[string]any{"oauth2": map[string]any{"issuer": item.issuer}}}
 }
 
 func writeJSON(w http.ResponseWriter, body any) {
@@ -423,6 +474,20 @@ func TestConnect(t *testing.T) {
 	}
 }
 
+func connectZoneA(t *testing.T, fake *fakeAPI) *zonesetup.Session {
+	t.Helper()
+	values := &zonesetup.Values{
+		ManagementAPIURL:         fake.serve(t),
+		ZoneID:                   zoneA,
+		ManagementServiceAccount: zonesetup.ManagementServiceAccountValues{ClientID: fakeClientID},
+	}
+	session, err := zonesetup.Connect(t.Context(), values, &zonesetup.Secrets{ManagementClientSecret: fakeSecret})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	return session
+}
+
 const postProviderCall = "POST /zones/zone-a/providers"
 
 func createProvider(t *testing.T, session *zonesetup.Session, fake *fakeAPI, issuer string) string {
@@ -499,15 +564,7 @@ func TestProvider(t *testing.T) {
 				zones: []fakeItem{{zoneA, issuerA}}, providers: map[string][]fakeItem{zoneA: tc.providers},
 				handlers: tc.handlers,
 			}
-			values := &zonesetup.Values{
-				ManagementAPIURL:         fake.serve(t),
-				ZoneID:                   zoneA,
-				ManagementServiceAccount: zonesetup.ManagementServiceAccountValues{ClientID: fakeClientID},
-			}
-			session, err := zonesetup.Connect(t.Context(), values, &zonesetup.Secrets{ManagementClientSecret: fakeSecret})
-			if err != nil {
-				t.Fatalf("Connect: %v", err)
-			}
+			session := connectZoneA(t, fake)
 			providerID, err := session.FindProvider(t.Context(), cluster)
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("err = %v, want %v", err, tc.wantErr)
@@ -554,5 +611,103 @@ func TestCreateProviderConflictFindsTheConcurrentProvider(t *testing.T) {
 	providerID, err := session.CreateProvider(t.Context(), cluster)
 	if err != nil || providerID != "provider-concurrent" {
 		t.Fatalf("CreateProvider = %q, %v, want provider-concurrent", providerID, err)
+	}
+}
+
+func TestApplication(t *testing.T) {
+	t.Parallel()
+	const (
+		postCall  = "POST /zones/zone-a/applications"
+		patchCall = "PATCH /zones/zone-a/applications/application-k"
+		appK      = "application-k"
+	)
+	identifier := zonesetup.ApplicationIdentifier("agents")
+	other := fakeApp{"application-1", zonesetup.ApplicationIdentifier("other"), implicit}
+	cases := []struct {
+		name         string
+		apps         []fakeApp
+		handlers     map[string]http.HandlerFunc
+		wantID       string
+		wantErr      error
+		wantPatchErr error
+		wantPost     string
+		wantPatch    string
+	}{
+		{
+			name:   "found with implicit consent is not written",
+			apps:   []fakeApp{other, {appK, identifier, implicit}},
+			wantID: appK,
+		},
+		{
+			name: "none is created with implicit consent", apps: []fakeApp{other}, wantID: "application-new-1",
+			wantPost: `{"identifier":"urn:keycard:sandbox-proxy:agents","name":"Keycard egress proxy",` +
+				`"description":"Egress proxy sidecar that mints credentials for sandboxes in namespace agents",` +
+				`"consent":"implicit"}`,
+		},
+		{
+			name: "found with required consent is set to implicit", apps: []fakeApp{{appK, identifier, required}},
+			wantID: appK, wantPatch: `{"consent":"implicit"}`,
+		},
+		{
+			name: "two matches are refused", wantErr: zonesetup.ErrApplicationAmbiguous,
+			apps: []fakeApp{{appK, identifier, implicit}, {"application-l", identifier, implicit}},
+		},
+		{
+			name: "a null update response is refused", apps: []fakeApp{{appK, identifier, required}},
+			handlers: map[string]http.HandlerFunc{"/zones/zone-a/applications/application-k": rawBody("null")},
+			wantID:   appK, wantPatchErr: zonesetup.ErrAPI,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeAPI{
+				zones: []fakeItem{{zoneA, issuerA}}, applications: map[string][]fakeApp{zoneA: tc.apps},
+				handlers: tc.handlers,
+			}
+			session := connectZoneA(t, fake)
+			app, err := session.FindApplication(t.Context(), identifier)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if fake.count(postCall)+fake.count(patchCall) != 0 {
+				t.Fatalf("FindApplication wrote to the zone")
+			}
+			applicationID := app.ID
+			if tc.wantPost != "" {
+				if applicationID != "" {
+					t.Fatalf("FindApplication = %s, want none", applicationID)
+				}
+				if applicationID, err = session.CreateApplication(t.Context(), identifier, "agents"); err != nil {
+					t.Fatalf("CreateApplication: %v", err)
+				}
+			}
+			if app.Consent == required {
+				err = session.SetApplicationConsentImplicit(t.Context(), applicationID)
+				if !errors.Is(err, tc.wantPatchErr) {
+					t.Fatalf("SetApplicationConsentImplicit: err = %v, want %v", err, tc.wantPatchErr)
+				}
+			}
+			if applicationID != tc.wantID {
+				t.Errorf("id = %q, want %q", applicationID, tc.wantID)
+			}
+			assertBodies(t, postCall, fake.posts, tc.wantPost)
+			assertBodies(t, "PATCH", fake.patches, tc.wantPatch)
+		})
+	}
+}
+
+func assertBodies(t *testing.T, call string, got [][]byte, want string) {
+	t.Helper()
+	if want == "" {
+		if len(got) != 0 {
+			t.Errorf("sent %d %s, want none", len(got), call)
+		}
+		return
+	}
+	var gotBody, wantBody map[string]any
+	if len(got) != 1 || json.Unmarshal(got[0], &gotBody) != nil || json.Unmarshal([]byte(want), &wantBody) != nil ||
+		!reflect.DeepEqual(gotBody, wantBody) {
+		t.Errorf("%s bodies = %q, want one %s", call, got, want)
 	}
 }

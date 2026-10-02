@@ -24,6 +24,9 @@ var (
 	ErrAPI = errors.New("management API")
 	// ErrAuth is a service account the token endpoint did not accept.
 	ErrAuth = errors.New("service account token")
+	// ErrApplicationAmbiguous is an application identifier more than one
+	// application in the zone has.
+	ErrApplicationAmbiguous = errors.New("application ambiguous")
 	// ErrMissingSecret is a credential the values file names but the
 	// environment or filesystem does not hold.
 	ErrMissingSecret = errors.New("missing secret")
