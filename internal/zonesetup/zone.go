@@ -60,8 +60,8 @@ func Connect(ctx context.Context, values *Values, secrets *Secrets) (*Session, e
 
 // FindProvider returns the id of the zone's provider whose OAuth issuer is
 // issuerURL, byte for byte, because svc-sts compares a token's iss to it
-// exactly. It returns "" when no provider matches. Every error wraps ErrAPI
-// or ErrProviderAmbiguous.
+// exactly. It returns "" when no provider matches. Every error wraps ErrAPI,
+// ErrProviderAmbiguous or ErrProviderMismatch.
 func (s *Session) FindProvider(ctx context.Context, issuerURL string) (string, error) {
 	all, err := s.listProviders(ctx)
 	if err != nil {
@@ -69,8 +69,12 @@ func (s *Session) FindProvider(ctx context.Context, issuerURL string) (string, e
 	}
 	var found []keycard.Provider
 	for _, provider := range all {
-		if provider.Protocols.Oauth2.Issuer == issuerURL {
+		switch issuer := provider.Protocols.Oauth2.Issuer; {
+		case issuer == issuerURL:
 			found = append(found, provider)
+		case provider.Identifier == issuerURL:
+			return "", fmt.Errorf("%w: provider %s has the identifier %s but the issuer %s",
+				ErrProviderMismatch, provider.ID, issuerURL, issuer)
 		}
 	}
 	switch {
@@ -87,7 +91,8 @@ func (s *Session) FindProvider(ctx context.Context, issuerURL string) (string, e
 
 // CreateProvider creates an issuer-only provider for issuerURL. svc-sts
 // discovers the JWKS from the issuer, so the provider holds no jwks_uri and no
-// client credential.
+// client credential. When the create conflicts with a provider a concurrent
+// run made, it returns that provider's id.
 func (s *Session) CreateProvider(ctx context.Context, issuerURL string) (string, error) {
 	parsed, err := url.Parse(issuerURL)
 	if err != nil {
@@ -101,6 +106,12 @@ func (s *Session) CreateProvider(ctx context.Context, issuerURL string) (string,
 			Oauth2: keycard.ZoneProviderNewParamsProtocolsOauth2{Issuer: keycard.String(issuerURL)},
 		},
 	})
+	var apiErr *keycard.Error
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
+		if id, findErr := s.FindProvider(ctx, issuerURL); findErr != nil || id != "" {
+			return id, findErr
+		}
+	}
 	if err != nil {
 		return "", fmt.Errorf("%w: create provider: %w", ErrAPI, requestError(err))
 	}

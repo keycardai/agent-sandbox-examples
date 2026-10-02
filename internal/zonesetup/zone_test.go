@@ -31,6 +31,7 @@ const (
 	tokenPath    = "/service-account-token"
 	listPath     = "/zones"
 	getAPath     = "/zones/zone-a"
+	providersA   = "/zones/zone-a/providers"
 	emptyPageToA = `{"items":[],"pagination":{"after_cursor":"A"}}`
 	zoneA        = "zone-a"
 	zoneB        = "zone-b"
@@ -474,7 +475,7 @@ func TestProvider(t *testing.T) {
 		},
 		{
 			name: "a provider page of {} is refused", wantErr: zonesetup.ErrAPI,
-			handlers: map[string]http.HandlerFunc{"/zones/zone-a/providers": rawBody("{}")},
+			handlers: map[string]http.HandlerFunc{providersA: rawBody("{}")},
 		},
 		{
 			name: "a match without an id is refused", providers: []fakeItem{{"", cluster}},
@@ -483,6 +484,12 @@ func TestProvider(t *testing.T) {
 		{
 			name: "a trailing slash is another issuer", providers: []fakeItem{{"provider-s", cluster + "/"}},
 			create: true, wantID: created1,
+		},
+		{
+			name: "the identifier with another issuer is refused", wantErr: zonesetup.ErrProviderMismatch,
+			handlers: map[string]http.HandlerFunc{providersA: rawBody(`{"items":[{"id":"provider-k",` +
+				`"identifier":"` + cluster + `","protocols":{"oauth2":{"issuer":"` + cluster + `/"}}}],` +
+				`"pagination":{"after_cursor":""}}`)},
 		},
 	}
 	for _, tc := range cases {
@@ -518,5 +525,34 @@ func TestProvider(t *testing.T) {
 				t.Errorf("id = %q, want %q", providerID, tc.wantID)
 			}
 		})
+	}
+}
+
+func TestCreateProviderConflictFindsTheConcurrentProvider(t *testing.T) {
+	t.Parallel()
+	const cluster = "https://oidc.example.com/id/X"
+	fake := &fakeAPI{zones: []fakeItem{{zoneA, issuerA}}, providers: map[string][]fakeItem{}}
+	fake.handlers = map[string]http.HandlerFunc{providersA: func(w http.ResponseWriter, r *http.Request) {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		if r.Method == http.MethodPost {
+			fake.providers[zoneA] = append(fake.providers[zoneA], fakeItem{"provider-concurrent", cluster})
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+		writePage(w, r, fake.providers[zoneA])
+	}}
+	values := &zonesetup.Values{
+		ManagementAPIURL:         fake.serve(t),
+		ZoneID:                   zoneA,
+		ManagementServiceAccount: zonesetup.ManagementServiceAccountValues{ClientID: fakeClientID},
+	}
+	session, err := zonesetup.Connect(t.Context(), values, &zonesetup.Secrets{ManagementClientSecret: fakeSecret})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	providerID, err := session.CreateProvider(t.Context(), cluster)
+	if err != nil || providerID != "provider-concurrent" {
+		t.Fatalf("CreateProvider = %q, %v, want provider-concurrent", providerID, err)
 	}
 }
