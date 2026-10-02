@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/keycardai/keycard-go"
+
 	"github.com/keycardai/agent-sandbox-poc/internal/zonesetup"
 )
 
@@ -23,21 +25,22 @@ const (
 	fakeToken    = "sa-token"
 	fakeMaxPage  = 2
 
-	issuerA      = "https://a.keycard.cloud"
-	issuerB      = "https://b.keycard.cloud"
-	exchangeCall = "POST /service-account-token"
-	listCall     = "GET /zones"
-	getACall     = "GET /zones/zone-a"
-	tokenPath    = "/service-account-token"
-	listPath     = "/zones"
-	getAPath     = "/zones/zone-a"
-	providersA   = "/zones/zone-a/providers"
-	emptyPageToA = `{"items":[],"pagination":{"after_cursor":"A"}}`
-	zoneA        = "zone-a"
-	zoneB        = "zone-b"
-	zoneD        = "zone-d"
-	implicit     = "implicit"
-	required     = "required"
+	issuerA       = "https://a.keycard.cloud"
+	issuerB       = "https://b.keycard.cloud"
+	exchangeCall  = "POST /service-account-token"
+	listCall      = "GET /zones"
+	getACall      = "GET /zones/zone-a"
+	tokenPath     = "/service-account-token"
+	listPath      = "/zones"
+	getAPath      = "/zones/zone-a"
+	providersA    = "/zones/zone-a/providers"
+	emptyPageToA  = `{"items":[],"pagination":{"after_cursor":"A"}}`
+	zoneA         = "zone-a"
+	zoneB         = "zone-b"
+	zoneD         = "zone-d"
+	implicit      = "implicit"
+	identifierKey = "identifier"
+	required      = "required"
 )
 
 type fakeItem struct {
@@ -57,18 +60,21 @@ type fakeApp struct {
 func (a fakeApp) key() string { return a.id }
 
 func (a fakeApp) toJSON() map[string]any {
-	return map[string]any{"id": a.id, "identifier": a.identifier, "consent": a.consent}
+	return map[string]any{"id": a.id, identifierKey: a.identifier, "consent": a.consent}
 }
 
 type fakeAPI struct {
-	zones        []fakeItem
-	providers    map[string][]fakeItem
-	applications map[string][]fakeApp
-	posts        [][]byte
-	patches      [][]byte
-	failPath     string
-	failStatus   int
-	handlers     map[string]http.HandlerFunc
+	zones             []fakeItem
+	providers         map[string][]fakeItem
+	applications      map[string][]fakeApp
+	filteredProviders []fakeProvider
+	resources         []fakeResource
+	secrets           []fakeVaultSecret
+	posts             [][]byte
+	patches           [][]byte
+	failPath          string
+	failStatus        int
+	handlers          map[string]http.HandlerFunc
 
 	mu    sync.Mutex
 	calls map[string]int
@@ -84,8 +90,9 @@ func (f *fakeAPI) serve(t *testing.T) string {
 	mux.HandleFunc("GET /zones/{id}/providers", f.authed(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		writePage(w, r, f.providers[r.PathValue("id")])
+		f.listProviders(w, r)
 	}))
+	f.serveResources(mux)
 	mux.HandleFunc("POST /zones/{id}/providers", f.authed(f.createProvider))
 	mux.HandleFunc("GET /zones/{id}/applications", f.authed(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -188,6 +195,117 @@ func (f *fakeAPI) createProvider(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, provider.toJSON())
 }
 
+type fakeProvider struct {
+	id, identifier, typ string
+}
+
+func (p fakeProvider) key() string { return p.id }
+
+func (p fakeProvider) toJSON() map[string]any {
+	return map[string]any{"id": p.id, identifierKey: p.identifier, "type": p.typ}
+}
+
+type fakeResource struct {
+	id, identifier string
+	prefix         bool
+	providerID     string
+}
+
+func (r fakeResource) key() string { return r.id }
+
+func (r fakeResource) toJSON() map[string]any {
+	return map[string]any{
+		"id": r.id, identifierKey: r.identifier, "prefix": r.prefix, "credential_provider_id": r.providerID,
+	}
+}
+
+type fakeVaultSecret struct {
+	id, entityID string
+}
+
+func (s fakeVaultSecret) toJSON() map[string]any {
+	return map[string]any{"id": s.id, "entity_id": s.entityID, "type": "token"}
+}
+
+func (f *fakeAPI) listProviders(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	identifier, typ := query.Get("filter[identifier]"), query.Get("filter[type]")
+	if identifier == "" && typ == "" {
+		writePage(w, r, f.providers[r.PathValue("id")])
+		return
+	}
+	var found []fakeProvider
+	for _, p := range f.filteredProviders {
+		if (identifier == "" || p.identifier == identifier) && (typ == "" || p.typ == typ) {
+			found = append(found, p)
+		}
+	}
+	writePage(w, r, found)
+}
+
+func (f *fakeAPI) serveResources(mux *http.ServeMux) {
+	mux.HandleFunc("GET /zones/{id}/resources", f.authed(func(w http.ResponseWriter, r *http.Request) {
+		identifier := r.URL.Query().Get("filter[identifier]")
+		var found []fakeResource
+		for _, resource := range f.resources {
+			if resource.identifier == identifier {
+				found = append(found, resource)
+			}
+		}
+		writePage(w, r, found)
+	}))
+	mux.HandleFunc("POST /zones/{id}/resources", f.authed(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.posts = append(f.posts, readBody(w, r))
+		writeJSON(w, fakeResource{id: "resource-new-" + strconv.Itoa(len(f.posts))}.toJSON())
+	}))
+	mux.HandleFunc("PATCH /zones/{id}/resources/{resourceID}", f.authed(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.patches = append(f.patches, readBody(w, r))
+		writeJSON(w, fakeResource{id: r.PathValue("resourceID")}.toJSON())
+	}))
+	mux.HandleFunc("GET /zones/{id}/secrets", f.authed(f.listSecrets))
+	mux.HandleFunc("POST /zones/{id}/secrets", f.authed(f.createSecret))
+	mux.HandleFunc("PATCH /zones/{id}/secrets/{secretID}", f.authed(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.patches = append(f.patches, readBody(w, r))
+		writeJSON(w, fakeVaultSecret{id: r.PathValue("secretID")}.toJSON())
+	}))
+}
+
+func (f *fakeAPI) listSecrets(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	query := r.URL.Query()
+	items := []any{}
+	for _, secret := range f.secrets {
+		if secret.entityID == query.Get("entity_id") {
+			items = append(items, secret.toJSON())
+		}
+	}
+	writeJSON(w, items)
+}
+
+func (f *fakeAPI) createSecret(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		EntityID string `json:"entity_id"`
+	}
+	raw := readBody(w, r)
+	if err := json.Unmarshal(raw, &body); err != nil {
+		http.Error(w, `{"error":"bad body"}`, http.StatusBadRequest)
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.posts = append(f.posts, raw)
+	secret := fakeVaultSecret{"secret-new-" + strconv.Itoa(len(f.posts)), body.EntityID}
+	f.secrets = append(f.secrets, secret)
+	writeJSON(w, secret.toJSON())
+}
+
 func readBody(w http.ResponseWriter, r *http.Request) []byte {
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -233,7 +351,7 @@ const (
 
 func refuseLeaks(t *testing.T, err error) {
 	t.Helper()
-	for _, secret := range []string{fakeSecret, fakeToken, redirectSecret, cursorSecret} {
+	for _, secret := range []string{fakeSecret, fakeToken, redirectSecret, cursorSecret, resourceToken} {
 		if err != nil && strings.Contains(err.Error(), secret) {
 			t.Errorf("err = %v, which holds %q", err, secret)
 		}
@@ -500,7 +618,7 @@ func createProvider(t *testing.T, session *zonesetup.Session, fake *fakeAPI, iss
 		t.Fatalf("CreateProvider sent %d POSTs, want 1", got)
 	}
 	want := map[string]any{
-		"identifier":  issuer,
+		identifierKey: issuer,
 		"name":        "Kubernetes cluster oidc.example.com",
 		"description": "OIDC issuer of the Kubernetes cluster that runs the sandboxes",
 		"protocols":   map[string]any{"oauth2": map[string]any{"issuer": issuer}},
@@ -709,5 +827,171 @@ func assertBodies(t *testing.T, call string, got [][]byte, want string) {
 	if len(got) != 1 || json.Unmarshal(got[0], &gotBody) != nil || json.Unmarshal([]byte(want), &wantBody) != nil ||
 		!reflect.DeepEqual(gotBody, wantBody) {
 		t.Errorf("%s bodies = %q, want one %s", call, got, want)
+	}
+}
+
+const (
+	resourceToken  = "resource-token-secret"
+	githubAPI      = "https://api.github.com"
+	providerGH     = "provider-gh"
+	providerVault  = "provider-vault"
+	resourceK      = "resource-k"
+	keycardVault   = "keycard-vault"
+	githubProvider = "github"
+)
+
+func TestResource(t *testing.T) {
+	t.Parallel()
+	const postCall = "POST /zones/zone-a/resources"
+	github := fakeProvider{providerGH, githubProvider, "external"}
+	vault := fakeProvider{providerVault, keycardVault, keycardVault}
+	named := zonesetup.ResourceValues{
+		Identifier:         githubAPI,
+		Name:               "GitHub API",
+		Prefix:             true,
+		CredentialProvider: githubProvider,
+	}
+	//nolint:gosec // G101: SecretEnv names a variable, not a credential.
+	static := zonesetup.ResourceValues{
+		Identifier: githubAPI,
+		Name:       "GitHub API",
+		SecretEnv:  "GITHUB_TOKEN",
+	}
+	cases := []struct {
+		name      string
+		resource  zonesetup.ResourceValues
+		providers []fakeProvider
+		resources []fakeResource
+		handlers  map[string]http.HandlerFunc
+		wantID    string
+		wantErr   error
+		wantPost  string
+		wantPatch string
+	}{
+		{
+			name:      "found with its settings is not written",
+			resource:  named,
+			providers: []fakeProvider{github, vault},
+			resources: []fakeResource{
+				{"resource-1", githubAPI + "/x", true, providerGH},
+				{resourceK, githubAPI, true, providerGH},
+			},
+			wantID: resourceK,
+		},
+		{
+			name: "none is created", resource: named, providers: []fakeProvider{github}, wantID: "resource-new-1",
+			wantPost: `{"identifier":"https://api.github.com","name":"GitHub API","prefix":true,` +
+				`"credential_provider_id":"provider-gh"}`,
+		},
+		{
+			name: "found with another prefix and provider is patched", resource: static,
+			providers: []fakeProvider{github, vault}, resources: []fakeResource{{resourceK, githubAPI, true, providerGH}},
+			wantID: resourceK, wantPatch: `{"prefix":false,"credential_provider_id":"provider-vault"}`,
+		},
+		{
+			name: "a null patch response is refused", resource: static,
+			providers: []fakeProvider{vault}, resources: []fakeResource{{resourceK, githubAPI, true, providerGH}},
+			handlers: map[string]http.HandlerFunc{"/zones/zone-a/resources/resource-k": rawBody("null")},
+			wantID:   resourceK, wantErr: zonesetup.ErrAPI,
+		},
+		{
+			name: "two resources are refused", resource: named, providers: []fakeProvider{github},
+			resources: []fakeResource{{resourceK, githubAPI, true, providerGH}, {"resource-l", githubAPI, true, providerGH}},
+			wantErr:   zonesetup.ErrResourceAmbiguous,
+		},
+		{
+			name: "a missing named provider is refused", resource: named, providers: []fakeProvider{vault},
+			wantErr: zonesetup.ErrProviderNotFound,
+		},
+		{
+			name: "a zone without a vault provider is refused", resource: static, providers: []fakeProvider{github},
+			wantErr: zonesetup.ErrProviderNotFound,
+		},
+		{
+			name: "two vault providers are refused", resource: static,
+			providers: []fakeProvider{vault, {"provider-vault-2", "other-vault", keycardVault}},
+			wantErr:   zonesetup.ErrProviderAmbiguous,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeAPI{
+				zones: []fakeItem{
+					{zoneA, issuerA},
+				},
+				filteredProviders: tc.providers,
+				resources:         tc.resources,
+				handlers:          tc.handlers,
+			}
+			session := connectZoneA(t, fake)
+			providerID, err := session.ResourceProvider(t.Context(), tc.resource)
+			if err == nil {
+				var found keycard.Resource
+				found, err = session.FindResource(t.Context(), tc.resource.Identifier)
+				resourceID := found.ID
+				switch {
+				case err != nil:
+				case tc.wantPost != "":
+					resourceID, err = session.CreateResource(t.Context(), tc.resource, providerID)
+				case found.Prefix != tc.resource.Prefix || found.CredentialProviderID != providerID:
+					err = session.PatchResource(t.Context(), resourceID, tc.resource.Prefix, providerID)
+				}
+				if resourceID != tc.wantID {
+					t.Errorf("id = %q, want %q", resourceID, tc.wantID)
+				}
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			assertBodies(t, postCall, fake.posts, tc.wantPost)
+			assertBodies(t, "PATCH", fake.patches, tc.wantPatch)
+		})
+	}
+}
+
+func TestSecret(t *testing.T) {
+	t.Parallel()
+	fake := &fakeAPI{zones: []fakeItem{{zoneA, issuerA}}, secrets: []fakeVaultSecret{{"secret-other", "resource-1"}}}
+	session := connectZoneA(t, fake)
+	secretID, err := session.FindSecret(t.Context(), resourceK)
+	if err != nil || secretID != "" {
+		t.Fatalf("FindSecret = %q, %v, want none", secretID, err)
+	}
+	if err = session.CreateSecret(t.Context(), resourceK, "GITHUB_TOKEN", resourceToken); err != nil {
+		t.Fatalf("CreateSecret: %v", err)
+	}
+	assertBodies(t, "POST", fake.posts,
+		`{"name":"GITHUB_TOKEN","entity_id":"resource-k","data":{"type":"token","token":"resource-token-secret"}}`)
+	if secretID, err = session.FindSecret(t.Context(), resourceK); err != nil || secretID != "secret-new-1" {
+		t.Fatalf("FindSecret = %q, %v, want secret-new-1", secretID, err)
+	}
+	if err = session.UpdateSecret(t.Context(), secretID, resourceToken); err != nil {
+		t.Fatalf("UpdateSecret: %v", err)
+	}
+	assertBodies(t, "PATCH", fake.patches, `{"data":{"type":"token","token":"resource-token-secret"}}`)
+}
+
+func TestSecretErrorsHoldNoToken(t *testing.T) {
+	t.Parallel()
+	echo := func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, string(readBody(w, r)), http.StatusInternalServerError)
+	}
+	fake := &fakeAPI{
+		zones: []fakeItem{{zoneA, issuerA}},
+		handlers: map[string]http.HandlerFunc{
+			"/zones/zone-a/secrets":          echo,
+			"/zones/zone-a/secrets/secret-k": echo,
+		},
+	}
+	session := connectZoneA(t, fake)
+	for name, err := range map[string]error{
+		"CreateSecret": session.CreateSecret(t.Context(), resourceK, "GITHUB_TOKEN", resourceToken),
+		"UpdateSecret": session.UpdateSecret(t.Context(), "secret-k", resourceToken),
+	} {
+		refuseLeaks(t, err)
+		if !errors.Is(err, zonesetup.ErrAPI) {
+			t.Errorf("%s err = %v, want %v", name, err, zonesetup.ErrAPI)
+		}
 	}
 }

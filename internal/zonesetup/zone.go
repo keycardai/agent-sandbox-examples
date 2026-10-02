@@ -26,8 +26,9 @@ const (
 
 // Session is one authenticated run against the zone the values file names.
 type Session struct {
-	Zone  *keycard.Zone
-	zones keycard.ZoneService
+	Zone            *keycard.Zone
+	zones           keycard.ZoneService
+	vaultProviderID string
 }
 
 // Connect authenticates as the organization service account and resolves the
@@ -63,7 +64,7 @@ func Connect(ctx context.Context, values *Values, secrets *Secrets) (*Session, e
 // exactly. It returns "" when no provider matches. Every error wraps ErrAPI,
 // ErrProviderAmbiguous or ErrProviderMismatch.
 func (s *Session) FindProvider(ctx context.Context, issuerURL string) (string, error) {
-	all, err := s.listProviders(ctx)
+	all, err := s.listProviders(ctx, keycard.ZoneProviderListParams{})
 	if err != nil {
 		return "", err
 	}
@@ -191,6 +192,260 @@ func (s *Session) SetApplicationConsentImplicit(ctx context.Context, application
 	return nil
 }
 
+// ResourceProvider returns the id of the provider that serves the resource's
+// credential: the provider whose identifier is credential_provider, or the
+// zone's keycard-vault provider for a secret_env. Every error wraps ErrAPI,
+// ErrProviderAmbiguous or ErrProviderNotFound.
+func (s *Session) ResourceProvider(ctx context.Context, resource ResourceValues) (string, error) {
+	if resource.CredentialProvider == "" {
+		return s.vaultProvider(ctx)
+	}
+	identifier := resource.CredentialProvider
+	all, err := s.listProviders(ctx, keycard.ZoneProviderListParams{
+		FilterIdentifier: keycard.ZoneProviderListParamsFilterIdentifierUnion{OfString: keycard.String(identifier)},
+	})
+	if err != nil {
+		return "", err
+	}
+	return oneProvider(all, func(p keycard.Provider) bool { return p.Identifier == identifier },
+		"the identifier "+identifier)
+}
+
+func oneProvider(all []keycard.Provider, match func(keycard.Provider) bool, what string) (string, error) {
+	var found []keycard.Provider
+	for _, provider := range all {
+		if match(provider) {
+			found = append(found, provider)
+		}
+	}
+	switch {
+	case len(found) > 1:
+		return "", fmt.Errorf("%w: %d providers have %s", ErrProviderAmbiguous, len(found), what)
+	case len(found) == 0:
+		return "", fmt.Errorf("%w: no provider has %s. Create it in the zone first", ErrProviderNotFound, what)
+	case found[0].ID == "":
+		return "", fmt.Errorf("%w: the provider with %s has no id", ErrAPI, what)
+	default:
+		return found[0].ID, nil
+	}
+}
+
+// FindResource returns the zone's resource whose identifier is identifier.
+// Its ID is "" when no resource matches. Every error wraps ErrAPI or
+// ErrResourceAmbiguous.
+func (s *Session) FindResource(ctx context.Context, identifier string) (keycard.Resource, error) {
+	all, err := s.listResources(ctx, identifier)
+	if err != nil {
+		return keycard.Resource{}, err
+	}
+	var found []keycard.Resource
+	for _, resource := range all {
+		if resource.Identifier == identifier {
+			found = append(found, resource)
+		}
+	}
+	switch {
+	case len(found) > 1:
+		return keycard.Resource{}, fmt.Errorf("%w: %d resources have the identifier %s",
+			ErrResourceAmbiguous, len(found), identifier)
+	case len(found) == 1 && found[0].ID == "":
+		return keycard.Resource{}, fmt.Errorf("%w: the resource %s has no id", ErrAPI, identifier)
+	case len(found) == 1:
+		return found[0], nil
+	default:
+		return keycard.Resource{}, nil
+	}
+}
+
+// CreateResource creates the resource with its credential provider and
+// returns its id.
+func (s *Session) CreateResource(ctx context.Context, resource ResourceValues, providerID string) (string, error) {
+	created, err := s.zones.Resources.New(ctx, s.Zone.ID, keycard.ZoneResourceNewParams{
+		Identifier:           resource.Identifier,
+		Name:                 resource.Name,
+		Prefix:               keycard.Bool(resource.Prefix),
+		CredentialProviderID: keycard.String(providerID),
+	})
+	if err != nil {
+		return "", fmt.Errorf("%w: create resource %s: %w", ErrAPI, resource.Identifier, requestError(err))
+	}
+	if created == nil || created.ID == "" {
+		return "", fmt.Errorf("%w: create resource %s: the response holds no resource id", ErrAPI, resource.Identifier)
+	}
+	return created.ID, nil
+}
+
+// PatchResource sets the resource's prefix and credential provider.
+func (s *Session) PatchResource(ctx context.Context, resourceID string, prefix bool, providerID string) error {
+	updated, err := s.zones.Resources.Update(ctx, resourceID, keycard.ZoneResourceUpdateParams{
+		ZoneID:               s.Zone.ID,
+		Prefix:               keycard.Bool(prefix),
+		CredentialProviderID: keycard.String(providerID),
+	})
+	if err != nil {
+		return fmt.Errorf("%w: update resource %s: %w", ErrAPI, resourceID, requestError(err))
+	}
+	if updated == nil || updated.ID != resourceID {
+		return fmt.Errorf("%w: update resource %s: the response holds another resource or none", ErrAPI, resourceID)
+	}
+	return nil
+}
+
+// FindSecret returns the id of the token secret stored for the resource, or
+// "" when there is none. The exchange reads the resource's first secret, so
+// more than one secret, or one that is not a token, is refused. Every error
+// wraps ErrAPI.
+func (s *Session) FindSecret(ctx context.Context, resourceID string) (string, error) {
+	all, err := s.listSecrets(ctx, resourceID)
+	if err != nil {
+		return "", err
+	}
+	for _, secret := range all {
+		if secret.ID == "" || secret.EntityID != resourceID {
+			return "", fmt.Errorf("%w: a secret listed for resource %s has no id or another entity_id",
+				ErrAPI, resourceID)
+		}
+	}
+	switch {
+	case len(all) > 1:
+		return "", fmt.Errorf("%w: %d secrets are stored for resource %s", ErrAPI, len(all), resourceID)
+	case len(all) == 1 && all[0].Type != keycard.SecretTypeToken:
+		return "", fmt.Errorf("%w: the secret stored for resource %s is not a token", ErrAPI, resourceID)
+	case len(all) == 1:
+		return all[0].ID, nil
+	default:
+		return "", nil
+	}
+}
+
+// CreateSecret stores token as the resource's credential, named name.
+func (s *Session) CreateSecret(ctx context.Context, resourceID, name, token string) error {
+	created, err := s.zones.Secrets.New(ctx, s.Zone.ID, keycard.ZoneSecretNewParams{
+		Name:     name,
+		EntityID: resourceID,
+		Data:     keycard.ZoneSecretNewParamsDataUnion{OfToken: tokenData(token)},
+	})
+	if err != nil {
+		return fmt.Errorf("%w: create secret for resource %s: %w", ErrAPI, resourceID, requestError(err))
+	}
+	if created == nil || created.ID == "" {
+		return fmt.Errorf("%w: create secret for resource %s: the response holds no secret id", ErrAPI, resourceID)
+	}
+	return nil
+}
+
+// UpdateSecret replaces the secret's token.
+func (s *Session) UpdateSecret(ctx context.Context, secretID, token string) error {
+	updated, err := s.zones.Secrets.Update(ctx, secretID, keycard.ZoneSecretUpdateParams{
+		ZoneID: s.Zone.ID,
+		Data:   keycard.ZoneSecretUpdateParamsDataUnion{OfToken: tokenData(token)},
+	})
+	if err != nil {
+		return fmt.Errorf("%w: update secret %s: %w", ErrAPI, secretID, requestError(err))
+	}
+	if updated == nil || updated.ID != secretID {
+		return fmt.Errorf("%w: update secret %s: the response holds another secret or none", ErrAPI, secretID)
+	}
+	return nil
+}
+
+func tokenData(token string) *keycard.SecretTokenFieldsParam {
+	return &keycard.SecretTokenFieldsParam{Token: token, Type: keycard.SecretTokenFieldsTypeToken}
+}
+
+// ApplicationDependencies returns the ids of the resources the application
+// depends on. Every error wraps ErrAPI.
+func (s *Session) ApplicationDependencies(ctx context.Context, applicationID string) (map[string]bool, error) {
+	all, err := listAll("dependencies", func(params pageParams) (listPage[keycard.Resource], error) {
+		page, err := s.zones.Applications.Dependencies.List(ctx, applicationID,
+			keycard.ZoneApplicationDependencyListParams{ZoneID: s.Zone.ID, After: params.After, Limit: params.Limit})
+		if err != nil || page == nil {
+			return listPage[keycard.Resource]{}, err //nolint:wrapcheck // listAll passes it through requestError.
+		}
+		return listPage[keycard.Resource]{
+			items: page.Items, after: page.Pagination.AfterCursor,
+			complete: page.JSON.Items.Valid() && page.JSON.Pagination.Valid(),
+		}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	ids := make(map[string]bool, len(all))
+	for _, resource := range all {
+		ids[resource.ID] = true
+	}
+	return ids, nil
+}
+
+// AddApplicationDependency makes the resource a dependency of the
+// application.
+func (s *Session) AddApplicationDependency(ctx context.Context, applicationID, resourceID string) error {
+	err := s.zones.Applications.Dependencies.Add(ctx, resourceID, keycard.ZoneApplicationDependencyAddParams{
+		ZoneID: s.Zone.ID, ID: applicationID,
+	})
+	if err != nil {
+		return fmt.Errorf("%w: add resource %s as a dependency of application %s: %w",
+			ErrAPI, resourceID, applicationID, requestError(err))
+	}
+	return nil
+}
+
+func (s *Session) vaultProvider(ctx context.Context) (string, error) {
+	if s.vaultProviderID != "" {
+		return s.vaultProviderID, nil
+	}
+	all, err := s.listProviders(ctx, keycard.ZoneProviderListParams{
+		FilterType: keycard.ZoneProviderListParamsFilterTypeUnion{
+			OfZoneProviderListsFilterTypeString: keycard.String(string(keycard.ProviderTypeKeycardVault)),
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	providerID, err := oneProvider(
+		all,
+		func(p keycard.Provider) bool { return p.Type == keycard.ProviderTypeKeycardVault },
+		"the type keycard-vault",
+	)
+	if err != nil {
+		return "", err
+	}
+	s.vaultProviderID = providerID
+	return providerID, nil
+}
+
+func (s *Session) listResources(ctx context.Context, identifier string) ([]keycard.Resource, error) {
+	return listAll("resources", func(params pageParams) (listPage[keycard.Resource], error) {
+		page, err := s.zones.Resources.List(ctx, s.Zone.ID, keycard.ZoneResourceListParams{
+			After: params.After, Limit: params.Limit,
+			FilterIdentifier: keycard.ZoneResourceListParamsFilterIdentifierUnion{
+				OfString: keycard.String(identifier),
+			},
+		})
+		if err != nil || page == nil {
+			return listPage[keycard.Resource]{}, err //nolint:wrapcheck // listAll passes it through requestError.
+		}
+		return listPage[keycard.Resource]{
+			items: page.Items, after: page.Pagination.AfterCursor,
+			complete: page.JSON.Items.Valid() && page.JSON.Pagination.Valid(),
+		}, nil
+	})
+}
+
+// The secrets list is not paginated.
+func (s *Session) listSecrets(ctx context.Context, resourceID string) ([]keycard.Secret, error) {
+	all, err := s.zones.Secrets.List(ctx, s.Zone.ID, keycard.ZoneSecretListParams{
+		EntityID: keycard.String(resourceID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%w: list secrets: %w", ErrAPI, requestError(err))
+	}
+	if all == nil {
+		return nil, fmt.Errorf("%w: list secrets: %w", ErrAPI, errNoPage)
+	}
+	return *all, nil
+}
+
 func (s *Session) listApplications(ctx context.Context, identifier string) ([]keycard.Application, error) {
 	return listAll("applications", func(params pageParams) (listPage[keycard.Application], error) {
 		page, err := s.zones.Applications.List(ctx, s.Zone.ID, keycard.ZoneApplicationListParams{
@@ -209,11 +464,13 @@ func (s *Session) listApplications(ctx context.Context, identifier string) ([]ke
 	})
 }
 
-func (s *Session) listProviders(ctx context.Context) ([]keycard.Provider, error) {
+func (s *Session) listProviders(
+	ctx context.Context,
+	filter keycard.ZoneProviderListParams,
+) ([]keycard.Provider, error) {
 	return listAll("providers", func(params pageParams) (listPage[keycard.Provider], error) {
-		page, err := s.zones.Providers.List(ctx, s.Zone.ID, keycard.ZoneProviderListParams{
-			After: params.After, Limit: params.Limit,
-		})
+		filter.After, filter.Limit = params.After, params.Limit
+		page, err := s.zones.Providers.List(ctx, s.Zone.ID, filter)
 		if err != nil || page == nil {
 			return listPage[keycard.Provider]{}, err //nolint:wrapcheck // listAll passes it through requestError.
 		}

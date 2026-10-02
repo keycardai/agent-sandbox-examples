@@ -1,8 +1,9 @@
 // Command zone-setup configures a Keycard zone for the sandboxes from a values
-// file. It finds or creates the zone's provider for the cluster's OIDC issuer
-// and the egress proxy Application, with implicit consent, and prints their
-// ids under k8s_sandbox in YAML. With --dry-run it changes nothing and prints
-// nothing on stdout.
+// file. It finds or creates the provider for the cluster's OIDC issuer and the
+// egress proxy Application with implicit consent, finds, creates or patches
+// each resource, stores each secret_env credential, and makes each resource a
+// dependency of the Application. It prints the k8s_sandbox values as YAML. With
+// --dry-run it changes nothing and prints nothing on stdout.
 //
 //	zone-setup --values zone-setup.yaml > zone-setup.out.yaml
 package main
@@ -34,7 +35,7 @@ func main() {
 func newCommand() *cli.Command {
 	return &cli.Command{
 		Name:            "zone-setup",
-		Usage:           "find or create the zone's provider and egress proxy application",
+		Usage:           "find or create the zone's provider, egress proxy application and resources",
 		HideHelpCommand: true,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "values", Required: true, Usage: "the values file, YAML or JSON"},
@@ -48,6 +49,7 @@ type output struct {
 	K8sSandbox struct {
 		ApplicationID         string `json:"application_id"`
 		ApplicationIdentifier string `json:"application_identifier"`
+		Namespace             string `json:"namespace"`
 		ProviderID            string `json:"provider_id"`
 	} `json:"k8s_sandbox"`
 }
@@ -76,6 +78,10 @@ func setup(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	err = ensureResources(ctx, cmd, session, applicationID, values.Resources, secrets.Resource)
+	if err != nil {
+		return err
+	}
 	if cmd.Bool("dry-run") {
 		sayf(cmd, "dry run: nothing was written")
 		return nil
@@ -83,6 +89,7 @@ func setup(ctx context.Context, cmd *cli.Command) error {
 	var out output
 	out.K8sSandbox.ApplicationID = applicationID
 	out.K8sSandbox.ApplicationIdentifier = identifier
+	out.K8sSandbox.Namespace = values.Namespace
 	out.K8sSandbox.ProviderID = providerID
 	raw, err := yaml.Marshal(out)
 	if err != nil {
@@ -150,6 +157,155 @@ func ensureApplication(
 	}
 	sayf(cmd, "set consent to implicit on application %s", app.ID)
 	return app.ID, nil
+}
+
+func ensureResources(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	applicationID string,
+	resources []zonesetup.ResourceValues,
+	tokens map[string]string,
+) error {
+	ids := make([]string, 0, len(resources))
+	for _, resource := range resources {
+		providerID, err := session.ResourceProvider(ctx, resource)
+		if err != nil {
+			return fmt.Errorf("finding the credential provider for %s: %w", resource.Identifier, err)
+		}
+		resourceID, err := ensureResource(ctx, cmd, session, resource, providerID)
+		if err != nil {
+			return err
+		}
+		ids = append(ids, resourceID)
+		if resource.SecretEnv == "" {
+			continue
+		}
+		token, ok := tokens[resource.SecretEnv]
+		if !ok {
+			return fmt.Errorf("%w: %s", zonesetup.ErrMissingSecret, resource.SecretEnv)
+		}
+		if err = ensureSecret(ctx, cmd, session, resource, resourceID, token); err != nil {
+			return err
+		}
+	}
+	return addMissingDependencies(ctx, cmd, session, applicationID, resources, ids)
+}
+
+func ensureResource(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	resource zonesetup.ResourceValues,
+	providerID string,
+) (string, error) {
+	found, err := session.FindResource(ctx, resource.Identifier)
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("finding the resource %s: %w", resource.Identifier, err)
+	case found.ID == "" && cmd.Bool("dry-run"):
+		sayf(cmd, "would create a resource for %s", resource.Identifier)
+		return "", nil
+	case found.ID == "":
+		resourceID, err := session.CreateResource(ctx, resource, providerID)
+		if err != nil {
+			return "", fmt.Errorf("creating the resource %s: %w", resource.Identifier, err)
+		}
+		sayf(cmd, "created resource %s for %s", resourceID, resource.Identifier)
+		return resourceID, nil
+	case found.Prefix == resource.Prefix && found.CredentialProviderID == providerID:
+		sayf(cmd, "found resource %s for %s", found.ID, resource.Identifier)
+		return found.ID, nil
+	case cmd.Bool("dry-run"):
+		sayf(cmd, "would patch resource %s for %s", found.ID, resource.Identifier)
+		return found.ID, nil
+	}
+	if err := session.PatchResource(ctx, found.ID, resource.Prefix, providerID); err != nil {
+		return "", fmt.Errorf("patching the resource %s: %w", resource.Identifier, err)
+	}
+	sayf(cmd, "patched resource %s for %s", found.ID, resource.Identifier)
+	return found.ID, nil
+}
+
+func ensureSecret(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	resource zonesetup.ResourceValues,
+	resourceID, token string,
+) error {
+	if resourceID == "" {
+		sayf(cmd, "would store the %s credential for %s", resource.SecretEnv, resource.Identifier)
+		return nil
+	}
+	secretID, err := session.FindSecret(ctx, resourceID)
+	switch {
+	case err != nil:
+		return fmt.Errorf("finding the credential for %s: %w", resource.Identifier, err)
+	case secretID == "" && cmd.Bool("dry-run"):
+		sayf(cmd, "would store the %s credential for %s", resource.SecretEnv, resource.Identifier)
+	case secretID == "":
+		if err := session.CreateSecret(ctx, resourceID, resource.SecretEnv, token); err != nil {
+			return fmt.Errorf("storing the credential for %s: %w", resource.Identifier, err)
+		}
+		sayf(cmd, "stored the %s credential for %s", resource.SecretEnv, resource.Identifier)
+	case cmd.Bool("dry-run"):
+		sayf(cmd, "would update the %s credential for %s", resource.SecretEnv, resource.Identifier)
+	default:
+		if err := session.UpdateSecret(ctx, secretID, token); err != nil {
+			return fmt.Errorf("updating the credential for %s: %w", resource.Identifier, err)
+		}
+		sayf(cmd, "updated the %s credential for %s", resource.SecretEnv, resource.Identifier)
+	}
+	return nil
+}
+
+func addMissingDependencies(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	applicationID string,
+	resources []zonesetup.ResourceValues,
+	resourceIDs []string,
+) error {
+	has := map[string]bool{}
+	if applicationID != "" && len(resourceIDs) > 0 {
+		var err error
+		if has, err = session.ApplicationDependencies(ctx, applicationID); err != nil {
+			return fmt.Errorf("listing the application's dependencies: %w", err)
+		}
+	}
+	for i, resourceID := range resourceIDs {
+		if resourceID == "" || applicationID == "" {
+			sayf(cmd, "would add the resource for %s as a dependency", resources[i].Identifier)
+			continue
+		}
+		if err := ensureDependency(ctx, cmd, session, applicationID, resourceID, has[resourceID]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureDependency(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	applicationID, resourceID string,
+	has bool,
+) error {
+	switch {
+	case has:
+		sayf(cmd, "found resource %s as a dependency", resourceID)
+	case cmd.Bool("dry-run"):
+		sayf(cmd, "would add resource %s as a dependency", resourceID)
+	default:
+		if err := session.AddApplicationDependency(ctx, applicationID, resourceID); err != nil {
+			return fmt.Errorf("adding a dependency: %w", err)
+		}
+		sayf(cmd, "added resource %s as a dependency", resourceID)
+	}
+	return nil
 }
 
 func sayf(cmd *cli.Command, format string, args ...any) {
