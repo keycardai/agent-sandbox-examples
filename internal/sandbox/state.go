@@ -51,6 +51,13 @@ type User struct {
 	Access       bool   `json:"access"`
 }
 
+// The state holds no secret, but it names the zone and its users, so only its
+// owner may read it.
+const (
+	stateDirMode  = 0o700
+	stateFileMode = 0o600
+)
+
 // DefaultStatePath is ~/.keycard/sandbox/state.json.
 func DefaultStatePath() string {
 	home, err := os.UserHomeDir()
@@ -62,33 +69,33 @@ func DefaultStatePath() string {
 
 // LoadState reads the state file. A missing file is an empty state.
 func LoadState(path string) (*State, error) {
-	b, err := os.ReadFile(path) //nolint:gosec // the path is the CLI's own state file
+	data, err := os.ReadFile(path) //nolint:gosec // The path is the CLI's own state file, chosen by its user.
 	if errors.Is(err, os.ErrNotExist) {
 		return &State{Users: map[string]*User{}}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read state: %w", err)
 	}
-	var s State
-	if err := json.Unmarshal(b, &s); err != nil {
+	var state State
+	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("parse state %s: %w", path, err)
 	}
-	if s.Users == nil {
-		s.Users = map[string]*User{}
+	if state.Users == nil {
+		state.Users = map[string]*User{}
 	}
-	return &s, nil
+	return &state, nil
 }
 
 // Save writes the state file, readable by its owner alone.
 func (s *State) Save(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), stateDirMode); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
 	}
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode state: %w", err)
 	}
-	if err := os.WriteFile(path, append(b, '\n'), 0o600); err != nil {
+	if err := os.WriteFile(path, append(b, '\n'), stateFileMode); err != nil {
 		return fmt.Errorf("write state: %w", err)
 	}
 	return nil

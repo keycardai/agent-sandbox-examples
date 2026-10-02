@@ -5,9 +5,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+)
+
+// The slugs of the API servers the agent has a call for.
+const (
+	SlugGitHub = "github"
+	SlugLinear = "linear"
+)
+
+var (
+	errReadPath    = errors.New("--read must be OWNER/REPO/PATH")
+	errLinearQuery = errors.New("linear refused the query")
+	errCurlOutput  = errors.New("curl wrote no status")
 )
 
 // A probe is one call the agent makes to an API through the proxy. The agent
@@ -31,13 +44,13 @@ func probesFor(resources []Resource, read string) ([]probe, error) {
 	var probes []probe
 	for _, r := range resources {
 		switch r.Slug {
-		case "github":
+		case SlugGitHub:
 			p, err := githubProbe(r.APIURL, read)
 			if err != nil {
 				return nil, err
 			}
 			probes = append(probes, p)
-		case "linear":
+		case SlugLinear:
 			probes = append(probes, linearProbe(r.APIURL))
 		}
 	}
@@ -47,13 +60,14 @@ func probesFor(resources []Resource, read string) ([]probe, error) {
 // githubProbe reads a file, given as OWNER/REPO/PATH, through the contents
 // API.
 func githubProbe(apiURL, path string) (probe, error) {
-	parts := strings.SplitN(path, "/", 3)
-	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return probe{}, fmt.Errorf("--read must be OWNER/REPO/PATH (got %q)", path)
+	owner, rest, _ := strings.Cut(path, "/")
+	repo, file, _ := strings.Cut(rest, "/")
+	if owner == "" || repo == "" || file == "" {
+		return probe{}, fmt.Errorf("%w (got %q)", errReadPath, path)
 	}
-	target := strings.TrimSuffix(apiURL, "/") + "/repos/" + parts[0] + "/" + parts[1] + "/contents/" + parts[2]
+	target := strings.TrimSuffix(apiURL, "/") + "/repos/" + owner + "/" + repo + "/contents/" + file
 	return probe{
-		Resource: "github",
+		Resource: SlugGitHub,
 		API:      "GitHub",
 		Title:    "GitHub: read " + path,
 		Args:     []string{"-H", "Accept: application/vnd.github.raw+json", target},
@@ -65,10 +79,26 @@ func githubProbe(apiURL, path string) (probe, error) {
 // read.
 const linearQuery = `{"query":"{ viewer { name email } organization { name } }"}`
 
+// linearAnswer is the part of Linear's GraphQL response the probe reads.
+type linearAnswer struct {
+	Data struct {
+		Viewer struct {
+			Name  string `json:"name"`
+			Email string `json:"email"`
+		} `json:"viewer"`
+		Organization struct {
+			Name string `json:"name"`
+		} `json:"organization"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
 // linearProbe asks Linear's GraphQL API who the agent is acting as.
 func linearProbe(apiURL string) probe {
 	return probe{
-		Resource: "linear",
+		Resource: SlugLinear,
 		API:      "Linear",
 		Title:    "Linear: who am I",
 		Args: []string{
@@ -76,21 +106,15 @@ func linearProbe(apiURL string) probe {
 			strings.TrimSuffix(apiURL, "/") + "/graphql",
 		},
 		Show: func(body string) (string, error) {
-			var resp struct {
-				Data struct {
-					Viewer       struct{ Name, Email string }
-					Organization struct{ Name string }
-				}
-				Errors []struct{ Message string }
-			}
-			if err := json.Unmarshal([]byte(body), &resp); err != nil {
+			var answer linearAnswer
+			if err := json.Unmarshal([]byte(body), &answer); err != nil {
 				return "", fmt.Errorf("the answer is not JSON: %w", err)
 			}
-			if len(resp.Errors) > 0 {
-				return "", errors.New("the query failed: " + resp.Errors[0].Message)
+			if len(answer.Errors) > 0 {
+				return "", fmt.Errorf("%w: %s", errLinearQuery, answer.Errors[0].Message)
 			}
-			d := resp.Data
-			return fmt.Sprintf("%s <%s> in the %s workspace", d.Viewer.Name, d.Viewer.Email, d.Organization.Name), nil
+			viewer, org := answer.Data.Viewer, answer.Data.Organization
+			return fmt.Sprintf("%s <%s> in the %s workspace", viewer.Name, viewer.Email, org.Name), nil
 		},
 	}
 }
@@ -106,20 +130,23 @@ type Fetch struct {
 // installing the proxy's CA then, so curl refuses the proxy's certificate for
 // the first few seconds. fetch retries TLS failures until the CA is in place.
 func (a *App) fetch(ctx context.Context, pod string, args []string) (Fetch, error) {
-	const marker = "\n__sandbox_status__:"
+	const (
+		marker     = "\n__sandbox_status__:"
+		tlsRetries = 10
+		retryDelay = 2 * time.Second
+	)
 	command := append([]string{"curl", "-sS", "-w", marker + "%{http_code}"}, args...)
 	var out string
 	var err error
-	for attempt := 0; attempt < 10; attempt++ {
+	for range tlsRetries {
 		out, err = a.sandboxKube().Exec(ctx, a.State.Namespace, pod, "agent", command...)
-		if err == nil ||
-			!strings.Contains(err.Error(), "exit status 35") && !strings.Contains(err.Error(), "exit status 60") {
+		if !curlTLSFailure(err) {
 			break
 		}
 		select {
 		case <-ctx.Done():
-			return Fetch{}, ctx.Err()
-		case <-time.After(2 * time.Second):
+			return Fetch{}, fmt.Errorf("wait to retry curl: %w", ctx.Err())
+		case <-time.After(retryDelay):
 		}
 	}
 	if err != nil {
@@ -127,8 +154,26 @@ func (a *App) fetch(ctx context.Context, pod string, args []string) (Fetch, erro
 	}
 	i := strings.LastIndex(out, marker)
 	if i < 0 {
-		return Fetch{}, fmt.Errorf("unexpected curl output: %q", out)
+		return Fetch{}, fmt.Errorf("%w: %q", errCurlOutput, out)
 	}
-	status, _ := strconv.Atoi(strings.TrimSpace(out[i+len(marker):]))
+	status, err := strconv.Atoi(strings.TrimSpace(out[i+len(marker):]))
+	if err != nil {
+		return Fetch{}, fmt.Errorf("%w: %q", errCurlOutput, out[i:])
+	}
 	return Fetch{Status: status, Body: out[:i]}, nil
+}
+
+// curlTLSFailure reports whether curl exited because the TLS handshake failed
+// (35) or the server's certificate was not trusted (60).
+func curlTLSFailure(err error) bool {
+	const (
+		curlSSLConnect   = 35
+		curlPeerFailedCA = 60
+	)
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	code := exitErr.ExitCode()
+	return code == curlSSLConnect || code == curlPeerFailedCA
 }

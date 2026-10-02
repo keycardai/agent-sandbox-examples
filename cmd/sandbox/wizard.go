@@ -7,7 +7,6 @@ import (
 	"net/mail"
 	"os"
 	"slices"
-	"sort"
 	"strings"
 
 	"charm.land/huh/v2"
@@ -19,161 +18,180 @@ import (
 // defaultRead is the file the agent reads when nothing else names one.
 const defaultRead = "jerriclynsjohn/test-repo/demo.txt"
 
+// Options the forms add to the ones the zone lists.
 const (
 	createZoneOption = "\x00create"
 	otherUserOption  = "\x00other"
 )
 
-// wizardPhases are the wizard's steps, in the order the tracker shows them.
-var wizardPhases = []string{"Connect", "Zone", "APIs", "Setup", "Users", "Agent"}
+// The wizard's phases, in the order the tracker shows them.
+const (
+	phaseConnect = iota
+	phaseZone
+	phaseAPIs
+	phaseSetup
+	phaseUsers
+	phaseAgent
+)
+
+var (
+	errWizardNeedsTerminal = errors.New(
+		"the wizard needs a terminal; use `sandbox setup`, `sandbox add-user` and `sandbox run` instead (see --help)",
+	)
+	errNoAPIKeyPackages = errors.New("the catalog has no API server that takes an API key")
+	errPickOne          = errors.New("pick at least one")
+	errRequired         = errors.New("required")
+	errNotAnEmail       = errors.New("enter an email address")
+	errListUsers        = errors.New("could not list the zone's users")
+)
+
+func wizardPhases() []string { return []string{"Connect", "Zone", "APIs", "Setup", "Users", "Agent"} }
 
 // wizard asks for everything and runs setup, add-user and run in turn.
 func wizard(ctx context.Context, cmd *cli.Command) error {
 	if !interactive(cmd) {
-		return errors.New(
-			"the wizard needs a terminal; use `sandbox setup`, `sandbox add-user` and `sandbox run` instead (see --help)",
-		)
+		return errWizardNeedsTerminal
 	}
-	return withSession(ctx, cmd, wizardPhases, func(ctx context.Context, s *session) error {
-		app := s.app
-		ui := app.UI
-
-		s.phase(1)
-		zoneID, createName, err := askZone(ctx, s)
-		if err != nil {
-			return err
-		}
-		if createName != "" {
-			if err := ui.Step(ctx, "Zone "+createName+" created", func(ctx context.Context) (string, error) {
-				z, err := app.KC.CreateZone(ctx, createName)
-				zoneID = z.ID
-				return z.ID, err
-			}); err != nil {
-				return errReported
-			}
-		}
-
-		s.phase(2)
-		ui.Warn(
-			"Enrolling a user makes the \"Kubernetes Sandbox\" policy set this zone's only active one. `sandbox down` puts the previous one back.",
-		)
-		in := sandbox.SetupInput{
-			ZoneID: zoneID, Namespace: sandbox.DefaultNamespace, Cluster: sandbox.DefaultCluster,
-			Issuer: sandbox.DefaultIssuer, EgressProxyDir: defaultEgressProxyDir(),
-		}
-		if app.State.ZoneID != zoneID {
-			app.State.Resources = nil
-		}
-		if err := askResources(ctx, s, &in); err != nil {
-			return err
-		}
-		if err := askKeys(s, &in); err != nil {
-			return err
-		}
-
-		s.phase(3)
-		if err := app.Setup(ctx, in); err != nil {
-			return errReported
-		}
-
-		s.phase(4)
-		var added []string
-		if err := addUsers(ctx, s, true, &added); err != nil {
-			return err
-		}
-		if err := addUsers(ctx, s, false, &added); err != nil {
-			return err
-		}
-		if len(added) == 0 {
-			ui.Warn("No user was added, so there is no sandbox to run the agent in.")
-			return errReported
-		}
-
-		s.phase(5)
-		run := sandbox.RunInput{Read: os.Getenv("SANDBOX_READ"), Emails: added}
-		if app.State.HasResource("github") {
-			if err := askRead(s, &run); err != nil {
-				return err
-			}
-		}
-		results, runErr := app.Run(ctx, run)
-		if len(results) > 0 {
-			s.show(func(width int) string { return renderResults(results, width) })
-		}
-		s.show(func(width int) string { return renderCommands(app.State, run, width) })
-		if runErr != nil {
-			return errReported
-		}
-		return nil
-	})
+	return withSession(ctx, cmd, wizardPhases(), runWizard)
 }
 
-// addUsers adds users one at a time, with or without access, until the person
-// says to stop, and appends each one it added to added. Adding a user without
-// access is optional; the first user with access is not.
-func addUsers(ctx context.Context, s *session, access bool, added *[]string) error {
-	app := s.app
-	add := app.AddUser
-	if !access {
-		add = app.AddUserWithoutAccess
+func runWizard(ctx context.Context, sess *session) error {
+	app := sess.app
+	sess.phase(phaseZone)
+	zoneID, err := askZone(ctx, sess)
+	if err != nil {
+		return err
 	}
-	label := accessLabel(access)
-	count, failed := 0, false
+
+	sess.phase(phaseAPIs)
+	app.UI.Warn("Enrolling a user makes the \"Kubernetes Sandbox\" policy set this zone's only active one. " +
+		"`sandbox down` puts the previous one back.")
+	input := sandbox.SetupInput{
+		ZoneID:         zoneID,
+		Namespace:      sandbox.DefaultNamespace,
+		Cluster:        sandbox.DefaultCluster,
+		Issuer:         sandbox.DefaultIssuer,
+		EgressProxyDir: defaultEgressProxyDir(),
+	}
+	if err = askResources(ctx, sess, &input); err != nil {
+		return err
+	}
+	if err = askKeys(sess, &input); err != nil {
+		return err
+	}
+
+	sess.phase(phaseSetup)
+	if err = app.Setup(ctx, input); err != nil {
+		return errReported
+	}
+
+	sess.phase(phaseUsers)
+	added, err := addUsers(ctx, sess)
+	if err != nil {
+		return err
+	}
+	if len(added) == 0 {
+		app.UI.Warn("No user was added, so there is no sandbox to run the agent in.")
+		return errReported
+	}
+
+	sess.phase(phaseAgent)
+	run := sandbox.RunInput{Read: os.Getenv("SANDBOX_READ"), Emails: added}
+	if app.State.HasResource(sandbox.SlugGitHub) {
+		if err := askRead(sess, &run); err != nil {
+			return err
+		}
+	}
+	runErr := runAgent(ctx, sess, run)
+	sess.show(func(width int) string { return sess.theme.commands(app.State, run, width) })
+	return runErr
+}
+
+// addUsers adds users with access, then users without, and responds with
+// the emails of those it added.
+func addUsers(ctx context.Context, s *session) ([]string, error) {
+	var added []string
+	for _, access := range []bool{true, false} {
+		if err := addUsersWith(ctx, s, access, &added); err != nil {
+			return added, err
+		}
+	}
+	return added, nil
+}
+
+// addUsersWith adds users one at a time, with or without access, until the
+// person says to stop, and appends each one it added to added.
+func addUsersWith(ctx context.Context, sess *session, access bool, added *[]string) error {
+	add := sess.app.AddUser
+	if !access {
+		add = sess.app.AddUserWithoutAccess
+	}
+	round := userRound{access: access}
 	for {
-		users, err := candidates(ctx, app, *added)
+		users, err := candidates(ctx, sess.app, *added)
 		if err != nil {
 			return err
 		}
-		if len(users) == 0 && (count > 0 || !access) {
-			if !access && count == 0 {
-				app.UI.Info(
-					"Everyone in the zone already has a sandbox. To add a user without access, have someone else sign in to " + app.State.ZoneURL + " once, then run `sandbox add-user --no-access`.",
-				)
-			}
-			return nil
+		more, err := round.another(sess, len(users))
+		if err != nil || !more {
+			return err
 		}
-		if count > 0 || failed || !access {
-			more, err := askMore(s, access, count, failed)
-			if err != nil || !more {
-				return err
-			}
-		}
-		email, err := askEmail(s, "Who should get a sandbox "+label+"?", users)
+		email, err := askEmail(sess, "Who should get a sandbox "+accessLabel(access)+"?", users)
 		if err != nil {
 			return err
 		}
 		if _, err := add(ctx, email); err != nil {
-			failed = true
+			round.failed = true
 			continue
 		}
-		count, failed = count+1, false
+		round.added, round.failed = round.added+1, false
 		*added = append(*added, email)
 	}
 }
 
+// userRound is where adding users with or without access has got to.
+type userRound struct {
+	access bool
+	// added counts the users this round added, and failed says the last one
+	// did not work.
+	added  int
+	failed bool
+}
+
+// another says whether to add another user, given how many zone users are
+// left to offer. The first user with access is not optional; anyone after
+// that the person asks for.
+func (r userRound) another(sess *session, candidates int) (bool, error) {
+	if candidates == 0 && (r.added > 0 || !r.access) {
+		if !r.access && r.added == 0 {
+			sess.app.UI.Info("Everyone in the zone already has a sandbox. To add a user without access, " +
+				"have someone else sign in to " + sess.app.State.ZoneURL + " once, then run `sandbox add-user --no-access`.")
+		}
+		return false, nil
+	}
+	if r.access && r.added == 0 && !r.failed {
+		return true, nil
+	}
+	return askMore(sess, r)
+}
+
 // askMore asks whether to add another user.
-func askMore(s *session, access bool, count int, failed bool) (bool, error) {
-	label := accessLabel(access)
+func askMore(sess *session, round userRound) (bool, error) {
+	label := accessLabel(round.access)
 	question, description := "Add another user "+label+"?", ""
 	switch {
-	case failed:
+	case round.failed:
 		question = "Try another user " + label + "?"
-	case !access && count == 0:
+	case !round.access && round.added == 0:
 		question = "Add a user without access?"
-		description = "They are in the zone, but nothing lets the sandbox act for them, so the zone refuses every request it makes. This shows the policies doing their job."
+		description = "They are in the zone, but nothing lets the sandbox act for them, so the zone refuses " +
+			"every request it makes. This shows the policies doing their job."
 	}
-	more := count == 0
-	err := s.ask(huh.NewForm(huh.NewGroup(
+	more := round.added == 0
+	err := sess.ask(huh.NewForm(huh.NewGroup(
 		huh.NewConfirm().Title(question).Description(description).Affirmative("Yes").Negative("No").Value(&more),
 	)))
 	return more, err
-}
-
-func accessLabel(access bool) string {
-	if access {
-		return "with access"
-	}
-	return "without access"
 }
 
 func credentialsForm(clientID, secret *string) *huh.Form {
@@ -189,25 +207,27 @@ func credentialsForm(clientID, secret *string) *huh.Form {
 	return huh.NewForm(huh.NewGroup(fields...))
 }
 
-func askZone(ctx context.Context, s *session) (string, string, error) {
-	app := s.app
+// askZone asks which zone the sandboxes use, and creates a new one when the
+// person asks for it.
+func askZone(ctx context.Context, sess *session) (string, error) {
+	app := sess.app
 	var zones []sandbox.Zone
 	if err := app.UI.Step(ctx, "Zones listed", func(ctx context.Context) (string, error) {
 		var err error
 		zones, err = app.KC.ListZones(ctx)
 		return fmt.Sprintf("%d in the organization", len(zones)), err
 	}); err != nil {
-		return "", "", errReported
+		return "", errReported
 	}
 	labels := map[string]string{}
 	options := make([]huh.Option[string], 0, len(zones)+1)
-	for _, z := range zones {
-		labels[z.ID] = fmt.Sprintf("%s (%s)", z.Name, z.ID)
-		options = append(options, huh.NewOption(labels[z.ID], z.ID))
+	for _, zone := range zones {
+		labels[zone.ID] = zone.Name + " (" + zone.ID + ")"
+		options = append(options, huh.NewOption(labels[zone.ID], zone.ID))
 	}
 	options = append(options, huh.NewOption("+ Create a new zone", createZoneOption))
 	choice, name := app.State.ZoneID, "sandbox-demo"
-	if err := s.ask(huh.NewForm(
+	if err := sess.ask(huh.NewForm(
 		huh.NewGroup(huh.NewSelect[string]().
 			Title("Which zone should the sandboxes use?").
 			Description("The zone holds the API servers, the sandbox application and its users.").
@@ -215,103 +235,121 @@ func askZone(ctx context.Context, s *session) (string, string, error) {
 		huh.NewGroup(huh.NewInput().Title("Name the new zone").Value(&name).Validate(required)).
 			WithHideFunc(func() bool { return choice != createZoneOption }),
 	)); err != nil {
-		return "", "", err
+		return "", err
 	}
-	if choice == createZoneOption {
-		s.answer("Zone", strings.TrimSpace(name)+" (new)")
-		return "", strings.TrimSpace(name), nil
+	if choice != createZoneOption {
+		sess.answer("Zone", labels[choice])
+		return choice, nil
 	}
-	s.answer("Zone", labels[choice])
-	return choice, "", nil
+	name = strings.TrimSpace(name)
+	sess.answer("Zone", name+" (new)")
+	return createZone(ctx, app, name)
 }
 
-func askResources(ctx context.Context, s *session, in *sandbox.SetupInput) error {
-	app := s.app
-	if in.ZoneID == "" {
-		return errors.New("pass --resource SLUG=ENV_VAR together with --create-zone")
-	}
-	var packages []sandbox.Package
-	if err := app.UI.Step(ctx, "Catalog read", func(ctx context.Context) (string, error) {
-		var err error
-		packages, err = app.KC.APIKeyPackages(ctx, in.ZoneID)
-		if err == nil && len(packages) == 0 {
-			err = errors.New("the catalog has no API server that takes an API key")
-		}
-		return fmt.Sprintf("%d API servers take an API key", len(packages)), err
+// createZone creates a zone and responds with its ID.
+func createZone(ctx context.Context, app *sandbox.App, name string) (string, error) {
+	var zoneID string
+	if err := app.UI.Step(ctx, "Zone "+name+" created", func(ctx context.Context) (string, error) {
+		zone, err := app.KC.CreateZone(ctx, name)
+		zoneID = zone.ID
+		return zone.ID, err //nolint:wrapcheck // The step shows it.
 	}); err != nil {
-		return errReported
+		return "", errReported
 	}
-	sort.Slice(packages, func(i, j int) bool { return packages[i].Name < packages[j].Name })
-	bySlug := map[string]sandbox.Package{}
+	return zoneID, nil
+}
+
+// askResources asks which API servers the sandboxes may reach, and adds them
+// to input without their keys.
+func askResources(ctx context.Context, sess *session, input *sandbox.SetupInput) error {
+	packages, err := apiKeyPackages(ctx, sess.app, input.ZoneID)
+	if err != nil {
+		return err
+	}
+	// What setup installed before is picked already, but only in its own zone.
+	installed := func(slug string) bool {
+		return sess.app.State.ZoneID == input.ZoneID && sess.app.State.HasResource(slug)
+	}
 	options := make([]huh.Option[string], 0, len(packages))
 	var picked []string
-	for _, p := range packages {
-		bySlug[p.Slug] = p
-		label := p.Name
-		if l := p.FieldLabel("api_key"); l != "" {
-			label += " (" + l + ")"
+	for _, pkg := range packages {
+		label := pkg.Name
+		if keyName := keyLabel(pkg); keyName != "" {
+			label += " (" + keyName + ")"
 		}
-		options = append(options, huh.NewOption(label, p.Slug))
-		if app.State.HasResource(p.Slug) || len(packages) == 1 {
-			picked = append(picked, p.Slug)
+		options = append(options, huh.NewOption(label, pkg.Slug))
+		if installed(pkg.Slug) || len(packages) == 1 {
+			picked = append(picked, pkg.Slug)
 		}
 	}
-	if err := s.ask(huh.NewForm(huh.NewGroup(
+	if err := sess.ask(huh.NewForm(huh.NewGroup(
 		huh.NewMultiSelect[string]().
 			Title("Which APIs may the sandboxes reach?").
 			Description("Space to pick, enter to continue. The agent calls GitHub and Linear in the demo.").
-			Options(options...).Value(&picked).
-			Validate(func(v []string) error {
-				if len(v) == 0 {
-					return errors.New("pick at least one")
-				}
-				return nil
-			}),
+			Options(options...).Value(&picked).Validate(pickedOne),
 	))); err != nil {
 		return err
 	}
 	names := make([]string, 0, len(picked))
-	for _, slug := range picked {
-		p := bySlug[slug]
-		names = append(names, p.Name)
-		in.APIKeys = append(in.APIKeys, sandbox.APIKey{Slug: slug, Name: p.Name, Label: p.FieldLabel("api_key")})
+	for _, pkg := range packages {
+		if slices.Contains(picked, pkg.Slug) {
+			names = append(names, pkg.Name)
+			input.APIKeys = append(input.APIKeys, sandbox.APIKey{Slug: pkg.Slug, Name: pkg.Name, Label: keyLabel(pkg)})
+		}
 	}
-	s.answer("APIs", strings.Join(names, ", "))
+	sess.answer("APIs", strings.Join(names, ", "))
 	return nil
 }
 
+// apiKeyPackages lists the zone's API server packages that take an API key,
+// by name.
+func apiKeyPackages(ctx context.Context, app *sandbox.App, zoneID string) ([]sandbox.Package, error) {
+	var packages []sandbox.Package
+	if err := app.UI.Step(ctx, "Catalog read", func(ctx context.Context) (string, error) {
+		var err error
+		if packages, err = app.KC.APIKeyPackages(ctx, zoneID); err != nil {
+			return "", err //nolint:wrapcheck // The step shows it.
+		}
+		if len(packages) == 0 {
+			return "", errNoAPIKeyPackages
+		}
+		return fmt.Sprintf("%d API servers take an API key", len(packages)), nil
+	}); err != nil {
+		return nil, errReported
+	}
+	slices.SortFunc(packages, func(a, b sandbox.Package) int { return strings.Compare(a.Name, b.Name) })
+	return packages, nil
+}
+
 // askKeys asks, in one form, for each key setup does not have yet.
-func askKeys(s *session, in *sandbox.SetupInput) error {
+func askKeys(sess *session, input *sandbox.SetupInput) error {
 	var fields []huh.Field
 	var names []string
-	for i := range in.APIKeys {
-		k := &in.APIKeys[i]
-		if k.Key != "" {
+	for i := range input.APIKeys {
+		key := &input.APIKeys[i]
+		if key.Key != "" {
 			continue
 		}
-		label := k.Label
+		label := key.Label
 		if label == "" {
 			label = "API key"
 		}
-		names = append(names, k.Name)
+		names = append(names, key.Name)
 		fields = append(fields, huh.NewInput().
-			Title(k.Name+" · "+label).
+			Title(key.Name+" · "+label).
 			Description("Goes to the zone's vault. The sandbox never sees it.").
-			EchoMode(huh.EchoModePassword).Value(&k.Key).Validate(required))
+			EchoMode(huh.EchoModePassword).Value(&key.Key).Validate(required))
 	}
 	if len(fields) == 0 {
 		return nil
 	}
-	if s.tui == nil {
-		return fmt.Errorf("pass the keys for %s as --resource SLUG=ENV_VAR", strings.Join(names, ", "))
-	}
-	if err := s.ask(huh.NewForm(huh.NewGroup(fields...))); err != nil {
+	if err := sess.ask(huh.NewForm(huh.NewGroup(fields...))); err != nil {
 		return err
 	}
-	for i := range in.APIKeys {
-		in.APIKeys[i].Key = strings.TrimSpace(in.APIKeys[i].Key)
+	for i := range input.APIKeys {
+		input.APIKeys[i].Key = strings.TrimSpace(input.APIKeys[i].Key)
 	}
-	s.answer("Keys", "entered for "+strings.Join(names, ", "))
+	sess.answer("Keys", "entered for "+strings.Join(names, ", "))
 	return nil
 }
 
@@ -319,37 +357,31 @@ func askKeys(s *session, in *sandbox.SetupInput) error {
 func candidates(ctx context.Context, app *sandbox.App, skip []string) ([]sandbox.ZoneUser, error) {
 	users, err := app.KC.ListUsers(ctx, app.State.ZoneID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errListUsers, err)
 	}
-	out := users[:0]
-	for _, u := range users {
-		if !slices.ContainsFunc(skip, func(email string) bool { return strings.EqualFold(email, u.Email) }) {
-			out = append(out, u)
-		}
-	}
-	return out, nil
+	return slices.DeleteFunc(users, func(user sandbox.ZoneUser) bool {
+		return slices.ContainsFunc(skip, func(email string) bool { return strings.EqualFold(email, user.Email) })
+	}), nil
 }
 
 // askEmail offers the given zone users, plus any other email.
-func askEmail(s *session, title string, users []sandbox.ZoneUser) (string, error) {
+func askEmail(sess *session, title string, users []sandbox.ZoneUser) (string, error) {
 	options := make([]huh.Option[string], 0, len(users)+1)
-	for _, u := range users {
-		options = append(options, huh.NewOption(u.Email, u.Email))
+	for _, user := range users {
+		options = append(options, huh.NewOption(user.Email, user.Email))
 	}
 	options = append(options, huh.NewOption("+ Someone else", otherUserOption))
 	choice, typed := "", ""
 	typing := func() bool { return len(users) == 0 || choice == otherUserOption }
-	if err := s.ask(huh.NewForm(
+	if err := sess.ask(huh.NewForm(
 		huh.NewGroup(huh.NewSelect[string]().Title(title).
 			Description("People in the zone. Someone new has to sign in to the zone once first.").
 			Options(options...).Value(&choice)).
 			WithHideFunc(func() bool { return len(users) == 0 }),
 		huh.NewGroup(huh.NewInput().Title(title).
 			Description("Their email. They must already be in the zone.").
-			Value(&typed).Validate(func(v string) error {
-			_, err := mail.ParseAddress(v)
-			return err
-		})).WithHideFunc(func() bool { return !typing() }),
+			Value(&typed).Validate(validEmail)).
+			WithHideFunc(func() bool { return !typing() }),
 	)); err != nil {
 		return "", err
 	}
@@ -359,24 +391,38 @@ func askEmail(s *session, title string, users []sandbox.ZoneUser) (string, error
 	return choice, nil
 }
 
-func askRead(s *session, in *sandbox.RunInput) error {
-	if in.Read == "" {
-		in.Read = defaultRead
+func askRead(sess *session, input *sandbox.RunInput) error {
+	if input.Read == "" {
+		input.Read = defaultRead
 	}
-	if err := s.ask(huh.NewForm(huh.NewGroup(
+	if err := sess.ask(huh.NewForm(huh.NewGroup(
 		huh.NewInput().Title("Which GitHub file should the agent read?").
 			Description("OWNER/REPO/PATH. A private repo shows the agent using the user's access.").
-			Value(&in.Read).Validate(required),
+			Value(&input.Read).Validate(required),
 	))); err != nil {
 		return err
 	}
-	s.answer("File", in.Read)
+	sess.answer("File", input.Read)
 	return nil
 }
 
-func required(v string) error {
-	if strings.TrimSpace(v) == "" {
-		return errors.New("required")
+func required(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return errRequired
+	}
+	return nil
+}
+
+func pickedOne(picked []string) error {
+	if len(picked) == 0 {
+		return errPickOne
+	}
+	return nil
+}
+
+func validEmail(value string) error {
+	if _, err := mail.ParseAddress(strings.TrimSpace(value)); err != nil {
+		return errNotAnEmail
 	}
 	return nil
 }

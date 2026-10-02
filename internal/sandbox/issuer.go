@@ -4,24 +4,35 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // LocaldevContext is the kubectl context of the localdev cluster.
 const LocaldevContext = "k3d-localdev"
 
-// managedBy labels everything the CLI creates outside its own cluster, so
-// `sandbox down` can find it.
-const managedBy = "keycard-sandbox"
+// The paths a ServiceAccount issuer serves its discovery document and keys at.
+const (
+	discoveryPath = "/.well-known/openid-configuration"
+	jwksPath      = "/openid/v1/jwks"
+)
 
 // issuerRouteName names the HTTPRoute and its two filters in localdev's
 // gateway namespace.
-const issuerRouteName = "sandbox-oidc"
+const (
+	issuerRouteName  = "sandbox-oidc"
+	gatewayNamespace = "gateway"
+	envoyGateway     = "gateway.envoyproxy.io"
+	routeFilterKind  = "HTTPRouteFilter"
+)
+
+var errIssuerURL = errors.New("the issuer must be an https URL with no path to be served by the gateway")
 
 // PublishIssuer serves the sandbox cluster's discovery document and keys at
 // the issuer URL through localdev's gateway. svc-sts fetches both whenever it
@@ -29,43 +40,41 @@ const issuerRouteName = "sandbox-oidc"
 // *.localdev.keycard.sh certificate, so svc-sts needs no change. The
 // documents are snapshots, so this runs again after the cluster is recreated.
 func PublishIssuer(ctx context.Context, sandbox, localdev Kube, issuer string) error {
-	u, err := url.Parse(issuer)
-	if err != nil || u.Host == "" || u.Path != "" {
-		return fmt.Errorf("the issuer must be an https URL with no path to be served by the gateway (got %q)", issuer)
+	parsed, err := url.Parse(issuer)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Path != "" {
+		return fmt.Errorf("%w (got %q)", errIssuerURL, issuer)
 	}
-	discovery, err := compactJSON(sandbox.GetRaw(ctx, "/.well-known/openid-configuration"))
+	discovery, err := compactJSON(sandbox.GetRaw(ctx, discoveryPath))
 	if err != nil {
 		return fmt.Errorf("read the discovery document: %w", err)
 	}
-	jwks, err := compactJSON(sandbox.GetRaw(ctx, "/openid/v1/jwks"))
+	jwks, err := compactJSON(sandbox.GetRaw(ctx, jwksPath))
 	if err != nil {
 		return fmt.Errorf("read the keys: %w", err)
 	}
-	return localdev.Apply(ctx, []map[string]any{
-		directResponse(issuerRouteName+"-discovery", discovery),
-		directResponse(issuerRouteName+"-jwks", jwks),
-		{
-			"apiVersion": "gateway.networking.k8s.io/v1",
-			"kind":       "HTTPRoute",
-			"metadata":   meta(issuerRouteName, "gateway"),
-			"spec": map[string]any{
-				"parentRefs": []any{map[string]any{"name": "gateway", "namespace": "gateway", "sectionName": "https"}},
-				"hostnames":  []any{u.Host},
-				"rules": []any{
-					routeRule("/.well-known/openid-configuration", issuerRouteName+"-discovery"),
-					routeRule("/openid/v1/jwks", issuerRouteName+"-jwks"),
-				},
+	route := &httpRoute{
+		APIVersion: "gateway.networking.k8s.io/v1", Kind: "HTTPRoute",
+		ObjectMeta: managedMeta(issuerRouteName, gatewayNamespace, nil),
+		Spec: httpRouteSpec{
+			ParentRefs: []parentRef{{Name: "gateway", Namespace: gatewayNamespace, SectionName: "https"}},
+			Hostnames:  []string{parsed.Host},
+			Rules: []routeRule{
+				exactRoute(discoveryPath, issuerRouteName+"-discovery"),
+				exactRoute(jwksPath, issuerRouteName+"-jwks"),
 			},
 		},
-	})
+	}
+	return localdev.Apply(ctx,
+		directResponse(issuerRouteName+"-discovery", discovery),
+		directResponse(issuerRouteName+"-jwks", jwks),
+		route)
 }
 
 // UnpublishIssuer removes the route and its filters from localdev.
 func UnpublishIssuer(ctx context.Context, localdev Kube) error {
-	return localdev.Delete(ctx, "gateway",
-		"httproute/"+issuerRouteName,
-		"httproutefilter.gateway.envoyproxy.io/"+issuerRouteName+"-discovery",
-		"httproutefilter.gateway.envoyproxy.io/"+issuerRouteName+"-jwks")
+	filter := "httproutefilter." + envoyGateway + "/" + issuerRouteName
+	return localdev.Delete(ctx, gatewayNamespace,
+		"httproute/"+issuerRouteName, filter+"-discovery", filter+"-jwks")
 }
 
 func compactJSON(raw []byte, err error) (string, error) {
@@ -79,34 +88,89 @@ func compactJSON(raw []byte, err error) (string, error) {
 	return buf.String(), nil
 }
 
-func meta(name, namespace string) map[string]any {
-	return map[string]any{
-		"name":      name,
-		"namespace": namespace,
-		"labels":    map[string]any{"app.kubernetes.io/managed-by": managedBy},
-	}
+// httpRouteFilter is Envoy Gateway's filter that answers a route with a fixed
+// body.
+type httpRouteFilter struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata"`
+
+	Spec struct {
+		DirectResponse struct {
+			ContentType string `json:"contentType"`
+			StatusCode  int    `json:"statusCode"`
+			Body        struct {
+				Type   string `json:"type"`
+				Inline string `json:"inline"`
+			} `json:"body"`
+		} `json:"directResponse"`
+	} `json:"spec"`
 }
 
-func directResponse(name, body string) map[string]any {
-	return map[string]any{
-		"apiVersion": "gateway.envoyproxy.io/v1alpha1",
-		"kind":       "HTTPRouteFilter",
-		"metadata":   meta(name, "gateway"),
-		"spec": map[string]any{"directResponse": map[string]any{
-			"contentType": "application/json",
-			"statusCode":  200,
-			"body":        map[string]any{"type": "Inline", "inline": body},
-		}},
+func directResponse(name, body string) *httpRouteFilter {
+	filter := &httpRouteFilter{
+		APIVersion: envoyGateway + "/v1alpha1", Kind: routeFilterKind,
+		ObjectMeta: managedMeta(name, gatewayNamespace, nil),
 	}
+	answer := &filter.Spec.DirectResponse
+	answer.ContentType = "application/json"
+	answer.StatusCode = http.StatusOK
+	answer.Body.Type = "Inline"
+	answer.Body.Inline = body
+	return filter
 }
 
-func routeRule(path, filter string) map[string]any {
-	return map[string]any{
-		"matches": []any{map[string]any{"path": map[string]any{"type": "Exact", "value": path}}},
-		"filters": []any{map[string]any{"type": "ExtensionRef", "extensionRef": map[string]any{
-			"group": "gateway.envoyproxy.io", "kind": "HTTPRouteFilter", "name": filter,
-		}}},
-	}
+// httpRoute is the part of a Gateway API HTTPRoute the issuer route uses.
+type httpRoute struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata"`
+
+	Spec httpRouteSpec `json:"spec"`
+}
+
+type httpRouteSpec struct {
+	ParentRefs []parentRef `json:"parentRefs"`
+	Hostnames  []string    `json:"hostnames"`
+	Rules      []routeRule `json:"rules"`
+}
+
+type parentRef struct {
+	Name        string `json:"name"`
+	Namespace   string `json:"namespace"`
+	SectionName string `json:"sectionName"`
+}
+
+type routeRule struct {
+	Matches []routeMatch     `json:"matches"`
+	Filters []routeFilterRef `json:"filters"`
+}
+
+type routeMatch struct {
+	Path struct {
+		Type  string `json:"type"`
+		Value string `json:"value"`
+	} `json:"path"`
+}
+
+type routeFilterRef struct {
+	Type         string `json:"type"`
+	ExtensionRef struct {
+		Group string `json:"group"`
+		Kind  string `json:"kind"`
+		Name  string `json:"name"`
+	} `json:"extensionRef"`
+}
+
+// exactRoute answers exactly this path with the filter's fixed body.
+func exactRoute(path, filter string) routeRule {
+	var match routeMatch
+	match.Path.Type = "Exact"
+	match.Path.Value = path
+	var ref routeFilterRef
+	ref.Type = "ExtensionRef"
+	ref.ExtensionRef.Group = envoyGateway
+	ref.ExtensionRef.Kind = routeFilterKind
+	ref.ExtensionRef.Name = filter
+	return routeRule{Matches: []routeMatch{match}, Filters: []routeFilterRef{ref}}
 }
 
 // VerifyIssuer checks the published issuer the way svc-sts does: it fetches
@@ -114,27 +178,31 @@ func routeRule(path, filter string) map[string]any {
 // fetches the keys it names, and verifies a freshly minted token with them.
 // The route takes a moment to program, so it retries for half a minute.
 func VerifyIssuer(ctx context.Context, sandbox Kube, issuer string) error {
-	pool, err := trustPool()
-	if err != nil {
-		return err
-	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig.RootCAs = pool
-	ctx = oidc.ClientContext(ctx, &http.Client{Transport: transport, Timeout: 15 * time.Second})
+	const (
+		requestTimeout = 15 * time.Second
+		programTime    = 30 * time.Second
+		retryEvery     = 2 * time.Second
+		audience       = "keycard-sandbox-check"
+	)
+	ctx = oidc.ClientContext(ctx, newHTTPClient(requestTimeout))
 
 	var provider *oidc.Provider
-	deadline := time.Now().Add(30 * time.Second)
+	var err error
+	deadline := time.Now().Add(programTime)
 	for {
 		provider, err = oidc.NewProvider(ctx, issuer)
 		if err == nil || time.Now().After(deadline) {
 			break
 		}
-		time.Sleep(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for the issuer route: %w", ctx.Err())
+		case <-time.After(retryEvery):
+		}
 	}
 	if err != nil {
 		return fmt.Errorf("fetch the discovery document from %s: %w", issuer, err)
 	}
-	const audience = "keycard-sandbox-check"
 	token, err := sandbox.CreateToken(ctx, "default", "default", audience)
 	if err != nil {
 		return fmt.Errorf("mint a token to check: %w", err)

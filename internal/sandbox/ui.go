@@ -90,37 +90,60 @@ func (u *UI) emit(e Event) {
 
 // PlainLine renders an event as text without styles. A step's start has no
 // line, because its end reports it.
-func PlainLine(e Event) (string, bool) {
-	switch e.Kind {
+func PlainLine(event Event) (string, bool) {
+	switch event.Kind {
 	case EventHeader:
-		return "Keycard sandbox · " + e.Text, true
+		return "Keycard sandbox · " + event.Text, true
 	case EventSection:
-		return "\n" + e.Text, true
+		return "\n" + event.Text, true
 	case EventOK:
-		return "  ✓ " + e.Text, true
+		return "  ✓ " + event.Text, true
 	case EventWarn:
-		return "  ! " + e.Text, true
+		return "  ! " + event.Text, true
 	case EventInfo:
-		return "    " + e.Text, true
+		return "    " + event.Text, true
 	case EventQuote:
-		var b strings.Builder
-		for _, line := range strings.Split(strings.TrimRight(e.Text, "\n"), "\n") {
-			b.WriteString("      | " + line + "\n")
-		}
-		return strings.TrimRight(b.String(), "\n"), true
+		return plainQuote(event.Text), true
 	case EventStepEnd:
-		line := e.Text
-		if e.Detail != "" {
-			line += " · " + e.Detail
-		}
-		if e.Elapsed > 500*time.Millisecond {
-			line += "  " + e.Elapsed.Round(100*time.Millisecond).String()
-		}
-		if e.Err != nil {
-			return "  ✗ " + line + "\n    " + e.Err.Error(), true
-		}
-		return "  ✓ " + line, true
+		return plainStepEnd(event), true
+	case EventStepStart:
+		return "", false
 	default:
 		return "", false
 	}
+}
+
+func plainQuote(text string) string {
+	var quoted strings.Builder
+	for line := range strings.SplitSeq(strings.TrimRight(text, "\n"), "\n") {
+		quoted.WriteString("      | " + line + "\n")
+	}
+	return strings.TrimRight(quoted.String(), "\n")
+}
+
+func plainStepEnd(event Event) string {
+	line := event.Text
+	if event.Detail != "" {
+		line += " · " + event.Detail
+	}
+	if elapsed := Elapsed(event.Elapsed); elapsed != "" {
+		line += "  " + elapsed
+	}
+	if event.Err != nil {
+		return "  ✗ " + line + "\n    " + event.Err.Error()
+	}
+	return "  ✓ " + line
+}
+
+// Elapsed renders how long a step took, to a tenth of a second, or "" for a
+// step too quick to be worth showing.
+func Elapsed(took time.Duration) string {
+	const (
+		shownAfter = 500 * time.Millisecond
+		precision  = 100 * time.Millisecond
+	)
+	if took <= shownAfter {
+		return ""
+	}
+	return took.Round(precision).String()
 }

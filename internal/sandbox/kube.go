@@ -9,20 +9,30 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
 
-// Images are the egress-proxy images every sandbox pod runs, built from an
-// egress-proxy checkout under the tag local.
-var Images = []string{"egress-proxy:local", "egress-netsetup:local", "sandbox-base:local"}
-
 // k3sImage is the k3s release agent-sandbox-poc's local lane uses.
 const k3sImage = "rancher/k3s:v1.36.4-k3s1"
 
+var (
+	errNoGateway    = errors.New("the k3d network has no IPv4 gateway")
+	errMissingTools = errors.New("missing tools")
+)
+
+// EgressImages are the egress-proxy images every sandbox pod runs, built from
+// an egress-proxy checkout under the tag local.
+func EgressImages() []string {
+	return []string{"egress-proxy:local", "egress-netsetup:local", "sandbox-base:local"}
+}
+
 // run runs a command and responds with its standard output. A failure carries
-// the command's standard error.
+// the last lines of the command's standard error.
 func run(ctx context.Context, stdin []byte, name string, args ...string) (string, error) {
+	const errorLines = 4
+	//nolint:gosec // name is one of the CLI's fixed tools, and args come from its own flags and state.
 	cmd := exec.CommandContext(ctx, name, args...)
 	var out, errOut bytes.Buffer
 	cmd.Stdout = &out
@@ -35,7 +45,7 @@ func run(ctx context.Context, stdin []byte, name string, args ...string) (string
 		if msg == "" {
 			msg = strings.TrimSpace(out.String())
 		}
-		return out.String(), fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, lastLines(msg, 4))
+		return out.String(), fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, lastLines(msg, errorLines))
 	}
 	return out.String(), nil
 }
@@ -51,17 +61,13 @@ func lastLines(s string, n int) string {
 // Kube runs kubectl against one context.
 type Kube struct{ Context string }
 
-func (k Kube) kubectl(ctx context.Context, stdin []byte, args ...string) (string, error) {
-	return run(ctx, stdin, "kubectl", append([]string{"--context", k.Context}, args...)...)
-}
-
-// Apply applies the objects as a List.
-func (k Kube) Apply(ctx context.Context, objects []map[string]any) error {
-	b, err := json.Marshal(map[string]any{"apiVersion": "v1", "kind": "List", "items": objects})
+// Apply applies the objects as one List.
+func (k Kube) Apply(ctx context.Context, objects ...any) error {
+	list, err := json.Marshal(map[string]any{"apiVersion": "v1", "kind": "List", "items": objects})
 	if err != nil {
 		return fmt.Errorf("encode manifests: %w", err)
 	}
-	_, err = k.kubectl(ctx, b, "apply", "-f", "-")
+	_, err = k.kubectl(ctx, list, "apply", "-f", "-")
 	return err
 }
 
@@ -73,42 +79,28 @@ func (k Kube) GetRaw(ctx context.Context, path string) ([]byte, error) {
 
 // CreateToken mints a ServiceAccount token.
 func (k Kube) CreateToken(ctx context.Context, namespace, serviceAccount, audience string) (string, error) {
-	out, err := k.kubectl(
-		ctx,
-		nil,
-		"-n",
-		namespace,
-		"create",
-		"token",
-		serviceAccount,
-		"--audience",
-		audience,
-		"--duration",
-		"10m",
-	)
+	out, err := k.kubectl(ctx, nil,
+		"-n", namespace, "create", "token", serviceAccount, "--audience", audience, "--duration", "10m")
 	return strings.TrimSpace(out), err
 }
 
 // WaitReady waits for a pod to be ready.
 func (k Kube) WaitReady(ctx context.Context, namespace, pod string, timeout time.Duration) error {
-	_, err := k.kubectl(
-		ctx,
-		nil,
-		"-n",
-		namespace,
-		"wait",
-		"--for=condition=Ready",
-		"pod/"+pod,
-		"--timeout",
-		timeout.String(),
-	)
+	_, err := k.kubectl(ctx, nil,
+		"-n", namespace, "wait", "--for=condition=Ready", "pod/"+pod, "--timeout", timeout.String())
 	return err
 }
 
 // Exec runs a command in a container and responds with its standard output.
+// kubectl exits with the command's own exit status.
 func (k Kube) Exec(ctx context.Context, namespace, pod, container string, command ...string) (string, error) {
 	args := append([]string{"-n", namespace, "exec", pod, "-c", container, "--"}, command...)
 	return k.kubectl(ctx, nil, args...)
+}
+
+// Logs reads a container's logs from the last two minutes.
+func (k Kube) Logs(ctx context.Context, namespace, pod, container string) (string, error) {
+	return k.kubectl(ctx, nil, "-n", namespace, "logs", pod, "-c", container, "--since=2m")
 }
 
 // Delete deletes objects, ignoring ones already gone.
@@ -121,10 +113,16 @@ func (k Kube) Delete(ctx context.Context, namespace string, refs ...string) erro
 	return err
 }
 
-// Exists reports whether an object exists.
-func (k Kube) Exists(ctx context.Context, namespace, ref string) bool {
-	_, err := k.kubectl(ctx, nil, "-n", namespace, "get", ref)
-	return err == nil
+// DeletePod deletes a pod and waits until it is gone, ignoring one already
+// gone.
+func (k Kube) DeletePod(ctx context.Context, namespace, pod string) error {
+	_, err := k.kubectl(ctx, nil,
+		"-n", namespace, "delete", "pod", pod, "--ignore-not-found", "--wait=true", "--timeout=60s")
+	return err
+}
+
+func (k Kube) kubectl(ctx context.Context, stdin []byte, args ...string) (string, error) {
+	return run(ctx, stdin, "kubectl", append([]string{"--context", k.Context}, args...)...)
 }
 
 // ClusterContext is the kubectl context k3d gives a cluster.
@@ -142,12 +140,12 @@ func ClusterExists(ctx context.Context, cluster string) (bool, error) {
 	if err := json.Unmarshal([]byte(out), &clusters); err != nil {
 		return false, fmt.Errorf("read k3d cluster list: %w", err)
 	}
-	for _, c := range clusters {
-		if c.Name == cluster {
-			return true, nil
-		}
-	}
-	return false, nil
+	return slices.ContainsFunc(clusters, func(c struct {
+		Name string `json:"name"`
+	},
+	) bool {
+		return c.Name == cluster
+	}), nil
 }
 
 // CreateCluster creates a k3d cluster whose API server mints ServiceAccount
@@ -174,7 +172,7 @@ func DeleteCluster(ctx context.Context, cluster string) error {
 
 // ClusterIssuer reads the issuer the cluster's API server publishes.
 func ClusterIssuer(ctx context.Context, kube Kube) (string, error) {
-	raw, err := kube.GetRaw(ctx, "/.well-known/openid-configuration")
+	raw, err := kube.GetRaw(ctx, discoveryPath)
 	if err != nil {
 		return "", err
 	}
@@ -190,31 +188,23 @@ func ClusterIssuer(ctx context.Context, kube Kube) (string, error) {
 // HostGateway is the address a pod in the cluster reaches the host on, where
 // localdev's gateway listens on port 443.
 func HostGateway(ctx context.Context, cluster string) (string, error) {
-	out, err := run(
-		ctx,
-		nil,
-		"docker",
-		"network",
-		"inspect",
-		"k3d-"+cluster,
-		"--format",
-		"{{range .IPAM.Config}}{{.Gateway}} {{end}}",
-	)
+	out, err := run(ctx, nil,
+		"docker", "network", "inspect", "k3d-"+cluster, "--format", "{{range .IPAM.Config}}{{.Gateway}} {{end}}")
 	if err != nil {
 		return "", err
 	}
-	for _, ip := range strings.Fields(out) {
+	for ip := range strings.FieldsSeq(out) {
 		if !strings.Contains(ip, ":") {
 			return ip, nil
 		}
 	}
-	return "", fmt.Errorf("network k3d-%s has no IPv4 gateway", cluster)
+	return "", fmt.Errorf("%w: k3d-%s", errNoGateway, cluster)
 }
 
 // MissingImages lists the images Docker does not have.
 func MissingImages(ctx context.Context) []string {
 	var missing []string
-	for _, image := range Images {
+	for _, image := range EgressImages() {
 		if _, err := run(ctx, nil, "docker", "image", "inspect", image); err != nil {
 			missing = append(missing, image)
 		}
@@ -241,8 +231,20 @@ func ImportedImages(ctx context.Context, cluster string) bool {
 	if err != nil {
 		return false
 	}
-	for _, image := range Images {
-		if !strings.Contains(out, "docker.io/library/"+image) {
+	var listed struct {
+		Images []struct {
+			RepoTags []string `json:"repoTags"`
+		} `json:"images"`
+	}
+	if json.Unmarshal([]byte(out), &listed) != nil {
+		return false
+	}
+	var tags []string
+	for _, image := range listed.Images {
+		tags = append(tags, image.RepoTags...)
+	}
+	for _, image := range EgressImages() {
+		if !slices.Contains(tags, "docker.io/library/"+image) {
 			return false
 		}
 	}
@@ -251,7 +253,8 @@ func ImportedImages(ctx context.Context, cluster string) bool {
 
 // ImportImages imports the images into the cluster.
 func ImportImages(ctx context.Context, cluster string) error {
-	_, err := run(ctx, nil, "k3d", append(append([]string{"image", "import"}, Images...), "-c", cluster)...)
+	args := append(append([]string{"image", "import"}, EgressImages()...), "-c", cluster)
+	_, err := run(ctx, nil, "k3d", args...)
 	return err
 }
 
@@ -264,10 +267,7 @@ func RequireTools() error {
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("missing tools: %s", strings.Join(missing, ", "))
+		return fmt.Errorf("%w: %s", errMissingTools, strings.Join(missing, ", "))
 	}
 	return nil
 }
-
-// ErrNotFound marks a lookup that found nothing.
-var ErrNotFound = errors.New("not found")
