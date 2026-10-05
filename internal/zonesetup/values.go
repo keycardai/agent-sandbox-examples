@@ -1,6 +1,8 @@
 // Package zonesetup reads the values file zone-setup configures a zone from
-// and resolves that zone through the management API, and finds or creates the
-// cluster's provider, the egress proxy Application and the resources in it.
+// and resolves that zone through the management API. It finds or creates the
+// cluster's provider, the egress proxy Application, the resources in it, each
+// user's token credential and impersonation policy, and the policy set that
+// holds those policies.
 package zonesetup
 
 import (
@@ -35,6 +37,19 @@ var (
 	// ErrMissingSecret is a credential the values file names but the
 	// environment or filesystem does not hold.
 	ErrMissingSecret = errors.New("missing secret")
+	// ErrPolicyAmbiguous is a policy name more than one unarchived policy in
+	// the zone has.
+	ErrPolicyAmbiguous = errors.New("policy ambiguous")
+	// ErrPolicySchemaNotFound is a zone without a default Cedar schema, which
+	// every new policy version and policy set version is validated against.
+	ErrPolicySchemaNotFound = errors.New("policy schema not found")
+	// ErrPolicySetActive is a zone whose active policy set is not the sandbox
+	// set. A zone has one active policy set, so activating the sandbox set
+	// replaces it.
+	ErrPolicySetActive = errors.New("another policy set is active")
+	// ErrPolicySetAmbiguous is a policy set name more than one unarchived
+	// policy set in the zone has.
+	ErrPolicySetAmbiguous = errors.New("policy set ambiguous")
 	// ErrProviderAmbiguous is an issuer_url, a credential_provider or the
 	// keycard-vault type that more than one provider in the zone has.
 	ErrProviderAmbiguous = errors.New("provider ambiguous")

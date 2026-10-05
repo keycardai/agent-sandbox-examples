@@ -3,7 +3,9 @@
 // egress proxy Application with implicit consent, finds, creates or patches
 // each resource, stores each secret_env credential, and makes each resource a
 // dependency of the Application. For each user it binds the user's
-// ServiceAccount to the Application with a token credential. It prints the
+// ServiceAccount to the Application with a token credential and publishes the
+// user's impersonation policy. One version of the policy set the values file
+// names holds every policy, and the run activates it. It prints the
 // k8s_sandbox and sandbox_user_access values as YAML. With --dry-run it changes
 // nothing and prints nothing on stdout.
 //
@@ -15,6 +17,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"slices"
+	"strings"
 	"syscall"
 
 	"github.com/keycardai/keycard-go"
@@ -34,14 +38,20 @@ func main() {
 	}
 }
 
+const replaceActiveFlag = "replace-active-policy-set"
+
 func newCommand() *cli.Command {
 	return &cli.Command{
 		Name:            "zone-setup",
-		Usage:           "find or create the zone's provider, application, resources and users' token credentials",
+		Usage:           "find or create the zone's provider, application, resources, users' access and policy set",
 		HideHelpCommand: true,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "values", Required: true, Usage: "the values file, YAML or JSON"},
 			&cli.BoolFlag{Name: "dry-run", Usage: "change nothing and print what would change"},
+			&cli.BoolFlag{
+				Name:  replaceActiveFlag,
+				Usage: "activate the sandbox policy set even when another policy set is active, replacing it",
+			},
 		},
 		Action: setup,
 	}
@@ -95,6 +105,9 @@ func setup(ctx context.Context, cmd *cli.Command) error {
 	}
 	access, err := ensureUserAccess(ctx, cmd, session, applicationID, providerID, values)
 	if err != nil {
+		return err
+	}
+	if err = ensurePolicies(ctx, cmd, session, values, access); err != nil {
 		return err
 	}
 	if cmd.Bool("dry-run") {
@@ -384,6 +397,247 @@ func ensureTokenCredential(
 	}
 	sayf(cmd, "created token credential %s for %s", credentialID, subject)
 	return credentialID, nil
+}
+
+// ensurePolicies finds or publishes each user's impersonation policy, then
+// makes the policy set hold every one of them.
+func ensurePolicies(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	values *zonesetup.Values,
+	access []userAccess,
+) error {
+	if len(access) == 0 {
+		return nil
+	}
+	entries := make([]keycard.PolicySetManifestEntryParam, 0, len(access))
+	for _, user := range access {
+		entry, err := ensurePolicy(ctx, cmd, session,
+			zonesetup.PolicyName(user.UserID),
+			fmt.Sprintf("Lets the sandbox of %s impersonate that user, and nobody else", user.UserEmail),
+			zonesetup.ImpersonationPolicy(values.Namespace, user.UserID))
+		if err != nil {
+			return err
+		}
+		entries = append(entries, entry)
+	}
+	return ensurePolicySet(ctx, cmd, session, values.PolicySet, entries)
+}
+
+// ensurePolicy finds or creates the policy named name and makes its latest
+// version hold cedar.
+func ensurePolicy(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	name, description, cedar string,
+) (keycard.PolicySetManifestEntryParam, error) {
+	policy, err := session.FindPolicy(ctx, name)
+	switch {
+	case err != nil:
+		return keycard.PolicySetManifestEntryParam{}, fmt.Errorf("finding the policy %q: %w", name, err)
+	case policy.ID == "" && cmd.Bool("dry-run"):
+		sayf(cmd, "would create the policy %q", name)
+		return keycard.PolicySetManifestEntryParam{}, nil
+	case policy.ID == "":
+		if policy.ID, err = session.CreatePolicy(ctx, name, description); err != nil {
+			return keycard.PolicySetManifestEntryParam{}, fmt.Errorf("creating the policy %q: %w", name, err)
+		}
+		sayf(cmd, "created policy %s for %q", policy.ID, name)
+		return publishPolicyVersion(ctx, cmd, session, policy.ID, cedar)
+	}
+	latest, err := session.LatestPolicyVersion(ctx, policy.ID)
+	switch {
+	case err != nil:
+		return keycard.PolicySetManifestEntryParam{}, fmt.Errorf("reading the policy %q: %w", name, err)
+	case latest.ID != "" && strings.TrimSpace(latest.CedarRaw) == strings.TrimSpace(cedar):
+		sayf(cmd, "found policy %s version %s for %q", policy.ID, latest.ID, name)
+		return keycard.PolicySetManifestEntryParam{PolicyID: policy.ID, PolicyVersionID: latest.ID}, nil
+	case cmd.Bool("dry-run"):
+		sayf(cmd, "would publish a new version of policy %s for %q", policy.ID, name)
+		return keycard.PolicySetManifestEntryParam{PolicyID: policy.ID}, nil
+	}
+	return publishPolicyVersion(ctx, cmd, session, policy.ID, cedar)
+}
+
+func publishPolicyVersion(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	policyID, cedar string,
+) (keycard.PolicySetManifestEntryParam, error) {
+	versionID, err := session.CreatePolicyVersion(ctx, policyID, cedar)
+	if err != nil {
+		return keycard.PolicySetManifestEntryParam{}, fmt.Errorf("publishing a version of policy %s: %w", policyID, err)
+	}
+	sayf(cmd, "published policy %s version %s", policyID, versionID)
+	return keycard.PolicySetManifestEntryParam{PolicyID: policyID, PolicyVersionID: versionID}, nil
+}
+
+// ensurePolicySet makes the active version of the policy set named name hold
+// every entry, and activates it.
+//
+// A zone has one active policy set. Activating the sandbox set while another
+// set is active replaces that set, which is refused with ErrPolicySetActive
+// unless --replace-active-policy-set is given. The check runs before the set
+// is written, and in a dry run too, so a dry run reports the same refusal.
+func ensurePolicySet(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	name string,
+	entries []keycard.PolicySetManifestEntryParam,
+) error {
+	set, err := session.FindPolicySet(ctx, name)
+	if err != nil {
+		return fmt.Errorf("finding the policy set %q: %w", name, err)
+	}
+	if !set.Active {
+		if err = checkOtherActive(ctx, cmd, session, set.ID, name); err != nil {
+			return err
+		}
+	}
+	switch {
+	case slices.ContainsFunc(entries, pendingEntry) || set.ID == "" && cmd.Bool("dry-run"):
+		sayf(cmd, "would publish a version of policy set %q with %d policies and activate it", name, len(entries))
+		return nil
+	case set.ID == "":
+		if set.ID, err = session.CreatePolicySet(ctx, name); err != nil {
+			return fmt.Errorf("creating the policy set %q: %w", name, err)
+		}
+		sayf(cmd, "created policy set %s for %q", set.ID, name)
+	}
+	return reconcilePolicySetVersion(ctx, cmd, session, set, entries)
+}
+
+// pendingEntry is an entry for a policy or version a dry run would create.
+func pendingEntry(entry keycard.PolicySetManifestEntryParam) bool {
+	return entry.PolicyID == "" || entry.PolicyVersionID == ""
+}
+
+// checkOtherActive refuses to replace another active policy set unless
+// --replace-active-policy-set is given. ownID is the sandbox set's id, or ""
+// when it does not exist yet.
+func checkOtherActive(ctx context.Context, cmd *cli.Command, session *zonesetup.Session, ownID, name string) error {
+	active, err := session.ActivePolicySets(ctx)
+	if err != nil {
+		return fmt.Errorf("listing the active policy sets: %w", err)
+	}
+	for _, other := range active {
+		switch {
+		case other.ID == ownID:
+		case cmd.Bool(replaceActiveFlag):
+			sayf(cmd, "policy set %q (%s) is active and will be replaced", other.Name, other.ID)
+		default:
+			return fmt.Errorf("%w: %q (%s). Activating %q would replace it. Re-run with --%s to do that",
+				zonesetup.ErrPolicySetActive, other.Name, other.ID, name, replaceActiveFlag)
+		}
+	}
+	return nil
+}
+
+// reconcilePolicySetVersion starts from the active version's manifest, or the
+// latest version's when the set is not active, so entries this run does not
+// manage are kept. An unchanged manifest is activated as it is. A changed one
+// is published as a new version and activated.
+func reconcilePolicySetVersion(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	set keycard.PolicySetWithBinding,
+	entries []keycard.PolicySetManifestEntryParam,
+) error {
+	baseID, base, err := baseManifest(ctx, session, set)
+	if err != nil {
+		return err
+	}
+	desired, changed := mergeManifest(base, entries)
+	switch {
+	case !changed && baseID != "" && set.Active && set.ActiveVersionID == baseID:
+		sayf(cmd, "found policy set %s version %s active with every policy", set.ID, baseID)
+		return nil
+	case !changed && baseID != "":
+		return activatePolicySetVersion(ctx, cmd, session, set.ID, baseID)
+	case cmd.Bool("dry-run"):
+		sayf(cmd, "would publish a version of policy set %s with %d policies and activate it", set.ID, len(desired))
+		return nil
+	}
+	versionID, err := session.CreatePolicySetVersion(ctx, set.ID, desired)
+	if err != nil {
+		return fmt.Errorf("publishing a version of policy set %s: %w", set.ID, err)
+	}
+	sayf(cmd, "published policy set %s version %s with %d policies", set.ID, versionID, len(desired))
+	return activatePolicySetVersion(ctx, cmd, session, set.ID, versionID)
+}
+
+// baseManifest returns the id and entries of the set's active version, else
+// of its latest version, else none.
+func baseManifest(
+	ctx context.Context,
+	session *zonesetup.Session,
+	set keycard.PolicySetWithBinding,
+) (string, []keycard.PolicySetManifestEntry, error) {
+	baseID := set.ActiveVersionID
+	if baseID == "" {
+		baseID = set.LatestVersionID
+	}
+	if baseID == "" {
+		return "", nil, nil
+	}
+	base, err := session.PolicySetManifest(ctx, set.ID, baseID)
+	if err != nil {
+		return "", nil, fmt.Errorf("reading the policy set %s: %w", set.ID, err)
+	}
+	return baseID, base, nil
+}
+
+func activatePolicySetVersion(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	setID, versionID string,
+) error {
+	if cmd.Bool("dry-run") {
+		sayf(cmd, "would activate policy set %s version %s", setID, versionID)
+		return nil
+	}
+	if err := session.ActivatePolicySetVersion(ctx, setID, versionID); err != nil {
+		return fmt.Errorf("activating policy set %s: %w", setID, err)
+	}
+	sayf(cmd, "activated policy set %s version %s", setID, versionID)
+	return nil
+}
+
+// mergeManifest returns base with each entry's policy pointed at the entry's
+// version, and each policy base lacks appended. changed is false when the
+// result equals base.
+func mergeManifest(
+	base []keycard.PolicySetManifestEntry,
+	entries []keycard.PolicySetManifestEntryParam,
+) ([]keycard.PolicySetManifestEntryParam, bool) {
+	out := make([]keycard.PolicySetManifestEntryParam, 0, len(base)+len(entries))
+	index := map[string]int{}
+	for _, entry := range base {
+		index[entry.PolicyID] = len(out)
+		out = append(out, keycard.PolicySetManifestEntryParam{
+			PolicyID: entry.PolicyID, PolicyVersionID: entry.PolicyVersionID,
+		})
+	}
+	changed := false
+	for _, entry := range entries {
+		if i, ok := index[entry.PolicyID]; ok {
+			if out[i].PolicyVersionID != entry.PolicyVersionID {
+				out[i].PolicyVersionID = entry.PolicyVersionID
+				changed = true
+			}
+			continue
+		}
+		index[entry.PolicyID] = len(out)
+		out = append(out, entry)
+		changed = true
+	}
+	return out, changed
 }
 
 func sayf(cmd *cli.Command, format string, args ...any) {
