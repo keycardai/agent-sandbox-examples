@@ -28,7 +28,8 @@ const (
 // version that reads one unguarded.
 func TestImpersonationPolicy(t *testing.T) {
 	t.Parallel()
-	want := `permit (
+	want := `@id("sandbox-impersonation-user-1")
+permit (
   principal is Keycard::Application,
   action,
   resource
@@ -48,6 +49,31 @@ func TestImpersonationPolicy(t *testing.T) {
 	}
 	if got := zonesetup.PolicyName("user-1"); got != "Sandbox impersonation: user-1" {
 		t.Errorf("policy name = %s", got)
+	}
+}
+
+// TestSubjectGrantPolicy pins the subject half of the decision. The
+// identifiers are given out of alphabetical order, so the text also pins
+// that the grant lists them in the order the values file does.
+func TestSubjectGrantPolicy(t *testing.T) {
+	t.Parallel()
+	want := `@id("sandbox-access-user-1")
+permit (
+  principal is Keycard::User,
+  action,
+  resource
+) when {
+  principal.identifier == "user-1" &&
+  resource has identifier &&
+  ["https://openrouter.ai/api/v1", "https://api.github.com/"].contains(resource.identifier)
+};
+`
+	identifiers := []string{"https://openrouter.ai/api/v1", "https://api.github.com/"}
+	if got := zonesetup.SubjectGrantPolicy("user-1", identifiers); got != want {
+		t.Errorf("policy =\n%s\nwant\n%s", got, want)
+	}
+	if got := zonesetup.SubjectGrantName("user-1"); got != "Sandbox access: user-1" {
+		t.Errorf("subject grant name = %s", got)
 	}
 }
 

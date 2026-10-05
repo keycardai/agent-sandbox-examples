@@ -3,6 +3,7 @@ package zonesetup
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/keycardai/keycard-go"
 )
@@ -12,11 +13,60 @@ func PolicyName(userID string) string {
 	return "Sandbox impersonation: " + userID
 }
 
+// SubjectGrantName names the subject grant for one user.
+func SubjectGrantName(userID string) string {
+	return "Sandbox access: " + userID
+}
+
+// A zone merges every policy in the active set into one Cedar policy set,
+// keyed by the `@id` annotation. A policy without one is keyed `policy0`,
+// so two of them collide and only one survives. NEVER emit a policy
+// without `@id`.
+//
+// Source: the header of svc-pdp/integration/policies_test.go.
+func policyID(prefix, userID string) string {
+	return fmt.Sprintf("@id(%q)\n", prefix+"-"+userID)
+}
+
+// SubjectGrantPolicy is the Cedar policy that lets one user reach the
+// resources the sandbox mints credentials for.
+//
+// An exchange passes two checks, and both must allow it. The subject check
+// asks whether the impersonated user may reach the resource. The actor check
+// asks whether the application may impersonate that user.
+// ImpersonationPolicy is only the actor half. An exchange that has only the
+// actor half is refused with access_denied naming the user. Every
+// impersonation case in svc-pdp/integration/impersonation_test.go pairs a
+// `user-grants` policy with an impersonation policy for this reason.
+//
+// The grant names the resources from the values file, so enrolling a user
+// in a sandbox does not grant access beyond the destinations the sandbox is
+// configured to reach.
+func SubjectGrantPolicy(userID string, resourceIdentifiers []string) string {
+	quoted := make([]string, len(resourceIdentifiers))
+	for i, identifier := range resourceIdentifiers {
+		quoted[i] = fmt.Sprintf("%q", identifier)
+	}
+	return policyID("sandbox-access", userID) + fmt.Sprintf(`permit (
+  principal is Keycard::User,
+  action,
+  resource
+) when {
+  principal.identifier == %q &&
+  resource has identifier &&
+  [%s].contains(resource.identifier)
+};
+`, userID, strings.Join(quoted, ", "))
+}
+
 // ImpersonationPolicy is the Cedar policy that lets exactly one
 // ServiceAccount subject impersonate exactly one user. The API server signs
 // the ServiceAccount token, so a pod cannot forge the actor half. A pod that
 // names another user in its configuration fails the exchange with
 // access_denied.
+//
+// This is the actor half of the decision. SubjectGrantPolicy is the other
+// half, and an exchange needs both.
 //
 // Every context attribute the policy reads is optional in the zone's Cedar
 // schema, so each one is guarded with `has` first. Reading an optional
@@ -25,7 +75,7 @@ func PolicyName(userID string) string {
 // shape is `cedarPermitImpersonationIssuerClaims` in
 // svc-pdp/integration/policies_test.go.
 func ImpersonationPolicy(namespace, userID string) string {
-	return fmt.Sprintf(`permit (
+	return policyID("sandbox-impersonation", userID) + fmt.Sprintf(`permit (
   principal is Keycard::Application,
   action,
   resource

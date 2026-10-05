@@ -59,6 +59,10 @@ func (f *fakeZone) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Unlock()
 	page := func(items string) string { return `{"items":[` + items + `],"pagination":{"after_cursor":""}}` }
 	query := r.URL.Query()
+	newPolicy := `{"id":"policy-new"}`
+	if strings.Contains(string(sent), "Sandbox access") {
+		newPolicy = `{"id":"grant-new"}`
+	}
 	body := map[string]string{
 		"POST /service-account-token": `{"access_token":"sa-token","token_type":"Bearer"}`,
 		"GET /zones/zone-a":           `{"id":"zone-a"}`,
@@ -81,7 +85,8 @@ func (f *fakeZone) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		bindCall:                           `{"id":"credential-new","type":"token"}`,
 		"GET /zones/zone-a/policy-schemas": page(`{"version":"2026-02-24","is_default":true}`),
 		"GET /zones/zone-a/policies":       page(""),
-		postPolicyCall:                     `{"id":"policy-new"}`,
+		postPolicyCall:                     newPolicy,
+		postGrantVersionCall:               `{"id":"grant-version-new","policy_id":"grant-new"}`,
 		postPolicyVersionCall:              `{"id":"version-new","policy_id":"policy-new"}`,
 		listSetsCall:                       page(""),
 		listActiveSetsCall:                 page(""),
@@ -299,14 +304,16 @@ const (
 	listSetsCall          = "GET /zones/zone-a/policy-sets"
 	postPolicyCall        = "POST /zones/zone-a/policies"
 	postPolicyVersionCall = "POST /zones/zone-a/policies/policy-new/versions"
+	postGrantVersionCall  = "POST /zones/zone-a/policies/grant-new/versions"
 	postSetCall           = "POST /zones/zone-a/policy-sets"
 	postSetVersionCall    = "POST /zones/zone-a/policy-sets/set-new/versions"
 	activateCall          = "PATCH /zones/zone-a/policy-sets/set-new/versions/set-version-new"
 )
 
-// TestEnsurePolicies pins each decision about the user's impersonation
-// policy and the policy set by the writes it makes and the manifest it
-// publishes.
+// TestEnsurePolicies pins each decision about the user's policies and the
+// policy set by the writes it makes and the manifest it publishes. The cases
+// list no resources, and so get the impersonation policy alone, unless they
+// test the subject grant.
 func TestEnsurePolicies(t *testing.T) {
 	t.Parallel()
 	const (
@@ -314,7 +321,6 @@ func TestEnsurePolicies(t *testing.T) {
 		userID    = "user-1"
 		setK      = `{"id":"set-k","name":"Kubernetes Sandbox"`
 	)
-	values := &zonesetup.Values{Namespace: namespace, PolicySet: zonesetup.DefaultPolicySetName}
 	access := []userAccess{{UserEmail: "ada@example.com", UserID: userID}}
 	page := func(items string) string { return `{"items":[` + items + `],"pagination":{"after_cursor":""}}` }
 	cedar, err := json.Marshal(zonesetup.ImpersonationPolicy(namespace, userID))
@@ -347,6 +353,8 @@ func TestEnsurePolicies(t *testing.T) {
 		wantManifest string
 		wantLog      []string
 		wantErr      error
+		resources    []zonesetup.ResourceValues
+		wantGrant    string
 	}{
 		{
 			name:         "a fresh zone gets the policy and an active set that holds it",
@@ -359,6 +367,17 @@ func TestEnsurePolicies(t *testing.T) {
 				"published policy set set-new version set-version-new with 1 policies",
 				"activated policy set set-new version set-version-new",
 			},
+		},
+		{
+			name:      "a user gets a subject grant to the resources beside the impersonation policy",
+			resources: []zonesetup.ResourceValues{{Identifier: "https://api.github.com/"}},
+			wantWrites: []string{
+				postPolicyCall, postPolicyVersionCall, postPolicyCall, postGrantVersionCall,
+				postSetCall, postSetVersionCall, activateCall,
+			},
+			wantManifest: `[{"policy_id":"policy-new","policy_version_id":"version-new"},` +
+				`{"policy_id":"grant-new","policy_version_id":"grant-version-new"}]`,
+			wantGrant: zonesetup.SubjectGrantPolicy(userID, []string{"https://api.github.com/"}),
 		},
 		{
 			name: "a complete zone is not written",
@@ -434,6 +453,9 @@ func TestEnsurePolicies(t *testing.T) {
 			cmd := newCommand()
 			cmd.ErrWriter = &stderr
 			cmd.Action = func(ctx context.Context, cmd *cli.Command) error {
+				values := &zonesetup.Values{
+					Namespace: namespace, PolicySet: zonesetup.DefaultPolicySetName, Resources: tc.resources,
+				}
 				return ensurePolicies(ctx, cmd, session, values, access)
 			}
 			args := []string{
@@ -450,6 +472,15 @@ func TestEnsurePolicies(t *testing.T) {
 				assertManifest(t, fake, tc.wantManifest)
 			}
 			assertLogLines(t, stderr.String(), tc.wantLog)
+			if tc.wantGrant != "" {
+				var grant struct {
+					CedarRaw string `json:"cedar_raw"`
+				}
+				if err := json.Unmarshal([]byte(fake.sent[postGrantVersionCall]), &grant); err != nil ||
+					grant.CedarRaw != tc.wantGrant {
+					t.Errorf("subject grant = %q, want %q", grant.CedarRaw, tc.wantGrant)
+				}
+			}
 		})
 	}
 }

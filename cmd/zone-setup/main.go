@@ -3,9 +3,10 @@
 // egress proxy Application with implicit consent, finds, creates or patches
 // each resource, stores each secret_env credential, and makes each resource a
 // dependency of the Application. For each user it binds the user's
-// ServiceAccount to the Application with a token credential and publishes the
-// user's impersonation policy. One version of the policy set the values file
-// names holds every policy, and the run activates it. It prints the
+// ServiceAccount to the Application with a token credential, and publishes the
+// user's impersonation policy and a subject grant to the resources. One version
+// of the policy set the values file names holds every policy, and the run
+// activates it. It prints the
 // k8s_sandbox and sandbox_user_access values as YAML. With --dry-run it changes
 // nothing and prints nothing on stdout.
 //
@@ -399,8 +400,12 @@ func ensureTokenCredential(
 	return credentialID, nil
 }
 
-// ensurePolicies finds or publishes each user's impersonation policy, then
-// makes the policy set hold every one of them.
+// ensurePolicies finds or publishes each user's impersonation policy and
+// subject grant, then makes the policy set hold every one of them. An exchange
+// needs both: the subject grant lets the user reach the resource, and the
+// impersonation policy lets the Application act for the user. A values file
+// that lists no resources gets the impersonation policy alone, since a grant
+// that names no resource permits nothing.
 func ensurePolicies(
 	ctx context.Context,
 	cmd *cli.Command,
@@ -411,16 +416,31 @@ func ensurePolicies(
 	if len(access) == 0 {
 		return nil
 	}
-	entries := make([]keycard.PolicySetManifestEntryParam, 0, len(access))
+	identifiers := make([]string, 0, len(values.Resources))
+	for _, resource := range values.Resources {
+		identifiers = append(identifiers, resource.Identifier)
+	}
+	var entries []keycard.PolicySetManifestEntryParam
 	for _, user := range access {
-		entry, err := ensurePolicy(ctx, cmd, session,
+		actor, err := ensurePolicy(ctx, cmd, session,
 			zonesetup.PolicyName(user.UserID),
 			fmt.Sprintf("Lets the sandbox of %s impersonate that user, and nobody else", user.UserEmail),
 			zonesetup.ImpersonationPolicy(values.Namespace, user.UserID))
 		if err != nil {
 			return err
 		}
-		entries = append(entries, entry)
+		entries = append(entries, actor)
+		if len(identifiers) == 0 {
+			continue
+		}
+		grant, err := ensurePolicy(ctx, cmd, session,
+			zonesetup.SubjectGrantName(user.UserID),
+			fmt.Sprintf("Lets %s reach the destinations the sandbox mints credentials for", user.UserEmail),
+			zonesetup.SubjectGrantPolicy(user.UserID, identifiers))
+		if err != nil {
+			return err
+		}
+		entries = append(entries, grant)
 	}
 	return ensurePolicySet(ctx, cmd, session, values.PolicySet, entries)
 }
