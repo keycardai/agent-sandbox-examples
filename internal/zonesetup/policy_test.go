@@ -23,12 +23,21 @@ const (
 )
 
 // TestImpersonationPolicy pins the Cedar text, which is the whole check that
-// one ServiceAccount acts for one user.
+// one ServiceAccount acts for one user. Every optional context attribute is
+// guarded with `has` before it is read, because the zone refuses to publish a
+// version that reads one unguarded.
 func TestImpersonationPolicy(t *testing.T) {
 	t.Parallel()
-	want := `permit (principal, action, resource)
-when {
-  context.impersonate && context.subject.identifier == "user-1" &&
+	want := `permit (
+  principal is Keycard::Application,
+  action,
+  resource
+) when {
+  context has impersonate && context.impersonate == true &&
+  context has subject &&
+  context.subject.identifier == "user-1" &&
+  context has actor_claims &&
+  context.actor_claims has issuer_claims &&
   context.actor_claims.issuer_claims.contains({
     "key": "sub", "value": "system:serviceaccount:agents:user-1"
   })

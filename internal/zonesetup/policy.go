@@ -17,10 +17,24 @@ func PolicyName(userID string) string {
 // the ServiceAccount token, so a pod cannot forge the actor half. A pod that
 // names another user in its configuration fails the exchange with
 // access_denied.
+//
+// Every context attribute the policy reads is optional in the zone's Cedar
+// schema, so each one is guarded with `has` first. Reading an optional
+// attribute unguarded fails validation when the version is published, with
+// "unable to guarantee safety of access to optional attribute". The working
+// shape is `cedarPermitImpersonationIssuerClaims` in
+// svc-pdp/integration/policies_test.go.
 func ImpersonationPolicy(namespace, userID string) string {
-	return fmt.Sprintf(`permit (principal, action, resource)
-when {
-  context.impersonate && context.subject.identifier == %q &&
+	return fmt.Sprintf(`permit (
+  principal is Keycard::Application,
+  action,
+  resource
+) when {
+  context has impersonate && context.impersonate == true &&
+  context has subject &&
+  context.subject.identifier == %q &&
+  context has actor_claims &&
+  context.actor_claims has issuer_claims &&
   context.actor_claims.issuer_claims.contains({
     "key": "sub", "value": %q
   })
