@@ -1,6 +1,8 @@
 // Package zonesetup reads the values file zone-setup configures a zone from
-// and resolves that zone through the management API, and finds or creates the
-// cluster's provider, the egress proxy Application and the resources in it.
+// and resolves that zone through the management API. It finds or creates the
+// cluster's provider, the egress proxy Application, the resources in it, each
+// user's token credential, impersonation policy and access policy, and the
+// policy set that holds those policies.
 package zonesetup
 
 import (
@@ -28,13 +30,25 @@ var (
 	// application in the zone has.
 	ErrApplicationAmbiguous = errors.New("application ambiguous")
 	// ErrCredentialWildcard is a token credential on the Application for the
-	// cluster's provider whose subject ends in "*". svc-iam matches it against
+	// cluster's provider whose subject ends in "*". The zone matches it against
 	// every subject with that prefix, so it binds more than one
 	// ServiceAccount.
 	ErrCredentialWildcard = errors.New("token credential with a wildcard subject")
 	// ErrMissingSecret is a credential the values file names but the
 	// environment or filesystem does not hold.
 	ErrMissingSecret = errors.New("missing secret")
+	// ErrPolicyAmbiguous is a policy name more than one unarchived policy in
+	// the zone has.
+	ErrPolicyAmbiguous = errors.New("policy ambiguous")
+	// ErrPolicySchemaNotFound is a zone without a default Cedar schema. The zone
+	// validates every new policy version and policy set version against it.
+	ErrPolicySchemaNotFound = errors.New("policy schema not found")
+	// ErrPolicySetActive is a zone whose active policy set is not the sandbox
+	// set.
+	ErrPolicySetActive = errors.New("another policy set is active")
+	// ErrPolicySetAmbiguous is a policy set name more than one unarchived
+	// policy set in the zone has.
+	ErrPolicySetAmbiguous = errors.New("policy set ambiguous")
 	// ErrProviderAmbiguous is an issuer_url, a credential_provider or the
 	// keycard-vault type that more than one provider in the zone has.
 	ErrProviderAmbiguous = errors.New("provider ambiguous")
@@ -70,6 +84,9 @@ const (
 	DefaultManagementSecretEnv = "KEYCARD_MANAGEMENT_CLIENT_SECRET"
 	// DefaultNamespace is the default sandbox namespace used when not configured in the values file.
 	DefaultNamespace = "agents"
+	// DefaultPolicySetName names the zone-wide policy set for every enrolled
+	// user's impersonation and access policies when the values file names none.
+	DefaultPolicySetName = "Kubernetes Sandbox"
 	// maxNamespaceLength is the length limit of a DNS-1123 label.
 	maxNamespaceLength = 63
 )
@@ -103,6 +120,9 @@ type Values struct {
 	IssuerURL string `yaml:"issuer_url"`
 	// Namespace is the sandbox namespace. It defaults to DefaultNamespace.
 	Namespace string `yaml:"namespace"`
+	// PolicySet names the zone-wide policy set the per-user policies go in.
+	// It defaults to DefaultPolicySetName.
+	PolicySet string `yaml:"policy_set"`
 	// Users are the sandbox users, one per email.
 	Users []UserValues `yaml:"users"`
 	// Resources are the destinations the proxy mints credentials for.
@@ -404,6 +424,9 @@ func (v *Values) checkSandbox() error {
 	}
 	if !namespaceRE.MatchString(v.Namespace) || len(v.Namespace) > maxNamespaceLength {
 		return fmt.Errorf("%w: namespace is not a DNS-1123 label", ErrValues)
+	}
+	if v.PolicySet == "" {
+		v.PolicySet = DefaultPolicySetName
 	}
 	return nil
 }
