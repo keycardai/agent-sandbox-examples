@@ -302,6 +302,43 @@ func TestParseValues(t *testing.T) {
 	}
 }
 
+// TestSetIssuerURL checks that an override replaces issuer_url only when it
+// passes the checks issuer_url gets, and that a refusal names the override.
+func TestSetIssuerURL(t *testing.T) {
+	t.Parallel()
+	const (
+		fromFile = "https://oidc.eks.us-west-2.amazonaws.com/id/EXAMPLE"
+		tunnel   = "https://issued-nutrition-adding-decor.trycloudflare.com"
+	)
+	tests := []struct {
+		name, issuer, want, wantErr string
+	}{
+		{"https issuer", tunnel, tunnel, ""},
+		{"http issuer", "http://oidc.example.com", fromFile, "--issuer-url must use https"},
+		{"query", tunnel + "?a=b", fromFile, "--issuer-url must not have a query or a fragment"},
+		{"empty", "", fromFile, "--issuer-url is required"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			values, err := zonesetup.ParseValues(strings.NewReader(minimal))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = values.SetIssuerURL("--issuer-url", tc.issuer)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("SetIssuerURL = %v, want nil", err)
+			case tc.wantErr != "" && (!errors.Is(err, zonesetup.ErrValues) || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Fatalf("SetIssuerURL = %v, want ErrValues with %q", err, tc.wantErr)
+			}
+			if values.IssuerURL != tc.want {
+				t.Errorf("IssuerURL = %q, want %q", values.IssuerURL, tc.want)
+			}
+		})
+	}
+}
+
 // TestURLUserinfo also proves the refusal never echoes the credential.
 func TestURLUserinfo(t *testing.T) {
 	t.Parallel()

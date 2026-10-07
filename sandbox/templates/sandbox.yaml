@@ -28,6 +28,10 @@ spec:
       # the user's public id.
       serviceAccountName: {{ $user }}
       automountServiceAccountToken: false
+      {{- with .Values.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       shareProcessNamespace: false
       hostNetwork: false
       hostPID: false
@@ -88,6 +92,11 @@ spec:
               mountPath: /var/lib/egress/ca
             - name: shared-ca
               mountPath: /shared-ca
+            {{- if .Values.zoneTrust.configMap }}
+            - name: zone-trust
+              mountPath: {{ .Values.zoneTrust.mountPath }}
+              readOnly: true
+            {{- end }}
       containers:
         - name: agent
           image: {{ .Values.images.agent }}
@@ -127,6 +136,11 @@ spec:
         - name: agent-config
           configMap:
             name: {{ include "keycard-sandbox-user.agentConfigMap" . }}
+        {{- if .Values.zoneTrust.configMap }}
+        - name: zone-trust
+          configMap:
+            name: {{ .Values.zoneTrust.configMap }}
+        {{- end }}
         - name: keycard-token
           projected:
             sources:

@@ -72,3 +72,11 @@ netsetup:
 agent:
   uid: 1000
   configPath: /etc/egress/config.yaml
+
+# A non-empty configMap also writes the tls section of both documents.
+zoneTrust:
+  configMap: ""
+  key: zone-ca.pem
+  mountPath: /etc/keycard-zone-trust
+
+hostAliases: []

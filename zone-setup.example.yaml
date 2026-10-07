@@ -1,14 +1,10 @@
 # The zone-setup values file. Copy it to zone-setup.yaml (gitignored) and
-# fill it in. localdev and production differ only in the URLs and the
-# service account.
+# fill it in.
 #
 # The file holds no credential. Every secret is named by the environment
 # variable or file that holds it. Every URL uses https and sets no port.
 
 # The management API. It is a separate host from the zone.
-#
-#   production  https://api.keycard.ai
-#   localdev    https://api.localdev.keycard.sh
 management_api_url: https://api.keycard.ai
 
 # The zone, by its issuer URL, by its id, or by both. At least one is set.
