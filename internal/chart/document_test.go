@@ -19,14 +19,16 @@ import (
 // sandbox/README.md says why it is a copy.
 //
 // The decode is strict. A key the proxy does not read is an error. The copy
-// leaves out the sections the chart does not set: listen, ca, limits,
-// credentials and netsetup. Add a section here when the chart sets it.
+// leaves out the sections the chart does not set (ca, limits, credentials and
+// netsetup) and every key of listen except transparent_port. Add a section or
+// key here when the chart sets it.
 
 // document is the proxy's configuration document.
 type document struct {
 	Version   int        `json:"version"`
 	Sandbox   sandboxID  `json:"sandbox"`
 	Identity  *identity  `json:"identity,omitempty"`
+	Listen    listenDoc  `json:"listen"`
 	TLS       *tlsDoc    `json:"tls,omitempty"`
 	Policy    policyDoc  `json:"policy"`
 	Endpoints []endpoint `json:"endpoints"`
@@ -34,6 +36,11 @@ type document struct {
 
 type sandboxID struct {
 	ID string `json:"id"`
+}
+
+// listenDoc is the frontend the capture redirects to.
+type listenDoc struct {
+	TransparentPort int `json:"transparent_port"`
 }
 
 type identity struct {
@@ -117,6 +124,7 @@ func validateDocument(doc document) []string {
 	if doc.Identity != nil {
 		found = append(found, doc.Identity.problems()...)
 	}
+	found = append(found, doc.Listen.problems()...)
 	if doc.TLS != nil {
 		for i, file := range doc.TLS.UpstreamCAFiles {
 			if !strings.HasPrefix(file, "/") {
@@ -172,6 +180,16 @@ func (id identity) clientAuthProblems() []string {
 		}
 	}
 	return found
+}
+
+// problems requires listen.transparent_port. The proxy accepts 0 and then
+// does not run a transparent frontend. A sandbox pod always captures traffic,
+// so the chart must set the port.
+func (l listenDoc) problems() []string {
+	if l.TransparentPort < 1 || l.TransparentPort > maxPort {
+		return []string{fmt.Sprintf("listen.transparent_port is %d, outside 1-%d", l.TransparentPort, maxPort)}
+	}
+	return nil
 }
 
 func (p policyDoc) problems() []string {
@@ -344,6 +362,8 @@ identity:
   workload_token_file: /var/run/secrets/keycard/token
   impersonate:
     user: igmua2g0
+listen:
+  transparent_port: 1015
 policy:
   cluster_cidrs: ["10.0.0.0/16"]
   deny_list_exceptions: []
@@ -382,6 +402,11 @@ func TestDocumentMirrorRefuses(t *testing.T) {
 			"relative token path",
 			strings.Replace(validDocument, "/var/run/secrets/keycard/token", "secrets/token", 1),
 			"must be an absolute path",
+		},
+		{
+			"no transparent listener",
+			strings.Replace(validDocument, "listen:\n  transparent_port: 1015\n", "", 1),
+			"listen.transparent_port is 0, outside 1-65535",
 		},
 		{
 			"exception uncovering the metadata address",
@@ -462,12 +487,24 @@ func TestDocumentMirrorRefuses(t *testing.T) {
 }
 
 // TestDocumentMirrorRefusesUnknownKey checks that a key the proxy does not
-// read is an error.
+// read is an error. The copy reads one key of listen, so an unknown key
+// inside listen is a separate case.
 func TestDocumentMirrorRefusesUnknownKey(t *testing.T) {
 	t.Parallel()
-	var doc document
-	err := yaml.UnmarshalStrict([]byte(validDocument+"listen:\n  connect: 127.0.0.1:3128\n"), &doc)
-	if err == nil {
-		t.Fatal("a key outside the mirror was accepted")
+	cases := []struct{ name, doc string }{
+		{"a section the copy does not read", validDocument + "ca:\n  out_dir: /shared-ca/out\n"},
+		{
+			"a key inside a section the copy reads",
+			strings.Replace(validDocument, "listen:\n", "listen:\n  connect: 127.0.0.1:3128\n", 1),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var doc document
+			if err := yaml.UnmarshalStrict([]byte(tc.doc), &doc); err == nil {
+				t.Fatal("a key outside the mirror was accepted")
+			}
+		})
 	}
 }

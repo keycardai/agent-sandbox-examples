@@ -54,26 +54,36 @@ images:
 
 proxy:
   uid: 1337
+  redirectPort: 1015
+  unprivilegedPortStart: 1024
   configPath: /etc/egress/config.yaml
   tokenPath: /var/run/secrets/keycard
   tokenExpirationSeconds: 3600
   startupProbe:
-    command: ["/ko-app/egress-proxy", "probe", "--admin-socket=/run/egress/admin.sock"]
+    command: ["/ko-app/egress-proxy", "probe", "readyz"]
     periodSeconds: 1
     failureThreshold: 60
+  livenessProbe:
+    command: ["/ko-app/egress-proxy", "probe", "healthz"]
+    periodSeconds: 10
+  readinessProbe:
+    command: ["/ko-app/egress-proxy", "probe", "readyz"]
+    periodSeconds: 10
 
 netsetup:
   args:
     - --proxy-uid=1337
-    - --redirect-port=1001
+    - --redirect-port=1015
     - --capture-ports=80,443
     - --ipv6=auto
+    - --receipt=/run/egress/netsetup/netsetup.json
 
 agent:
   uid: 1000
-  configPath: /etc/egress/config.yaml
+  command: []
+  args: ["sleep", "infinity"]
 
-# A non-empty configMap also writes the tls section of both documents.
+# A non-empty configMap also writes the tls section of the document.
 zoneTrust:
   configMap: ""
   key: zone-ca.pem

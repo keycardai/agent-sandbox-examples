@@ -175,17 +175,14 @@ func assertZoneTrust(t *testing.T, objects map[string][]byte, spec corev1.PodSpe
 	}
 }
 
-// TestLocalDocuments checks that both documents allow the gateway, that they
-// trust the mounted roots only when run.sh has a CA file, and that they differ
-// only in the identity section.
-func TestLocalDocuments(t *testing.T) {
+// TestLocalDocument checks that the document allows the gateway, and that it
+// trusts the mounted roots only when run.sh has a CA file.
+func TestLocalDocument(t *testing.T) {
 	t.Parallel()
 	for _, tc := range caCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			objects := renderLocalSandbox(t, tc.withCA)
-			proxy := parseDocument(t, configDocument(t, objects, proxyConfigMap))
-			agent := parseDocument(t, configDocument(t, objects, agentConfigMap))
+			proxy := parseDocument(t, configDocument(t, renderLocalSandbox(t, tc.withCA)))
 			for _, problem := range validateDocument(proxy) {
 				t.Errorf("proxy document: %s", problem)
 			}
@@ -198,10 +195,6 @@ func TestLocalDocuments(t *testing.T) {
 			}
 			if want := []string{localGateway + "/32"}; !reflect.DeepEqual(proxy.Policy.DenyListExceptions, want) {
 				t.Errorf("deny_list_exceptions = %v, want %v", proxy.Policy.DenyListExceptions, want)
-			}
-			proxy.Identity = nil
-			if !reflect.DeepEqual(agent, proxy) {
-				t.Errorf("agent document = %s\nwant the proxy's without identity: %s", asJSON(agent), asJSON(proxy))
 			}
 		})
 	}
