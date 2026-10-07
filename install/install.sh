@@ -12,10 +12,11 @@
 # NEVER install into the Keycard localdev stack. The contexts localdev and
 # k3d-localdev are refused.
 #
-# Usage: install.sh --context NAME --values FILE [--namespace NAME]
+# Usage: install.sh --context NAME --values FILE... [--namespace NAME]
 #
 #   --context NAME    the kube context to install into
 #   --values FILE     the chart's values file. Start from values.example.yaml.
+#                     Repeatable. A later file wins, as in helm.
 #   --namespace NAME  the sandbox namespace, agents unless given
 set -euo pipefail
 
@@ -24,7 +25,7 @@ release=keycard-sandbox
 controller_manifest=$here/agent-sandbox/sandbox-with-extensions.yaml
 
 context=""
-values=""
+values=()
 namespace=agents
 
 die() {
@@ -41,7 +42,7 @@ need() {
 while [[ $# -gt 0 ]]; do
 	case $1 in
 	--context) need $# "$1"; context=$2; shift 2 ;;
-	--values) need $# "$1"; values=$2; shift 2 ;;
+	--values) need $# "$1"; values+=("$2"); shift 2 ;;
 	--namespace) need $# "$1"; namespace=$2; shift 2 ;;
 	-h | --help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"; exit 0 ;;
 	*) die "unknown argument $1. --help lists them." ;;
@@ -53,8 +54,12 @@ case $context in
 localdev | k3d-localdev) die "'$context' is the Keycard localdev stack. install.sh never writes to it." ;;
 -*) die "the context must not start with a dash (got '$context')" ;;
 esac
-[[ -n $values ]] || die "--values FILE is required. Start from $here/values.example.yaml."
-[[ -f $values && -r $values ]] || die "$values is not a readable file"
+((${#values[@]} > 0)) || die "--values FILE is required. Start from $here/values.example.yaml."
+values_args=()
+for file in "${values[@]}"; do
+	[[ -f $file && -r $file ]] || die "$file is not a readable file"
+	values_args+=(--values "$file")
+done
 # The classes spell out every character so that no locale widens them.
 ld=abcdefghijklmnopqrstuvwxyz0123456789
 if ((${#namespace} > 63)) || [[ ! $namespace =~ ^[$ld]([$ld-]*[$ld])?$ ]]; then
@@ -93,7 +98,7 @@ echo "install.sh: installing $release into namespace $namespace"
 "$helm" upgrade --install "$release" "$here" \
 	--kube-context "$context" \
 	--namespace "$namespace" --create-namespace --take-ownership \
-	--values "$values" \
+	"${values_args[@]}" \
 	--wait
 
 enforce=$(kube get namespace "$namespace" -o 'jsonpath={.metadata.labels.pod-security\.kubernetes\.io/enforce}') ||

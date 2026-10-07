@@ -11,10 +11,14 @@
 # shellcheck source=scripts/pinned
 . "$(dirname "${BASH_SOURCE[0]}")/../scripts/pinned"
 
+# The settings local.env can hold. local.env.example documents each one.
+lane_keys='KEYCARD_LOCAL_CLUSTER|KEYCARD_LOCAL_ISSUER|KEYCARD_LOCAL_ZONE_URL|KEYCARD_LOCAL_USER_EMAIL'
+lane_keys+='|KEYCARD_LOCAL_ZONE_SETUP_VALUES|KEYCARD_LOCAL_GITHUB_LOGIN'
+
 # lane_load_env reads the settings file, local/local.env unless the first
 # argument names another. It reads the file as data and executes nothing.
-# Each line is blank, a # comment, or KEY=value for KEYCARD_LOCAL_CLUSTER or
-# KEYCARD_LOCAL_ISSUER. The value is the rest of the line, taken literally.
+# Each line is blank, a # comment, or KEY=value for a key in lane_keys. The
+# value is the rest of the line, taken literally.
 # Any other line stops the run. A script's flag wins over an exported
 # variable of the same name, and an exported variable that is not empty wins
 # over the file. A missing default file is skipped. A missing named file
@@ -30,10 +34,10 @@ lane_load_env() {
 	while IFS= read -r line || [[ -n $line ]]; do
 		n=$((n + 1))
 		[[ $line =~ ^[[:space:]]*(#|$) ]] && continue
-		if [[ $line =~ ^(KEYCARD_LOCAL_CLUSTER|KEYCARD_LOCAL_ISSUER)=(.*)$ ]]; then
+		if [[ $line =~ ^($lane_keys)=(.*)$ ]]; then
 			[[ -n ${!BASH_REMATCH[1]:-} ]] || printf -v "${BASH_REMATCH[1]}" '%s' "${BASH_REMATCH[2]}"
 		else
-			echo "$(basename "$0"): $file line $n is not KEYCARD_LOCAL_CLUSTER=value or KEYCARD_LOCAL_ISSUER=value" >&2
+			echo "$(basename "$0"): $file line $n is not KEY=value for a key local.env.example lists" >&2
 			exit 1
 		fi
 	done <"$file"
@@ -100,4 +104,36 @@ lane_cluster_exists() {
 	esac
 	echo "$(basename "$0"): k3d cluster list printed something other than a cluster list" >&2
 	exit 1
+}
+
+# lane_gateway prints the gateway of the k3d cluster's Docker network. A pod in
+# that cluster reaches the Docker host there, and localdev publishes its
+# Gateway on the Docker host. Read it on every run. A recreated cluster can
+# get a different Docker subnet. It prints the first IPv4 gateway, because
+# the zone's host alias takes one address.
+lane_gateway() {
+	local gateway
+	gateway=$(docker network inspect "k3d-$1" --format '{{range .IPAM.Config}}{{println .Gateway}}{{end}}' |
+		grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1) || gateway=""
+	if [[ -z $gateway ]]; then
+		echo "$(basename "$0"): the Docker network k3d-$1 has no IPv4 gateway. Does the cluster exist?" >&2
+		exit 1
+	fi
+	printf '%s\n' "$gateway"
+}
+
+# lane_ca_file writes the localdev root certificate from
+# ~/.localdev/devcert.json to $1 and prints $1. The root signs every
+# *.localdev.keycard.sh certificate.
+lane_ca_file() {
+	local devcert=$HOME/.localdev/devcert.json
+	if [[ ! -s $devcert ]]; then
+		echo "$(basename "$0"): $devcert does not exist. Is localdev set up?" >&2
+		exit 1
+	fi
+	jq -er '.root_certificate_pem | select(type == "string" and . != "")' "$devcert" >"$1" || {
+		echo "$(basename "$0"): $devcert has no root_certificate_pem" >&2
+		exit 1
+	}
+	printf '%s\n' "$1"
 }

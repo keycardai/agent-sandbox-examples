@@ -10,6 +10,7 @@ The pinned tools install with [mise](https://mise.jdx.dev):
     mise install
 
 The local lane also needs Docker, from OrbStack or Docker Desktop.
+`docs/local.md` describes the local cluster.
 
 Run every gate CI runs:
 

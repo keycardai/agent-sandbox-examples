@@ -1,0 +1,22 @@
+# Install chart values for local/run.sh. run.sh passes this file, then
+# local/out/install.values.yaml. That file holds the values that come from the
+# running cluster and localdev stack: zoneURL, the localdev root certificate,
+# and the Docker network gateway in hostAliases and network.allowCIDRs.
+
+# Imported into the k3d node with `k3d image import`. A tag other than latest
+# defaults imagePullPolicy to IfNotPresent, so nothing is pulled.
+images:
+  netsetup: ghcr.io/keycardai/egress-netsetup:local
+  proxy: ghcr.io/keycardai/egress-proxy:local
+  agent: ghcr.io/keycardai/sandbox-base:local
+
+network:
+  # The k3s default pod and service ranges.
+  clusterCIDRs:
+    - 10.42.0.0/16
+    - 10.43.0.0/16
+
+zoneTrust:
+  configMap: egress-zone-trust
+  key: zone-ca.pem
+  mountPath: /etc/keycard-zone-trust

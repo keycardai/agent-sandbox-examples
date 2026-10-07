@@ -19,7 +19,7 @@ import (
 // sandbox/README.md says why it is a copy.
 //
 // The decode is strict. A key the proxy does not read is an error. The copy
-// leaves out the sections the chart does not set: listen, ca, tls, limits,
+// leaves out the sections the chart does not set: listen, ca, limits,
 // credentials and netsetup. Add a section here when the chart sets it.
 
 // document is the proxy's configuration document.
@@ -27,6 +27,7 @@ type document struct {
 	Version   int        `json:"version"`
 	Sandbox   sandboxID  `json:"sandbox"`
 	Identity  *identity  `json:"identity,omitempty"`
+	TLS       *tlsDoc    `json:"tls,omitempty"`
 	Policy    policyDoc  `json:"policy"`
 	Endpoints []endpoint `json:"endpoints"`
 }
@@ -43,6 +44,10 @@ type identity struct {
 	Impersonate       struct {
 		User string `json:"user"`
 	} `json:"impersonate"`
+}
+
+type tlsDoc struct {
+	UpstreamCAFiles []string `json:"upstream_ca_files"`
 }
 
 type policyDoc struct {
@@ -111,6 +116,13 @@ func validateDocument(doc document) []string {
 	}
 	if doc.Identity != nil {
 		found = append(found, doc.Identity.problems()...)
+	}
+	if doc.TLS != nil {
+		for i, file := range doc.TLS.UpstreamCAFiles {
+			if !strings.HasPrefix(file, "/") {
+				found = append(found, fmt.Sprintf("tls.upstream_ca_files[%d] %q must be an absolute path", i, file))
+			}
+		}
 	}
 	found = append(found, doc.Policy.problems()...)
 	seen := map[string]int{}
@@ -420,6 +432,11 @@ func TestDocumentMirrorRefuses(t *testing.T) {
 			"env is not a variable name",
 			strings.Replace(validDocument, "env: GITHUB_TOKEN", "env: 1TOKEN", 1),
 			"is not a variable name",
+		},
+		{
+			"relative upstream CA file",
+			validDocument + "tls:\n  upstream_ca_files: [zone-ca.pem]\n",
+			`tls.upstream_ca_files[0] "zone-ca.pem" must be an absolute path`,
 		},
 		{
 			"repeated host and prefix",

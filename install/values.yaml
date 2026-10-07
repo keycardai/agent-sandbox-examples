@@ -4,6 +4,27 @@
 # audience of the proxy's ServiceAccount token. Required.
 zoneURL: ""
 
+# Trust for a zone whose certificate is not signed by a public root. A zone
+# on the internet does not need this.
+zoneTrust:
+  # The PEM roots that sign the zone's certificate. Setting it renders the
+  # ConfigMap named below. A root certificate is public, so it goes in a
+  # ConfigMap, never in a Secret.
+  certificate: ""
+  # The ConfigMap mounted on the proxy container. Leave it empty to mount
+  # nothing. The sandbox chart writes <mountPath>/<key> into the proxy
+  # document's tls.upstream_ca_files, which adds these roots to the system
+  # roots. Give the sandbox chart the same configMap, key and mountPath.
+  configMap: ""
+  key: zone-ca.pem
+  mountPath: /etc/keycard-zone-trust
+
+# Host names mapped to addresses for every container in the pod, in the
+# shape of the pod's hostAliases field. Give the sandbox chart the same list.
+hostAliases: []
+#  - ip: 192.168.97.1
+#    hostnames: [acme.localdev.keycard.sh]
+
 # The sandbox pod's images. Nothing publishes these tags. Build the images
 # from the egress-proxy repository and set them here.
 images:
@@ -68,3 +89,9 @@ network:
   # sandbox NetworkPolicy blocks, in its own address family. They are usually
   # already inside a private range.
   clusterCIDRs: []
+  # Single hosts in the private ranges the NetworkPolicy blocks, such as a
+  # gateway to a zone on a private address. The sandbox can reach each one on
+  # TCP 443. Each entry is a /32 for IPv4 or a /128 for IPv6. Rendering fails
+  # on a wider prefix and on any address in 169.254.0.0/16, which holds the
+  # cloud metadata address.
+  allowCIDRs: []

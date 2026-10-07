@@ -28,6 +28,12 @@ spec:
       # name set here is just a placeholder.
       serviceAccountName: {{ .Release.Name }}
       automountServiceAccountToken: false
+      {{- with .Values.hostAliases }}
+      # The agent's TCP egress goes to the proxy whatever a name resolves to.
+      # An alias changes only the address the proxy dials.
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       # A shared PID namespace would show the agent the proxy's processes and
       # command line.
       shareProcessNamespace: false
@@ -104,6 +110,12 @@ spec:
               mountPath: /var/lib/egress/ca
             - name: shared-ca
               mountPath: /shared-ca
+            {{- if .Values.zoneTrust.configMap }}
+            # The roots that sign the zone's certificate. Proxy only.
+            - name: zone-trust
+              mountPath: {{ .Values.zoneTrust.mountPath }}
+              readOnly: true
+            {{- end }}
       containers:
         - name: agent
           image: {{ .Values.images.agent }}
@@ -154,6 +166,11 @@ spec:
         - name: agent-config
           configMap:
             name: {{ .Values.agent.configMap }}
+        {{- if .Values.zoneTrust.configMap }}
+        - name: zone-trust
+          configMap:
+            name: {{ .Values.zoneTrust.configMap }}
+        {{- end }}
         # The token's audience is the zone, and it expires after
         # proxy.tokenExpirationSeconds. Only the proxy mounts it, so the agent
         # cannot present itself as the proxy.

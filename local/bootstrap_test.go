@@ -25,7 +25,7 @@ func TestBootstrapDryRun(t *testing.T) {
 		valid   = host + ":8443/oidc"
 		noHost  = "the issuer must name a host"
 		badName = "the cluster name must be lowercase letters, digits and dashes (got "
-		refused = "line 1 is not KEYCARD_LOCAL_CLUSTER=value or KEYCARD_LOCAL_ISSUER=value"
+		refused = "line 1 is not KEY=value for a key local.env.example lists"
 		// noFlag as a row's cluster passes no --cluster flag. An empty cluster
 		// passes --cluster asp.
 		noFlag = "-"
@@ -33,6 +33,10 @@ func TestBootstrapDryRun(t *testing.T) {
 	// The PATH holds only what the script runs before its tool check, plus
 	// touch, so a settings file that runs "touch MARKER" leaves a marker.
 	bin := linkTools(t, "basename", "bash", "dirname", "touch")
+	example, err := os.ReadFile("local.env.example")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name, cluster, issuer, file string
@@ -64,6 +68,9 @@ func TestBootstrapDryRun(t *testing.T) {
 		{"cluster over 32 characters", strings.Repeat("a", 33), valid, "", true, []string{badName}, ""},
 		{"file assigns a script variable", "", valid, "cluster=other\n", true, []string{refused}, ""},
 		{"file runs a command", "", valid, "touch MARKER\n", true, []string{refused}, ""},
+		{"example file", noFlag, valid, string(example), false, []string{
+			"k3d\ncluster\ncreate\nkeycard-sandbox-local\n",
+		}, ""},
 		{"valid", "", valid, "# comment\n\nKEYCARD_LOCAL_CLUSTER=other\n", false, []string{
 			"k3d\ncluster\ncreate\nasp\n--image\nrancher/k3s:v1.36.4-k3s1\n",
 			"--k3s-arg\n--kube-apiserver-arg=service-account-issuer=" + valid + "@server:*\n",

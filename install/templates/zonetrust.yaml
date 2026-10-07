@@ -1,0 +1,15 @@
+{{- with .Values.zoneTrust.certificate }}
+{{- if not $.Values.zoneTrust.configMap }}
+{{- fail "zoneTrust.certificate is set but zoneTrust.configMap is empty, so no pod mounts it" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $.Values.zoneTrust.configMap }}
+  namespace: {{ include "keycard-sandbox.namespace" $ }}
+  labels:
+    {{- include "keycard-sandbox.labels" $ | nindent 4 }}
+data:
+  {{ $.Values.zoneTrust.key }}: |
+    {{- . | nindent 4 }}
+{{- end }}

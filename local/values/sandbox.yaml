@@ -1,0 +1,19 @@
+# Sandbox chart values for local/run.sh. run.sh passes
+# sandbox/values.example.yaml for the endpoints, then this file, then
+# local/out/sandbox.values.yaml with zoneURL and hostAliases. Every pod key
+# here must hold the value local/values/install.yaml gives it.
+
+images:
+  netsetup: ghcr.io/keycardai/egress-netsetup:local
+  proxy: ghcr.io/keycardai/egress-proxy:local
+  agent: ghcr.io/keycardai/sandbox-base:local
+
+policy:
+  clusterCIDRs:
+    - 10.42.0.0/16
+    - 10.43.0.0/16
+
+zoneTrust:
+  configMap: egress-zone-trust
+  key: zone-ca.pem
+  mountPath: /etc/keycard-zone-trust
