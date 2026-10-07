@@ -44,7 +44,8 @@ func TestParseExample(t *testing.T) {
 		PolicySet: zonesetup.DefaultPolicySetName,
 		Users:     []zonesetup.UserValues{{Email: "someone@example.com"}},
 		Resources: []zonesetup.ResourceValues{
-			{Identifier: "https://api.github.com/", Name: "GitHub", Prefix: true, CredentialProvider: "github"},
+			{Identifier: "https://api.github.com", Name: "GitHub", Prefix: true, CredentialProvider: "github"},
+			{Identifier: "https://github.com", Name: "GitHub git", Prefix: true, CredentialProvider: "github"},
 			{Identifier: "https://openrouter.ai/api/v1", Name: "OpenRouter", Prefix: true, SecretEnv: openRouterKey},
 		},
 	}

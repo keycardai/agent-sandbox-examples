@@ -145,8 +145,8 @@ type UserValues struct {
 // ResourceValues is one destination. Exactly one of CredentialProvider and
 // SecretEnv is set.
 type ResourceValues struct {
-	// Identifier is what the proxy sends as the exchange's `resource`
-	// parameter, verbatim.
+	// Identifier must equal the canonical url the proxy sends as the
+	// exchange's `resource` parameter. The zone matches it exactly.
 	Identifier string `yaml:"identifier"`
 	// Name is the display name. It defaults to Identifier.
 	Name string `yaml:"name"`

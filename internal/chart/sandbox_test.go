@@ -244,14 +244,14 @@ func TestSandboxDocument(t *testing.T) {
 	t.Parallel()
 	objects := renderSandbox(t)
 	proxy := parseDocument(t, configDocument(t, objects))
-	hosts := make([]string, 0, len(proxy.Endpoints))
+	urls := make([]string, 0, len(proxy.Endpoints))
 	for _, e := range proxy.Endpoints {
-		hosts = append(hosts, e.Host)
+		urls = append(urls, e.URL)
 	}
 	if want := []string{
-		"api.github.com", "github.com", "openrouter.ai", "pypi.org", "files.pythonhosted.org",
-	}; !reflect.DeepEqual(hosts, want) {
-		t.Errorf("endpoint hosts = %v, want %v", hosts, want)
+		githubAPIURL, "https://github.com", openRouterURL, "https://pypi.org", "https://files.pythonhosted.org",
+	}; !reflect.DeepEqual(urls, want) {
+		t.Errorf("endpoint urls = %v, want %v", urls, want)
 	}
 	got := proxy
 	got.Endpoints = nil

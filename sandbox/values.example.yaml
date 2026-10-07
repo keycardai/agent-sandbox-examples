@@ -15,27 +15,24 @@ policy:
     - 172.20.0.0/16
   denyListExceptions: []
 
-# The demo endpoints. Each `resource` is a resource identifier in
-# zone-setup.example.yaml, which zone-setup creates in the zone.
+# The demo endpoints. The proxy sends the canonical form of a credentialed
+# `url` as the exchange's resource. It must equal the identifier of a
+# Resource in the zone.
 endpoints:
-  - host: api.github.com
-    resource: https://api.github.com/
+  - url: https://api.github.com
     credential:
       placement: {kind: header, name: Authorization, template: "Bearer {credential}"}
       env: GITHUB_TOKEN
-  # git over HTTPS. It uses the same resource as the API host.
-  - host: github.com
-    resource: https://api.github.com/
+  # git over HTTPS.
+  - url: https://github.com
     credential:
       placement: {kind: basic, user: x-access-token}
       env: GITHUB_TOKEN
-  - host: openrouter.ai
-    path_prefix: /api/v1/
-    resource: https://openrouter.ai/api/v1
+  - url: https://openrouter.ai/api/v1
     credential:
       placement: {kind: header, name: Authorization, template: "Bearer {credential}"}
       env: OPENROUTER_API_KEY
   # Allowed without a credential. The proxy forwards the request and does not
   # call the zone.
-  - host: pypi.org
-  - host: files.pythonhosted.org
+  - url: https://pypi.org
+  - url: https://files.pythonhosted.org
