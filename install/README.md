@@ -46,6 +46,33 @@ CA. All three are empty by default.
 Give the sandbox chart the same `zoneTrust` and `hostAliases`. `docs/local.md`
 shows them filled in.
 
+## The pod contract
+
+The pod follows `docs/containers.md` in `keycardai/egress-proxy`. Each row
+is a chart value.
+
+| Item | Value |
+|---|---|
+| Containers | `egress-netsetup`, `egress-proxy` as a native sidecar, `agent` |
+| Proxy uid, agent uid | 1337, 1000 |
+| Redirect port | 1015 (`proxy.redirectPort` and `--redirect-port` in `netsetup.args`). The sandbox chart writes it into `listen.transparent_port`. |
+| `net.ipv4.ip_unprivileged_port_start` | 1024 (`proxy.unprivilegedPortStart`), a pod sysctl. The proxy refuses to start when it is at or below the redirect port. |
+| Agent command | `agent.args`, `["sleep", "infinity"]` by default. The `sandbox-base` entrypoint exits 64 when there are no args. |
+| Netsetup receipt | `/run/egress/netsetup/netsetup.json`, on the memory-backed `egress-run` volume that both proxy-side containers mount |
+| Proxy capabilities | `drop: ["ALL"]`, `add: ["NET_BIND_SERVICE"]`. NEVER remove the addition: the binary has `cap_net_bind_service=+ep`, and the kernel refuses to exec it without the capability in the bounding set. |
+| Admin socket | `/run/egress/admin/admin.sock`, the binary default, on `egress-run` |
+| CA certificate | `/shared-ca/out/ca.crt`, the binary default, on `shared-ca`, which the agent mounts read-only |
+| Probes | `probe readyz` for startup and readiness, `probe healthz` for liveness |
+| Proxy configuration | a ConfigMap named per sandbox, mounted on the proxy alone |
+| Agent volumes | `/shared-ca` read-only, and nothing else |
+
+Each default path is a directory inside a volume, never the mount point,
+so the proxy creates and owns it. `internal/chart/settings_test.go` runs
+`egress-proxy settings` and checks both charts against what it prints: the
+netsetup arguments, the proxy uid, the sysctl, the probe routes, the
+default paths and `listen.transparent_port`. It runs when `EGRESS_PROXY`
+names an `egress-proxy` binary and skips otherwise.
+
 ## The sandbox-admin Role is effectively node admin
 
 The Role grants API access in the sandbox namespace only, but its effect

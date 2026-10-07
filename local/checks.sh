@@ -116,7 +116,9 @@ cat <<-MSG
 	          subject $user_id and actor system:serviceaccount:$namespace:$user_id,
 	          and none for check 3.
 	  MANUAL  A sandbox whose document names another enrolled user. Expect the
-	          proxy to log access_denied for its first credentialed request.
+	          proxy to log the audit reason exchange_denied for its first
+	          credentialed request. The zone answers that exchange with
+	          access_denied.
 MSG
 
 ((failures == 0)) || die "$failures check(s) failed"

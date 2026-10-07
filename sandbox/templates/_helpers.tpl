@@ -40,19 +40,20 @@ another subject would fail every exchange with access_denied.
 {{- printf "%s-proxy-config" .Release.Name -}}
 {{- end }}
 
-{{- define "keycard-sandbox-user.agentConfigMap" -}}
-{{- printf "%s-agent-config" .Release.Name -}}
-{{- end }}
-
 {{/*
-The configuration document. Pass `identity` true for the proxy's copy, and
-false for the agent's copy, which leaves out the identity section.
+The proxy's configuration document. It holds the identity section, so only
+the proxy mounts it.
+
+listen.transparent_port must be the port egress-netsetup redirects to. When
+it is unset, the proxy does not run a transparent frontend, and the agent's
+TCP connections go to a port that nothing listens on.
 */}}
 {{- define "keycard-sandbox-user.document" -}}
-{{- $root := .root -}}
+{{- $root := . -}}
 {{- $doc := dict
       "version" 1
       "sandbox" (dict "id" $root.Release.Name)
+      "listen" (dict "transparent_port" (int $root.Values.proxy.redirectPort))
       "policy" (dict
         "cluster_cidrs" (default (list) $root.Values.policy.clusterCIDRs)
         "deny_list_exceptions" (default (list) $root.Values.policy.denyListExceptions))
@@ -61,12 +62,10 @@ false for the agent's copy, which leaves out the identity section.
   {{- $_ := set $doc "tls" (dict "upstream_ca_files" (list
         (printf "%s/%s" (trimSuffix "/" $root.Values.zoneTrust.mountPath) $root.Values.zoneTrust.key))) -}}
 {{- end -}}
-{{- if .identity -}}
-  {{- $_ := set $doc "identity" (dict
-        "zone_url" (required "zoneURL is required: the zone that decides every token exchange" $root.Values.zoneURL)
-        "client_id" (required "clientID is required: the workload-identity credential, from the sandbox_user_access outputs" $root.Values.clientID)
-        "workload_token_file" (printf "%s/token" (trimSuffix "/" $root.Values.proxy.tokenPath))
-        "impersonate" (dict "user" (include "keycard-sandbox-user.userID" $root))) -}}
-{{- end -}}
+{{- $_ := set $doc "identity" (dict
+      "zone_url" (required "zoneURL is required: the zone that decides every token exchange" $root.Values.zoneURL)
+      "client_id" (required "clientID is required: the workload-identity credential, from the sandbox_user_access outputs" $root.Values.clientID)
+      "workload_token_file" (printf "%s/token" (trimSuffix "/" $root.Values.proxy.tokenPath))
+      "impersonate" (dict "user" (include "keycard-sandbox-user.userID" $root))) -}}
 {{- toYaml $doc -}}
 {{- end }}

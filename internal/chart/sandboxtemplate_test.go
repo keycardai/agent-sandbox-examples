@@ -43,7 +43,10 @@ func asJSON(v any) string {
 func TestInstallSandboxTemplate(t *testing.T) {
 	t.Parallel()
 	var tmpl sandboxTemplate
-	const disabled, sharedCA = "disabled", "shared-ca"
+	const disabled, sharedCA, egressRun = "disabled", "shared-ca", "egress-run"
+	probe := func(route string) *corev1.ExecAction {
+		return &corev1.ExecAction{Command: []string{"/ko-app/egress-proxy", "probe", route}}
+	}
 	decode(t, render(t), "SandboxTemplate/keycard-sandbox", &tmpl)
 
 	if got := tmpl.APIVersion; got != "extensions.agents.x-k8s.io/v1beta1" {
@@ -71,7 +74,10 @@ func TestInstallSandboxTemplate(t *testing.T) {
 		AutomountServiceAccountToken: new(false),
 		ShareProcessNamespace:        new(false),
 		RestartPolicy:                corev1.RestartPolicyNever,
-		SecurityContext:              &corev1.PodSecurityContext{SeccompProfile: runtimeDefault},
+		SecurityContext: &corev1.PodSecurityContext{
+			SeccompProfile: runtimeDefault,
+			Sysctls:        []corev1.Sysctl{{Name: "net.ipv4.ip_unprivileged_port_start", Value: "1024"}},
+		},
 	}
 	if !reflect.DeepEqual(podLevel, wantPodLevel) {
 		t.Errorf("pod-level fields = %s\nwant %s", asJSON(podLevel), asJSON(wantPodLevel))
@@ -82,7 +88,10 @@ func TestInstallSandboxTemplate(t *testing.T) {
 		{
 			Name:  "egress-netsetup",
 			Image: "ghcr.io/keycardai/egress-netsetup:0.1.0",
-			Args:  []string{"--proxy-uid=1337", "--redirect-port=1001", "--capture-ports=80,443", "--ipv6=auto"},
+			Args: []string{
+				"--proxy-uid=1337", "--redirect-port=1015", "--capture-ports=80,443", "--ipv6=auto",
+				"--receipt=/run/egress/netsetup/netsetup.json",
+			},
 			SecurityContext: &corev1.SecurityContext{
 				RunAsUser:                new(int64(0)),
 				RunAsNonRoot:             new(false),
@@ -93,7 +102,10 @@ func TestInstallSandboxTemplate(t *testing.T) {
 					Add:  []corev1.Capability{"NET_ADMIN", "NET_RAW", "SETPCAP"},
 				},
 			},
-			VolumeMounts: []corev1.VolumeMount{{Name: "xtables-run", MountPath: "/run"}},
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: "xtables-run", MountPath: "/run"},
+				{Name: egressRun, MountPath: "/run/egress"},
+			},
 		},
 		{
 			Name:          "egress-proxy",
@@ -112,14 +124,20 @@ func TestInstallSandboxTemplate(t *testing.T) {
 				},
 			},
 			StartupProbe: &corev1.Probe{
-				Exec: &corev1.ExecAction{
-					Command: []string{"/ko-app/egress-proxy", "probe", "--admin-socket=/run/egress/admin.sock"},
-				},
+				Exec:             probe("readyz"),
 				PeriodSeconds:    1,
 				FailureThreshold: 60,
 			},
+			LivenessProbe: &corev1.Probe{
+				Exec:          probe("healthz"),
+				PeriodSeconds: 10,
+			},
+			ReadinessProbe: &corev1.Probe{
+				Exec:          probe("readyz"),
+				PeriodSeconds: 10,
+			},
 			VolumeMounts: []corev1.VolumeMount{
-				{Name: "egress-run", MountPath: "/run/egress"},
+				{Name: egressRun, MountPath: "/run/egress"},
 				{Name: egressConfig, MountPath: "/etc/egress", ReadOnly: true},
 				{Name: "keycard-token", MountPath: "/var/run/secrets/keycard", ReadOnly: true},
 				{Name: "ca-key", MountPath: "/var/lib/egress/ca"},
@@ -131,6 +149,7 @@ func TestInstallSandboxTemplate(t *testing.T) {
 		{
 			Name:  "agent",
 			Image: "ghcr.io/keycardai/sandbox-base:0.1.0",
+			Args:  []string{"sleep", "infinity"},
 			SecurityContext: &corev1.SecurityContext{
 				RunAsNonRoot:             new(true),
 				RunAsUser:                new(int64(1000)),
@@ -141,7 +160,6 @@ func TestInstallSandboxTemplate(t *testing.T) {
 			},
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: sharedCA, MountPath: "/shared-ca", ReadOnly: true},
-				{Name: agentConfig, MountPath: "/etc/egress", ReadOnly: true},
 			},
 		},
 	}
@@ -159,12 +177,11 @@ func TestInstallSandboxTemplate(t *testing.T) {
 
 	memory := &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}
 	wantVolumes := []corev1.Volume{
-		{Name: "egress-run", EmptyDir: memory},
+		{Name: egressRun, EmptyDir: memory},
 		{Name: "ca-key", EmptyDir: memory},
 		{Name: sharedCA, EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		{Name: "xtables-run", EmptyDir: memory},
 		{Name: egressConfig, ConfigMap: &corev1.ConfigMapVolumeSource{Name: "egress-proxy-config"}},
-		{Name: agentConfig, ConfigMap: &corev1.ConfigMapVolumeSource{Name: "egress-agent-config"}},
 		{Name: "keycard-token", Projected: &corev1.ProjectedVolumeSource{
 			Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
 				Path:              "token",

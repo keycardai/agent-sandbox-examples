@@ -2,6 +2,9 @@
 # Update them with any change here. The sandbox chart renders the same pod
 # for each user, and the tests in internal/chart check that the two match.
 # Change both charts together.
+#
+# The pod follows docs/containers.md in keycardai/egress-proxy, which sets
+# the containers, the uids, the capabilities, the volumes and the paths.
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
@@ -46,6 +49,14 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+        # The lowest port a process without CAP_NET_BIND_SERVICE may bind.
+        # Keep it above proxy.redirectPort so only the proxy can bind the
+        # redirect port. The pod sets it because a node may not use the
+        # kernel default: containerd sets it to 0. The proxy refuses to start
+        # when it is at or below the redirect port.
+        sysctls:
+          - name: net.ipv4.ip_unprivileged_port_start
+            value: {{ .Values.proxy.unprivilegedPortStart | quote }}
         # NEVER set fsGroup. Kubernetes adds every container to that group,
         # including the agent, and gives that group read and write on each
         # volume.
@@ -72,6 +83,12 @@ spec:
             # filesystem is read-only.
             - name: xtables-run
               mountPath: /run
+            # egress-netsetup creates netsetup/ under this mount and writes
+            # its receipt there. The proxy reads the receipt from the same
+            # volume and refuses to start unless it says the rules are in
+            # force and CAP_NET_ADMIN is gone.
+            - name: egress-run
+              mountPath: /run/egress
         # The proxy runs as a native sidecar. An init container with
         # restartPolicy Always starts before the agent and stops after it.
         - name: egress-proxy
@@ -87,7 +104,11 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
-              # The redirect port is below 1024.
+              # NEVER remove NET_BIND_SERVICE. The binary has the file
+              # capability cap_net_bind_service=+ep, and the kernel refuses to
+              # exec it when the capability is not in the bounding set. The
+              # proxy also needs it to bind the redirect port, which is below
+              # 1024.
               add: ["NET_BIND_SERVICE"]
           # Kubernetes starts the agent after this probe first passes, so the
           # proxy is already listening when the agent starts.
@@ -97,6 +118,16 @@ spec:
                 {{- toYaml .Values.proxy.startupProbe.command | nindent 16 }}
             periodSeconds: {{ .Values.proxy.startupProbe.periodSeconds }}
             failureThreshold: {{ .Values.proxy.startupProbe.failureThreshold }}
+          livenessProbe:
+            exec:
+              command:
+                {{- toYaml .Values.proxy.livenessProbe.command | nindent 16 }}
+            periodSeconds: {{ .Values.proxy.livenessProbe.periodSeconds }}
+          readinessProbe:
+            exec:
+              command:
+                {{- toYaml .Values.proxy.readinessProbe.command | nindent 16 }}
+            periodSeconds: {{ .Values.proxy.readinessProbe.periodSeconds }}
           volumeMounts:
             - name: egress-run
               mountPath: /run/egress
@@ -119,6 +150,14 @@ spec:
       containers:
         - name: agent
           image: {{ .Values.images.agent }}
+          {{- with .Values.agent.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.agent.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           securityContext:
             # Without CAP_SETUID the agent cannot switch to the proxy's uid,
             # which the redirect and the DROP exempt. Rendering fails if the
@@ -137,15 +176,18 @@ spec:
           volumeMounts:
             # The only volume the agent shares with the proxy. It holds the
             # CA certificate and nothing else.
+            #
+            # NEVER mount a configMap, a secret, a projected volume or the
+            # downward API here. Each one holds configuration or a token that
+            # belongs to the proxy.
             - name: shared-ca
               mountPath: /shared-ca
               readOnly: true
-            # The configuration document without the identity section.
-            - name: agent-config
-              mountPath: {{ dir .Values.agent.configPath }}
-              readOnly: true
       volumes:
-        # The admin socket. Memory-backed, mounted in the proxy only.
+        # The admin socket and the netsetup receipt, each in its own
+        # directory under the mount. The proxy creates admin/ with mode 0700.
+        # egress-netsetup creates netsetup/. Memory-backed. The agent does not
+        # mount it.
         - name: egress-run
           emptyDir:
             medium: Memory
@@ -155,7 +197,8 @@ spec:
         - name: ca-key
           emptyDir:
             medium: Memory
-        # The proxy writes the CA certificate here and the agent reads it.
+        # The proxy creates out/ under this mount and writes ca.crt there.
+        # The agent's entrypoint installs that file.
         - name: shared-ca
           emptyDir: {}
         # The xtables lock. Only egress-netsetup mounts it.
@@ -165,11 +208,6 @@ spec:
         - name: egress-config
           configMap:
             name: {{ .Values.proxy.configMap }}
-        # The agent's copy of the document, without the identity section.
-        # NEVER point this at the proxy's ConfigMap.
-        - name: agent-config
-          configMap:
-            name: {{ .Values.agent.configMap }}
         {{- if .Values.zoneTrust.configMap }}
         - name: zone-trust
           configMap:
