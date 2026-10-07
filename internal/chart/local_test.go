@@ -14,35 +14,53 @@ import (
 )
 
 // local/run.sh renders both charts with the files under local/values and one
-// more file per chart that it writes from the running cluster. laneInstall
-// and laneSandbox copy the keys run.sh writes. Update them when run.sh
-// changes.
+// more file per chart that it writes from the running cluster and local.env.
+// localInstall and localSandbox copy the keys run.sh writes.
+// localInstallTrust and localSandboxTrust copy what it adds when
+// KEYCARD_LOCAL_CA_FILE is set. Update them when run.sh changes.
 const (
-	laneGateway = "192.168.97.1"
-	laneZoneURL = "https://kx7z9v2m4q8w1r6t3y5u7i9o0p.localdev.keycard.sh"
-	laneRootCA  = "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----"
-	laneInstall = `zoneURL: ` + laneZoneURL + `
-zoneTrust:
+	localGateway  = "192.168.97.1"
+	localZoneHost = "acme.example.com"
+	localZoneURL  = "https://" + localZoneHost
+	localRootCA   = "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----"
+	localInstall  = `zoneURL: ` + localZoneURL + `
+hostAliases:
+  - ip: ` + localGateway + `
+    hostnames: [` + localZoneHost + `]
+network:
+  allowCIDRs: ["` + localGateway + `/32"]
+`
+	localInstallTrust = `zoneTrust:
+  configMap: egress-zone-trust
   certificate: |
     -----BEGIN CERTIFICATE-----
     ZmFrZQ==
     -----END CERTIFICATE-----
-hostAliases:
-  - ip: ` + laneGateway + `
-    hostnames: [kx7z9v2m4q8w1r6t3y5u7i9o0p.localdev.keycard.sh]
-network:
-  allowCIDRs: ["` + laneGateway + `/32"]
 `
-	laneSandbox = `zoneURL: ` + laneZoneURL + `
+	localSandbox = `zoneURL: ` + localZoneURL + `
 hostAliases:
-  - ip: ` + laneGateway + `
-    hostnames: [kx7z9v2m4q8w1r6t3y5u7i9o0p.localdev.keycard.sh]
+  - ip: ` + localGateway + `
+    hostnames: [` + localZoneHost + `]
 policy:
-  denyListExceptions: ["` + laneGateway + `/32"]
+  denyListExceptions: ["` + localGateway + `/32"]
+`
+	localSandboxTrust = `zoneTrust:
+  configMap: egress-zone-trust
 `
 )
 
-func laneValues(t *testing.T, name string) string {
+type caCase struct {
+	name   string
+	withCA bool
+}
+
+// caCases returns the two shapes of run.sh's output, without and with
+// KEYCARD_LOCAL_CA_FILE.
+func caCases() []caCase {
+	return []caCase{{"no CA file", false}, {"CA file", true}}
+}
+
+func localValues(t *testing.T, name string) string {
 	t.Helper()
 	path, err := filepath.Abs(filepath.Join("../../local/values", name))
 	if err != nil {
@@ -51,49 +69,92 @@ func laneValues(t *testing.T, name string) string {
 	return path
 }
 
-func renderLaneInstall(t *testing.T) map[string][]byte {
+// runValues writes the file run.sh writes for one chart. It appends trust
+// when withCA is set.
+func runValues(t *testing.T, base, trust string, withCA bool) string {
+	t.Helper()
+	if withCA {
+		base += trust
+	}
+	return writeValues(t, base)
+}
+
+func renderLocalInstall(t *testing.T, withCA bool) map[string][]byte {
 	t.Helper()
 	dir, err := filepath.Abs("../../install")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return renderChart(t, dir, release, laneValues(t, "install.yaml"), writeValues(t, laneInstall))
+	return renderChart(t, dir, release, localValues(t, "install.yaml"),
+		runValues(t, localInstall, localInstallTrust, withCA))
 }
 
-func renderLaneSandbox(t *testing.T) map[string][]byte {
+func renderLocalSandbox(t *testing.T, withCA bool) map[string][]byte {
 	t.Helper()
-	values := sandboxValues(t, laneValues(t, "sandbox.yaml"), writeValues(t, laneSandbox))
+	values := sandboxValues(t, localValues(t, "sandbox.yaml"),
+		runValues(t, localSandbox, localSandboxTrust, withCA))
 	return renderChart(t, sandboxDir(t), sandboxUserID, values...)
 }
 
-// TestLanePodMatchesInstall checks that the two charts render the same pod
-// with the local values, which add the zone's host alias and trust.
-func TestLanePodMatchesInstall(t *testing.T) {
+// TestLocalPodMatchesInstall checks that the two charts render the same pod
+// with the local values, with and without a CA file.
+func TestLocalPodMatchesInstall(t *testing.T) {
 	t.Parallel()
-	assertPodsMatch(t, renderLaneInstall(t), renderLaneSandbox(t))
+	for _, tc := range caCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assertPodsMatch(t, renderLocalInstall(t, tc.withCA), renderLocalSandbox(t, tc.withCA))
+		})
+	}
 }
 
-// TestLaneReachesZone checks what a pod needs to reach a zone on the Docker
-// host: the zone's name mapped to the gateway, the localdev root mounted only
-// on the proxy, and a NetworkPolicy rule that allows the gateway on 443.
-func TestLaneReachesZone(t *testing.T) {
+// TestLocalReachesZone checks what a pod needs to reach a zone on the Docker
+// host: the zone's name mapped to the gateway, and a NetworkPolicy rule that
+// allows the gateway on 443. The extra roots are rendered, and mounted only
+// on the proxy, only when run.sh has a CA file.
+func TestLocalReachesZone(t *testing.T) {
 	t.Parallel()
-	objects := renderLaneInstall(t)
+	for _, tc := range caCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			objects := renderLocalInstall(t, tc.withCA)
 
-	var trust corev1.ConfigMap
-	decode(t, objects, "ConfigMap/egress-zone-trust", &trust)
-	if got := strings.TrimSpace(trust.Data["zone-ca.pem"]); got != laneRootCA {
-		t.Errorf("zone-ca.pem = %q, want %q", got, laneRootCA)
-	}
+			var tmpl sandboxTemplate
+			decode(t, objects, "SandboxTemplate/"+release, &tmpl)
+			spec := tmpl.Spec.PodTemplate.Spec
+			wantAliases := []corev1.HostAlias{{IP: localGateway, Hostnames: []string{localZoneHost}}}
+			if !reflect.DeepEqual(spec.HostAliases, wantAliases) {
+				t.Errorf("hostAliases = %+v, want %+v", spec.HostAliases, wantAliases)
+			}
+			assertZoneTrust(t, objects, spec, tc.withCA)
 
-	var tmpl sandboxTemplate
-	decode(t, objects, "SandboxTemplate/"+release, &tmpl)
-	spec := tmpl.Spec.PodTemplate.Spec
-	wantAliases := []corev1.HostAlias{
-		{IP: laneGateway, Hostnames: []string{"kx7z9v2m4q8w1r6t3y5u7i9o0p.localdev.keycard.sh"}},
+			var policy networkingv1.NetworkPolicy
+			decode(t, objects, "NetworkPolicy/keycard-sandbox-egress", &policy)
+			tcp, https := corev1.ProtocolTCP, intstr.FromInt32(443)
+			wantRule := networkingv1.NetworkPolicyEgressRule{
+				To:    []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: localGateway + "/32"}}},
+				Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &https}},
+			}
+			if len(policy.Spec.Egress) != 3 || !reflect.DeepEqual(policy.Spec.Egress[1], wantRule) {
+				t.Errorf("egress rules = %s\nwant the gateway rule second: %s", asJSON(policy.Spec.Egress), asJSON(wantRule))
+			}
+		})
 	}
-	if !reflect.DeepEqual(spec.HostAliases, wantAliases) {
-		t.Errorf("hostAliases = %+v, want %+v", spec.HostAliases, wantAliases)
+}
+
+// assertZoneTrust checks that the install chart renders the roots and mounts
+// them only on the proxy when withCA is set. Otherwise it checks that the
+// chart does not render or mount them.
+func assertZoneTrust(t *testing.T, objects map[string][]byte, spec corev1.PodSpec, withCA bool) {
+	t.Helper()
+	if withCA {
+		var trust corev1.ConfigMap
+		decode(t, objects, "ConfigMap/egress-zone-trust", &trust)
+		if got := strings.TrimSpace(trust.Data["zone-ca.pem"]); got != localRootCA {
+			t.Errorf("zone-ca.pem = %q, want %q", got, localRootCA)
+		}
+	} else if keys(objects)["ConfigMap/egress-zone-trust"] {
+		t.Error("ConfigMap/egress-zone-trust is rendered without a CA file")
 	}
 	mounts := map[string][]corev1.VolumeMount{}
 	for _, container := range append(spec.InitContainers, spec.Containers...) {
@@ -103,45 +164,46 @@ func TestLaneReachesZone(t *testing.T) {
 			}
 		}
 	}
-	wantMounts := map[string][]corev1.VolumeMount{
-		"egress-proxy": {{Name: "zone-trust", MountPath: "/etc/keycard-zone-trust", ReadOnly: true}},
+	wantMounts := map[string][]corev1.VolumeMount{}
+	if withCA {
+		wantMounts["egress-proxy"] = []corev1.VolumeMount{
+			{Name: "zone-trust", MountPath: "/etc/keycard-zone-trust", ReadOnly: true},
+		}
 	}
 	if !reflect.DeepEqual(mounts, wantMounts) {
 		t.Errorf("zone-trust mounts = %+v, want %+v", mounts, wantMounts)
 	}
-
-	var policy networkingv1.NetworkPolicy
-	decode(t, objects, "NetworkPolicy/keycard-sandbox-egress", &policy)
-	tcp, https := corev1.ProtocolTCP, intstr.FromInt32(443)
-	wantRule := networkingv1.NetworkPolicyEgressRule{
-		To:    []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: laneGateway + "/32"}}},
-		Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &https}},
-	}
-	if len(policy.Spec.Egress) != 3 || !reflect.DeepEqual(policy.Spec.Egress[1], wantRule) {
-		t.Errorf("egress rules = %s\nwant the gateway rule second: %s", asJSON(policy.Spec.Egress), asJSON(wantRule))
-	}
 }
 
-// TestLaneDocuments checks that both documents trust the mounted root and
-// allow the gateway, and that they differ only in the identity section.
-func TestLaneDocuments(t *testing.T) {
+// TestLocalDocuments checks that both documents allow the gateway, that they
+// trust the mounted roots only when run.sh has a CA file, and that they differ
+// only in the identity section.
+func TestLocalDocuments(t *testing.T) {
 	t.Parallel()
-	objects := renderLaneSandbox(t)
-	proxy := parseDocument(t, configDocument(t, objects, proxyConfigMap))
-	agent := parseDocument(t, configDocument(t, objects, agentConfigMap))
-	for _, problem := range validateDocument(proxy) {
-		t.Errorf("proxy document: %s", problem)
-	}
-	wantTLS := &tlsDoc{UpstreamCAFiles: []string{"/etc/keycard-zone-trust/zone-ca.pem"}}
-	if !reflect.DeepEqual(proxy.TLS, wantTLS) {
-		t.Errorf("tls = %+v, want %+v", proxy.TLS, wantTLS)
-	}
-	if want := []string{laneGateway + "/32"}; !reflect.DeepEqual(proxy.Policy.DenyListExceptions, want) {
-		t.Errorf("deny_list_exceptions = %v, want %v", proxy.Policy.DenyListExceptions, want)
-	}
-	proxy.Identity = nil
-	if !reflect.DeepEqual(agent, proxy) {
-		t.Errorf("agent document = %s\nwant the proxy's without identity: %s", asJSON(agent), asJSON(proxy))
+	for _, tc := range caCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			objects := renderLocalSandbox(t, tc.withCA)
+			proxy := parseDocument(t, configDocument(t, objects, proxyConfigMap))
+			agent := parseDocument(t, configDocument(t, objects, agentConfigMap))
+			for _, problem := range validateDocument(proxy) {
+				t.Errorf("proxy document: %s", problem)
+			}
+			var wantTLS *tlsDoc
+			if tc.withCA {
+				wantTLS = &tlsDoc{UpstreamCAFiles: []string{"/etc/keycard-zone-trust/zone-ca.pem"}}
+			}
+			if !reflect.DeepEqual(proxy.TLS, wantTLS) {
+				t.Errorf("tls = %+v, want %+v", proxy.TLS, wantTLS)
+			}
+			if want := []string{localGateway + "/32"}; !reflect.DeepEqual(proxy.Policy.DenyListExceptions, want) {
+				t.Errorf("deny_list_exceptions = %v, want %v", proxy.Policy.DenyListExceptions, want)
+			}
+			proxy.Identity = nil
+			if !reflect.DeepEqual(agent, proxy) {
+				t.Errorf("agent document = %s\nwant the proxy's without identity: %s", asJSON(agent), asJSON(proxy))
+			}
+		})
 	}
 }
 
@@ -169,7 +231,7 @@ func TestInstallRefusesZoneValues(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			values := []string{
-				laneValues(t, "install.yaml"), writeValues(t, laneInstall), writeValues(t, tc.values+"\n"),
+				localValues(t, "install.yaml"), writeValues(t, localInstall), writeValues(t, tc.values+"\n"),
 			}
 			_, err := chart.Render(t.Context(), dir, release, "agents", values...)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {

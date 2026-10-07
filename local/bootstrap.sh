@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Creates the local lane's k3d cluster with the ServiceAccount issuer baked
-# into its API server, and proves a minted token carries it.
+# Creates the local k3d cluster with the ServiceAccount issuer baked into its
+# API server, and checks that a minted token has it.
 #
 # The API server cannot change its issuer while it runs, so an existing
 # cluster is verified rather than recreated. A cluster whose discovery
@@ -38,13 +38,13 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
-# shellcheck source=local/lane.sh
-. "$here/lane.sh"
-lane_load_env "$env_file"
+# shellcheck source=local/common.sh
+. "$here/common.sh"
+load_env "$env_file"
 cluster=${cluster:-${KEYCARD_LOCAL_CLUSTER:-}}
 issuer=${issuer:-${KEYCARD_LOCAL_ISSUER:-}}
 
-lane_require_cluster "$cluster"
+require_cluster "$cluster"
 [[ -n $issuer ]] || die "no issuer. Set KEYCARD_LOCAL_ISSUER or pass --issuer."
 [[ $issuer == https://* ]] || die "the issuer must be https (got '$issuer')"
 [[ $issuer != *\?* && $issuer != *\#* ]] || die "the issuer must have no query or fragment (got '$issuer')"
@@ -68,9 +68,9 @@ jwks_uri=$issuer/openid/v1/jwks
 
 # `@server:*` sends each flag to every server node, and k3s forwards
 # --kube-apiserver-arg to kube-apiserver. The public issuer replaces k3s's
-# default, so kube-apiserver mints tokens with it. The lane serves nothing
-# through an ingress or a LoadBalancer Service, so k3s's Traefik and servicelb
-# stay off.
+# default, so kube-apiserver mints tokens with it. The local cluster serves
+# nothing through an ingress or a LoadBalancer Service, so k3s's Traefik and
+# servicelb stay off.
 create=(
 	k3d cluster create "$cluster"
 	--image "$k3s_image"
@@ -87,15 +87,15 @@ if [[ $dry_run == true ]]; then
 	exit 0
 fi
 
-lane_require_tools docker
-lane_use_pinned jq k3d kubectl
+require_tools docker
+use_pinned_tools jq k3d kubectl
 context=k3d-$cluster
 # Turn off kuberc. A kuberc default for --server, --cluster, --user or --token
 # would override the cluster and credentials of the --context context.
 export KUBERC=off
 kube() { kubectl --context "$context" "$@"; }
 
-if lane_cluster_exists "$cluster"; then
+if cluster_exists "$cluster"; then
 	echo "bootstrap.sh: reusing the k3d cluster $cluster"
 	discovery=$(kube get --raw /.well-known/openid-configuration) ||
 		die "cannot read the discovery document from $context, so its issuer cannot be confirmed"

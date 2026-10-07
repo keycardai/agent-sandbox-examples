@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Runs the sandbox flow end to end on a k3d cluster: the cluster, the three
-# images, zone-setup against the localdev zone, the install chart, new-sandbox
-# for one user, and the end-to-end checks.
-#
-# It writes to the k3d cluster and to the Keycard zone. It NEVER writes to
-# the localdev cluster.
+# Runs the sandbox flow end to end on a local k3d cluster: the cluster, the
+# three images, zone-setup against the Keycard zone, the install chart,
+# new-sandbox for one user, and the end-to-end checks. It writes to the local
+# cluster and to the zone.
 #
 # It does not publish the issuer. The zone fetches
 # $KEYCARD_LOCAL_ISSUER/.well-known/openid-configuration for every exchange.
-# Keep mirror.sh serving, and apply the route that route.sh prints to
-# localdev, before the checks run. check-issuer.sh verifies both.
+# Keep mirror.sh serving and reachable at the issuer's https URL before the
+# checks run. check-issuer.sh verifies both.
+#
+# The sandbox pod dials the zone at the gateway of the cluster's Docker
+# network. The zone must answer on the Docker host. The proxy trusts the
+# system roots, and the roots in KEYCARD_LOCAL_CA_FILE when it is set.
 #
 # --skip-zone-setup reuses local/out/zone-setup.yaml from an earlier run.
 #
@@ -18,6 +20,8 @@ set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$here/.." && pwd)
+# The ConfigMap that holds KEYCARD_LOCAL_CA_FILE for the proxy.
+readonly zone_trust=egress-zone-trust
 readonly images=(
 	ghcr.io/keycardai/egress-netsetup:local
 	ghcr.io/keycardai/egress-proxy:local
@@ -45,22 +49,23 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
-# shellcheck source=local/lane.sh
-. "$here/lane.sh"
-lane_load_env "$env_file"
+# shellcheck source=local/common.sh
+. "$here/common.sh"
+load_env "$env_file"
 cluster=${KEYCARD_LOCAL_CLUSTER:-}
 issuer=${KEYCARD_LOCAL_ISSUER:-}
 zone_url=${KEYCARD_LOCAL_ZONE_URL:-}
 user_email=${KEYCARD_LOCAL_USER_EMAIL:-}
 zone_values=$repo/${KEYCARD_LOCAL_ZONE_SETUP_VALUES:-zone-setup.yaml}
 
-lane_require_cluster "$cluster"
+require_cluster "$cluster"
 [[ -n $issuer ]] || die "no issuer. Set KEYCARD_LOCAL_ISSUER."
 [[ $zone_url =~ ^https://[a-z0-9.-]+$ ]] ||
 	die "KEYCARD_LOCAL_ZONE_URL must be https://<zone host> (got '$zone_url'). run.sh does not create a zone."
 [[ -n $user_email ]] || die "no user. Set KEYCARD_LOCAL_USER_EMAIL to an email zone-setup enrolls."
-lane_require_tools docker
-lane_use_pinned go jq k3d kubectl yq
+ca=$(ca_file)
+require_tools docker
+use_pinned_tools go jq k3d kubectl yq
 export KUBERC=off
 context=k3d-$cluster
 kube() { kubectl --context "$context" "$@"; }
@@ -105,9 +110,8 @@ user_id=$(output "$user | .user_id")
 service_account=$(output "$user | .service_account")
 client_id=$(output "$user | .client_id")
 
-step "the values from the running cluster and localdev"
-ca_file=$(lane_ca_file "$out/localdev-root.pem")
-gateway=$(lane_gateway "$cluster")
+step "the values from the running cluster"
+gateway=$(cluster_gateway "$cluster")
 zone_host=${zone_url#https://}
 echo "    $zone_host maps to $gateway, the k3d-$cluster gateway"
 alias="hostAliases:
@@ -115,9 +119,12 @@ alias="hostAliases:
     hostnames: [$zone_host]"
 {
 	echo "zoneURL: $zone_url"
-	echo "zoneTrust:"
-	echo "  certificate: |"
-	sed 's/^/    /' "$ca_file"
+	if [[ -n $ca ]]; then
+		echo "zoneTrust:"
+		echo "  configMap: $zone_trust"
+		echo "  certificate: |"
+		sed 's/^/    /' "$ca"
+	fi
 	echo "$alias"
 	echo "network:"
 	echo "  allowCIDRs: [\"$gateway/32\"]"
@@ -126,6 +133,10 @@ alias="hostAliases:
 # on the platform deny list.
 {
 	echo "zoneURL: $zone_url"
+	if [[ -n $ca ]]; then
+		echo "zoneTrust:"
+		echo "  configMap: $zone_trust"
+	fi
 	echo "$alias"
 	echo "policy:"
 	echo "  denyListExceptions: [\"$gateway/32\"]"

@@ -44,15 +44,15 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
-# shellcheck source=local/lane.sh
-. "$here/lane.sh"
-lane_load_env "$env_file"
+# shellcheck source=local/common.sh
+. "$here/common.sh"
+load_env "$env_file"
 cluster=${cluster:-${KEYCARD_LOCAL_CLUSTER:-}}
 github_login=${KEYCARD_LOCAL_GITHUB_LOGIN:-}
-lane_require_cluster "$cluster"
+require_cluster "$cluster"
 [[ -n $pod ]] || die "--pod NAME is required"
 [[ -n $user_id ]] || die "--user-id ID is required"
-lane_use_pinned kubectl
+use_pinned_tools kubectl
 export KUBERC=off
 
 kube() { kubectl --context "k3d-$cluster" -n "$namespace" "$@"; }

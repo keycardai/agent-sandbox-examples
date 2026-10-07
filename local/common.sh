@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Settings and guards the local lane's scripts share. Sourced, never run.
-#
-# NEVER let any of these scripts write to the `localdev` cluster. It is the
-# user's Keycard stack, and this lane is a client of it.
+# Settings and checks that the local cluster scripts share. Sourced, never run.
 #
 # The scripts run the k3d, kubectl and jq that mise.toml pins, whatever else
 # is on PATH. They stop unless mise resolves each one from mise.toml to an
@@ -12,18 +9,18 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../scripts/pinned"
 
 # The settings local.env can hold. local.env.example documents each one.
-lane_keys='KEYCARD_LOCAL_CLUSTER|KEYCARD_LOCAL_ISSUER|KEYCARD_LOCAL_ZONE_URL|KEYCARD_LOCAL_USER_EMAIL'
-lane_keys+='|KEYCARD_LOCAL_ZONE_SETUP_VALUES|KEYCARD_LOCAL_GITHUB_LOGIN'
+env_keys='KEYCARD_LOCAL_CLUSTER|KEYCARD_LOCAL_ISSUER|KEYCARD_LOCAL_ZONE_URL|KEYCARD_LOCAL_USER_EMAIL'
+env_keys+='|KEYCARD_LOCAL_ZONE_SETUP_VALUES|KEYCARD_LOCAL_GITHUB_LOGIN|KEYCARD_LOCAL_CA_FILE'
 
-# lane_load_env reads the settings file, local/local.env unless the first
+# load_env reads the settings file, local/local.env unless the first
 # argument names another. It reads the file as data and executes nothing.
-# Each line is blank, a # comment, or KEY=value for a key in lane_keys. The
+# Each line is blank, a # comment, or KEY=value for a key in env_keys. The
 # value is the rest of the line, taken literally.
 # Any other line stops the run. A script's flag wins over an exported
 # variable of the same name, and an exported variable that is not empty wins
 # over the file. A missing default file is skipped. A missing named file
 # stops the run.
-lane_load_env() {
+load_env() {
 	local file=${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/local.env}
 	local line n=0
 	if [[ ! -f $file ]]; then
@@ -34,7 +31,7 @@ lane_load_env() {
 	while IFS= read -r line || [[ -n $line ]]; do
 		n=$((n + 1))
 		[[ $line =~ ^[[:space:]]*(#|$) ]] && continue
-		if [[ $line =~ ^($lane_keys)=(.*)$ ]]; then
+		if [[ $line =~ ^($env_keys)=(.*)$ ]]; then
 			[[ -n ${!BASH_REMATCH[1]:-} ]] || printf -v "${BASH_REMATCH[1]}" '%s' "${BASH_REMATCH[2]}"
 		else
 			echo "$(basename "$0"): $file line $n is not KEY=value for a key local.env.example lists" >&2
@@ -43,18 +40,13 @@ lane_load_env() {
 	done <"$file"
 }
 
-# lane_require_cluster stops a run that names no cluster, names the user's
-# Keycard stack, or names a cluster k3d would refuse or read as an option.
-# The name rule is k3d's RFC 1123 label with its 32-character limit, narrowed
-# to lowercase.
-lane_require_cluster() {
+# require_cluster stops a run that names no cluster, or names a cluster k3d
+# would refuse or read as an option. The name rule is k3d's RFC 1123 label
+# with its 32-character limit, narrowed to lowercase.
+require_cluster() {
 	local name=$1
 	if [[ -z $name ]]; then
 		echo "$(basename "$0"): no cluster name. Set KEYCARD_LOCAL_CLUSTER or pass --cluster." >&2
-		exit 1
-	fi
-	if [[ $name == localdev ]]; then
-		echo "$(basename "$0"): 'localdev' is the Keycard localdev stack. This lane never writes to it." >&2
 		exit 1
 	fi
 	# The classes spell out every character so that no locale widens them.
@@ -65,7 +57,7 @@ lane_require_cluster() {
 	fi
 }
 
-lane_require_tools() {
+require_tools() {
 	local tool
 	for tool in "$@"; do
 		command -v "$tool" >/dev/null 2>&1 || {
@@ -75,10 +67,11 @@ lane_require_tools() {
 	done
 }
 
-# lane_use_pinned puts the directory of each named tool that the repository's
-# mise.toml pins first on PATH. It resolves every tool before it changes PATH,
-# so a tool directory cannot supply the mise that resolves the next tool.
-lane_use_pinned() {
+# use_pinned_tools puts the directory of each named tool that the
+# repository's mise.toml pins first on PATH. It resolves every tool before it
+# changes PATH, so a tool directory cannot supply the mise that resolves the
+# next tool.
+use_pinned_tools() {
 	local tool path dirs=""
 	for tool in "$@"; do
 		path=$(pinned_path "$tool") || exit 1
@@ -87,11 +80,11 @@ lane_use_pinned() {
 	export PATH=$dirs$PATH
 }
 
-# lane_cluster_exists returns 0 when k3d lists a cluster named exactly $1 and 1
+# cluster_exists returns 0 when k3d lists a cluster named exactly $1 and 1
 # when it does not. A failed listing, or output that is not a list of named
 # clusters, stops the run, so an unreachable Docker never reads as a missing
 # cluster.
-lane_cluster_exists() {
+cluster_exists() {
 	local list found
 	list=$(k3d cluster list -o json) || {
 		echo "$(basename "$0"): cannot list k3d clusters. Is Docker running?" >&2
@@ -106,12 +99,11 @@ lane_cluster_exists() {
 	exit 1
 }
 
-# lane_gateway prints the gateway of the k3d cluster's Docker network. A pod in
-# that cluster reaches the Docker host there, and localdev publishes its
-# Gateway on the Docker host. Read it on every run. A recreated cluster can
-# get a different Docker subnet. It prints the first IPv4 gateway, because
-# the zone's host alias takes one address.
-lane_gateway() {
+# cluster_gateway prints the gateway of the k3d cluster's Docker network. A
+# pod in that cluster reaches the Docker host at this address. Read it on
+# every run. A recreated cluster can get a different Docker subnet. It prints
+# the first IPv4 gateway, because the zone's host alias takes one address.
+cluster_gateway() {
 	local gateway
 	gateway=$(docker network inspect "k3d-$1" --format '{{range .IPAM.Config}}{{println .Gateway}}{{end}}' |
 		grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1) || gateway=""
@@ -122,18 +114,25 @@ lane_gateway() {
 	printf '%s\n' "$gateway"
 }
 
-# lane_ca_file writes the localdev root certificate from
-# ~/.localdev/devcert.json to $1 and prints $1. The root signs every
-# *.localdev.keycard.sh certificate.
-lane_ca_file() {
-	local devcert=$HOME/.localdev/devcert.json
-	if [[ ! -s $devcert ]]; then
-		echo "$(basename "$0"): $devcert does not exist. Is localdev set up?" >&2
+# ca_file prints KEYCARD_LOCAL_CA_FILE, the PEM file of extra trusted roots.
+# It prints nothing when the setting is empty. A setting that is not an
+# absolute path to a readable file with a PEM certificate stops the run. The
+# path must be absolute because the scripts pass it to commands that run in
+# another directory.
+ca_file() {
+	local file=${KEYCARD_LOCAL_CA_FILE:-}
+	[[ -n $file ]] || return 0
+	if [[ $file != /* ]]; then
+		echo "$(basename "$0"): KEYCARD_LOCAL_CA_FILE must be an absolute path (got '$file')" >&2
 		exit 1
 	fi
-	jq -er '.root_certificate_pem | select(type == "string" and . != "")' "$devcert" >"$1" || {
-		echo "$(basename "$0"): $devcert has no root_certificate_pem" >&2
+	if [[ ! -f $file || ! -r $file ]]; then
+		echo "$(basename "$0"): KEYCARD_LOCAL_CA_FILE $file is not a readable file" >&2
 		exit 1
-	}
-	printf '%s\n' "$1"
+	fi
+	if [[ ! $(<"$file") =~ (^|$'\n')-----BEGIN\ CERTIFICATE----- ]]; then
+		echo "$(basename "$0"): KEYCARD_LOCAL_CA_FILE $file does not hold a PEM certificate" >&2
+		exit 1
+	fi
+	printf '%s\n' "$file"
 }

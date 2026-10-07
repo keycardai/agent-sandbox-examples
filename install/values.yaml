@@ -23,7 +23,7 @@ zoneTrust:
 # shape of the pod's hostAliases field. Give the sandbox chart the same list.
 hostAliases: []
 #  - ip: 192.168.97.1
-#    hostnames: [acme.localdev.keycard.sh]
+#    hostnames: [acme.example.com]
 
 # The sandbox pod's images. Nothing publishes these tags. Build the images
 # from the egress-proxy repository and set them here.

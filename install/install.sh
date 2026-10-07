@@ -9,9 +9,6 @@
 # namespace already sets another level, and after the chart when the
 # namespace does not enforce privileged.
 #
-# NEVER install into the Keycard localdev stack. The contexts localdev and
-# k3d-localdev are refused.
-#
 # Usage: install.sh --context NAME --values FILE... [--namespace NAME]
 #
 #   --context NAME    the kube context to install into
@@ -50,10 +47,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n $context ]] || die "--context NAME is required. It names the cluster to install into."
-case $context in
-localdev | k3d-localdev) die "'$context' is the Keycard localdev stack. install.sh never writes to it." ;;
--*) die "the context must not start with a dash (got '$context')" ;;
-esac
+[[ $context != -* ]] || die "the context must not start with a dash (got '$context')"
 ((${#values[@]} > 0)) || die "--values FILE is required. Start from $here/values.example.yaml."
 values_args=()
 for file in "${values[@]}"; do

@@ -1,7 +1,6 @@
 package local_test
 
 import (
-	"cmp"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -76,7 +75,7 @@ esac
 	}
 
 	tests := []struct {
-		name, list, cluster, lacks string
+		name, list, lacks          string
 		source, installed, install string
 		noMise, wantErr            bool
 		wantOut, wantCalls         string
@@ -104,14 +103,6 @@ esac
 			list:      `[{"name":"other"},{"name":"asp"}]`,
 			wantOut:   "down.sh: deleted asp",
 			wantCalls: "cluster delete asp\n",
-		},
-		// k3d lists localdev, so a down.sh that skipped the refusal would delete it.
-		{
-			name:    "refuses localdev",
-			list:    `[{"name":"localdev"}]`,
-			cluster: localdev,
-			wantErr: true,
-			wantOut: "down.sh: 'localdev' is the Keycard localdev stack",
 		},
 		{
 			name:    "no mise",
@@ -166,7 +157,7 @@ esac
 			}
 			//nolint:gosec // The arguments are fixed inputs to a script in this repository.
 			cmd := exec.CommandContext(t.Context(), filepath.Join(bin, "bash"), filepath.Join(root, "local", "down.sh"),
-				"--env", env, "--cluster", cmp.Or(tc.cluster, "asp"), "--yes")
+				"--env", env, "--cluster", "asp", "--yes")
 			cmd.Dir = dir
 			cmd.Env = []string{
 				"PATH=" + path, "K3D_LIST=" + tc.list, "K3D_CALLS=" + calls, "MISE_LACKS=" + tc.lacks,

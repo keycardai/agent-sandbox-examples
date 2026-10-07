@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deletes the local lane's k3d cluster. It refuses the name localdev.
+# Deletes the local k3d cluster.
 #
 # Usage: down.sh [--cluster NAME] [--env FILE] [--yes]
 set -euo pipefail
@@ -25,15 +25,15 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
-# shellcheck source=local/lane.sh
-. "$here/lane.sh"
-lane_load_env "$env_file"
+# shellcheck source=local/common.sh
+. "$here/common.sh"
+load_env "$env_file"
 cluster=${cluster:-${KEYCARD_LOCAL_CLUSTER:-}}
-lane_require_cluster "$cluster"
-lane_require_tools docker
-lane_use_pinned jq k3d
+require_cluster "$cluster"
+require_tools docker
+use_pinned_tools jq k3d
 
-if ! lane_cluster_exists "$cluster"; then
+if ! cluster_exists "$cluster"; then
 	echo "down.sh: there is no k3d cluster named $cluster"
 	exit 0
 fi

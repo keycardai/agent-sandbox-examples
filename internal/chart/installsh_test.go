@@ -133,18 +133,6 @@ exit 0
 			wantCalls: all,
 		},
 		{
-			name:    "refuses localdev",
-			context: "localdev",
-			wantErr: true,
-			wantOut: "install.sh: 'localdev' is the Keycard localdev stack. install.sh never writes to it.",
-		},
-		{
-			name:    "refuses k3d-localdev",
-			context: "k3d-localdev",
-			wantErr: true,
-			wantOut: "install.sh: 'k3d-localdev' is the Keycard localdev stack. install.sh never writes to it.",
-		},
-		{
 			name:      "stops when the namespace is not privileged",
 			context:   cluster,
 			enforce:   "baseline",
@@ -198,6 +186,12 @@ exit 0
 			wantOut: `run: kubectl --context staging\ west label namespace agents`,
 			wantCalls: "kubectl --context staging west get namespace agents --ignore-not-found" +
 				` -o jsonpath={.metadata.labels.pod-security\.kubernetes\.io/enforce}` + "\n",
+		},
+		{
+			name:    "refuses a context that kubectl would read as a flag",
+			context: "--kubeconfig=/elsewhere",
+			wantErr: true,
+			wantOut: "install.sh: the context must not start with a dash (got '--kubeconfig=/elsewhere')",
 		},
 		{
 			name:      "stops before any change when the namespace audits another level",
