@@ -15,7 +15,8 @@ images:
 
 proxy:
   # The proxy's uid. The redirect and the DROP exempt it, so the proxy's own
-  # traffic leaves the pod. It must match --proxy-uid in netsetup.args.
+  # traffic leaves the pod. It must match --proxy-uid in netsetup.args. The
+  # proxy refuses to start otherwise.
   uid: 1337
   # The ConfigMap that holds the proxy's configuration document, and the path
   # the proxy reads it from. Only the proxy mounts it.
@@ -44,7 +45,7 @@ netsetup:
     - --ipv6=auto
 
 agent:
-  # The agent's uid. It must differ from proxy.uid.
+  # The agent's uid. Rendering fails if it equals proxy.uid.
   uid: 1000
 
 rbac:

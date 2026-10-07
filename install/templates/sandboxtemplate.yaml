@@ -72,7 +72,7 @@ spec:
           args:
             - --config={{ .Values.proxy.configPath }}
           securityContext:
-            runAsUser: {{ .Values.proxy.uid }}
+            runAsUser: {{ required "proxy.uid is required" .Values.proxy.uid }}
             runAsGroup: {{ .Values.proxy.uid }}
             runAsNonRoot: true
             allowPrivilegeEscalation: false
@@ -107,7 +107,11 @@ spec:
           image: {{ .Values.images.agent }}
           securityContext:
             # Without CAP_SETUID the agent cannot switch to the proxy's uid,
-            # which the redirect and the DROP exempt.
+            # which the redirect and the DROP exempt. Rendering fails if the
+            # agent is given that uid.
+            {{- if eq (int64 (required "agent.uid is required" .Values.agent.uid)) (int64 .Values.proxy.uid) }}
+            {{- fail "agent.uid must differ from proxy.uid: the redirect and the DROP exempt proxy.uid" }}
+            {{- end }}
             runAsNonRoot: true
             runAsUser: {{ .Values.agent.uid }}
             runAsGroup: {{ .Values.agent.uid }}

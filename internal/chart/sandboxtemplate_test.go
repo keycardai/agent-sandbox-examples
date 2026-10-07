@@ -2,6 +2,7 @@ package chart_test
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -173,16 +174,48 @@ func TestInstallSandboxTemplate(t *testing.T) {
 	}
 }
 
-// The token audience has no safe default. The chart must fail to render
-// without zoneURL.
-func TestInstallRequiresZoneURL(t *testing.T) {
+// TestInstallRefusesValues checks that the chart fails to render values that
+// would weaken the sandbox. The token audience has no safe default. An agent
+// with the proxy's uid is exempt from the redirect and the DROP. A container
+// without a uid runs as its image's USER, which can be the proxy's uid.
+func TestInstallRefusesValues(t *testing.T) {
 	t.Parallel()
 	dir, err := filepath.Abs("../../install")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = chart.Render(t.Context(), dir, release, "agents")
-	if err == nil || !strings.Contains(err.Error(), "zoneURL is required") {
-		t.Fatalf("err = %v, want a render failure naming zoneURL", err)
+	for _, tc := range []struct {
+		name   string
+		values string
+		want   string
+	}{
+		{"no zoneURL", "", "zoneURL is required"},
+		{
+			"agent uid is the proxy uid",
+			"zoneURL: https://acme.keycard.cloud\nagent:\n  uid: 1337\n",
+			"agent.uid must differ from proxy.uid",
+		},
+		{
+			"no agent uid",
+			"zoneURL: https://acme.keycard.cloud\nagent:\n  uid: null\n",
+			"agent.uid is required",
+		},
+		{
+			"no proxy uid",
+			"zoneURL: https://acme.keycard.cloud\nproxy:\n  uid: null\n",
+			"proxy.uid is required",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			values := filepath.Join(t.TempDir(), "values.yaml")
+			if err := os.WriteFile(values, []byte(tc.values), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := chart.Render(t.Context(), dir, release, "agents", values)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want a render failure containing %q", err, tc.want)
+			}
+		})
 	}
 }
