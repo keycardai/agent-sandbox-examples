@@ -174,6 +174,13 @@ func TestSandboxRefuses(t *testing.T) {
 // each field of the template, so they cover the sandbox chart's pod too.
 func TestSandboxPodMatchesInstall(t *testing.T) {
 	t.Parallel()
+	assertPodsMatch(t, render(t), renderSandbox(t))
+}
+
+// assertPodsMatch compares the install chart's SandboxTemplate pod with the
+// sandbox chart's Sandbox pod after the three per-sandbox substitutions.
+func assertPodsMatch(t *testing.T, install, sandbox map[string][]byte) {
+	t.Helper()
 	var tmpl struct {
 		metav1.TypeMeta   `json:",inline"`
 		metav1.ObjectMeta `json:"metadata"`
@@ -183,7 +190,7 @@ func TestSandboxPodMatchesInstall(t *testing.T) {
 			PodTemplate             map[string]any `json:"podTemplate"`
 		} `json:"spec"`
 	}
-	decode(t, render(t), "SandboxTemplate/"+release, &tmpl)
+	decode(t, install, "SandboxTemplate/"+release, &tmpl)
 	want := tmpl.Spec.PodTemplate
 	spec, ok := want["spec"].(map[string]any)
 	if !ok {
@@ -207,7 +214,7 @@ func TestSandboxPodMatchesInstall(t *testing.T) {
 	}
 
 	var box sandboxObject
-	decode(t, renderSandbox(t), "Sandbox/"+sandboxUserID, &box)
+	decode(t, sandbox, "Sandbox/"+sandboxUserID, &box)
 	if !reflect.DeepEqual(box.Spec.PodTemplate, want) {
 		t.Errorf("the sandbox pod template differs from the install chart's:\ngot  %s\nwant %s",
 			asJSON(box.Spec.PodTemplate), asJSON(want))

@@ -32,14 +32,15 @@ func TestControllerManifest(t *testing.T) {
 }
 
 // TestInstallScript runs install.sh under /bin/bash, which is bash 3.2 on
-// macOS. Decoy kubectl and helm come first on PATH and record any call. A fake
-// mise answers only against the repository root, as scripts/pinned asks it
-// to, and resolves kubectl and helm to fakes that append their arguments to
-// $CALLS. Before the install, the fake kubectl prints $EXISTING_<mode> as the
-// namespace's Pod Security label for that mode, or fails when $EXISTING is
-// FAIL. After the install, it prints $ENFORCE as the enforce label, or fails
-// when that is FAIL. Each fake fails when $FAIL names its call. The fake helm
-// records every HELM_ variable it sees.
+// macOS, with two values files that helm must get in order. Decoy kubectl
+// and helm come first on PATH and record any call. A fake mise answers only
+// against the repository root, as scripts/pinned asks it to, and resolves
+// kubectl and helm to fakes that append their arguments to $CALLS. Before the
+// install, the fake kubectl prints $EXISTING_<mode> as the namespace's Pod
+// Security label for that mode, or fails when $EXISTING is FAIL. After the
+// install, it prints $ENFORCE as the enforce label, or fails when that is
+// FAIL. Each fake fails when $FAIL names its call. The fake helm records every
+// HELM_ variable it sees.
 func TestInstallScript(t *testing.T) {
 	t.Parallel()
 	const cluster, privileged = "asp", "privileged"
@@ -97,10 +98,7 @@ exit 0
 			t.Fatal(err)
 		}
 	}
-	values := filepath.Join(t.TempDir(), "values.yaml")
-	if err := os.WriteFile(values, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	values, overlay := writeValues(t, ""), writeValues(t, "")
 
 	install := filepath.Join(root, "install")
 	kube := "kubectl --context " + cluster
@@ -115,7 +113,7 @@ exit 0
 		kube + " apply --server-side -f " + install + "/agent-sandbox/sandbox-with-extensions.yaml",
 		kube + " -n agent-sandbox-system rollout status deployment/agent-sandbox-controller --timeout=180s",
 		"helm upgrade --install keycard-sandbox " + install + " --kube-context " + cluster + " --namespace agents" +
-			" --create-namespace --take-ownership --values " + values + " --wait",
+			" --create-namespace --take-ownership --values " + values + " --values " + overlay + " --wait",
 		kube + ` get namespace agents -o jsonpath={.metadata.labels.pod-security\.kubernetes\.io/enforce}`,
 	}
 	upTo := func(n int) string { return strings.Join(calls[:n], "\n") + "\n" }
@@ -133,18 +131,6 @@ exit 0
 			enforce:   privileged,
 			wantOut:   "install.sh: installed keycard-sandbox into namespace agents on " + cluster,
 			wantCalls: all,
-		},
-		{
-			name:    "refuses localdev",
-			context: "localdev",
-			wantErr: true,
-			wantOut: "install.sh: 'localdev' is the Keycard localdev stack. install.sh never writes to it.",
-		},
-		{
-			name:    "refuses k3d-localdev",
-			context: "k3d-localdev",
-			wantErr: true,
-			wantOut: "install.sh: 'k3d-localdev' is the Keycard localdev stack. install.sh never writes to it.",
 		},
 		{
 			name:      "stops when the namespace is not privileged",
@@ -202,6 +188,12 @@ exit 0
 				` -o jsonpath={.metadata.labels.pod-security\.kubernetes\.io/enforce}` + "\n",
 		},
 		{
+			name:    "refuses a context that kubectl would read as a flag",
+			context: "--kubeconfig=/elsewhere",
+			wantErr: true,
+			wantOut: "install.sh: the context must not start with a dash (got '--kubeconfig=/elsewhere')",
+		},
+		{
 			name:      "stops before any change when the namespace audits another level",
 			context:   cluster,
 			env:       []string{"EXISTING_audit=restricted"},
@@ -244,7 +236,7 @@ exit 0
 			calls := filepath.Join(t.TempDir(), "calls")
 			//nolint:gosec // The arguments are fixed inputs to a script in this repository.
 			cmd := exec.CommandContext(t.Context(), "/bin/bash", filepath.Join(install, "install.sh"),
-				"--context", tc.context, "--values", values)
+				"--context", tc.context, "--values", values, "--values", overlay)
 			cmd.Env = append([]string{
 				"PATH=" + decoys + ":" + miseDir + ":/usr/bin:/bin",
 				"CALLS=" + calls, "ENFORCE=" + tc.enforce, "FAIL=" + tc.fail,

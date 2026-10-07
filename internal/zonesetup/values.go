@@ -383,6 +383,16 @@ func atLine(lineRE *regexp.Regexp, msg string) string {
 	return ""
 }
 
+// SetIssuerURL replaces IssuerURL with issuer, after the checks ParseValues
+// applies to issuer_url. key names the source of issuer in an error.
+func (v *Values) SetIssuerURL(key, issuer string) error {
+	if err := checkIssuer(key, issuer); err != nil {
+		return err
+	}
+	v.IssuerURL = issuer
+	return nil
+}
+
 func (v *Values) checkConnection() error {
 	if err := checkURL("management_api_url", v.ManagementAPIURL); err != nil {
 		return err

@@ -57,6 +57,10 @@ false for the agent's copy, which leaves out the identity section.
         "cluster_cidrs" (default (list) $root.Values.policy.clusterCIDRs)
         "deny_list_exceptions" (default (list) $root.Values.policy.denyListExceptions))
       "endpoints" (default (list) $root.Values.endpoints) -}}
+{{- with $root.Values.zoneTrust.configMap -}}
+  {{- $_ := set $doc "tls" (dict "upstream_ca_files" (list
+        (printf "%s/%s" (trimSuffix "/" $root.Values.zoneTrust.mountPath) $root.Values.zoneTrust.key))) -}}
+{{- end -}}
 {{- if .identity -}}
   {{- $_ := set $doc "identity" (dict
         "zone_url" (required "zoneURL is required: the zone that decides every token exchange" $root.Values.zoneURL)

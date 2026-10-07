@@ -11,9 +11,6 @@ import (
 	"testing"
 )
 
-// localdev is the Keycard stack's cluster, which the lane never touches.
-const localdev = "localdev"
-
 // TestBootstrapDryRun runs bootstrap.sh --dry-run, which reads its settings
 // file as data and validates its settings before it looks for Docker or any
 // other tool.
@@ -21,11 +18,11 @@ func TestBootstrapDryRun(t *testing.T) {
 	t.Parallel()
 
 	const (
-		host    = "https://asp.localdev.keycard.sh"
+		host    = "https://asp.example.com"
 		valid   = host + ":8443/oidc"
 		noHost  = "the issuer must name a host"
 		badName = "the cluster name must be lowercase letters, digits and dashes (got "
-		refused = "line 1 is not KEYCARD_LOCAL_CLUSTER=value or KEYCARD_LOCAL_ISSUER=value"
+		refused = "line 1 is not KEY=value for a key local.env.example lists"
 		// noFlag as a row's cluster passes no --cluster flag. An empty cluster
 		// passes --cluster asp.
 		noFlag = "-"
@@ -33,6 +30,10 @@ func TestBootstrapDryRun(t *testing.T) {
 	// The PATH holds only what the script runs before its tool check, plus
 	// touch, so a settings file that runs "touch MARKER" leaves a marker.
 	bin := linkTools(t, "basename", "bash", "dirname", "touch")
+	example, err := os.ReadFile("local.env.example")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name, cluster, issuer, file string
@@ -40,17 +41,16 @@ func TestBootstrapDryRun(t *testing.T) {
 		want                        []string
 		env                         string
 	}{
-		{"http", "", "http://asp.localdev.keycard.sh", "", true, []string{"the issuer must be https"}, ""},
+		{"http", "", "http://asp.example.com", "", true, []string{"the issuer must be https"}, ""},
 		{"no host", "", "https:///path", "", true, []string{noHost}, ""},
-		{"space in host", "", "https://asp .localdev.keycard.sh", "", true, []string{noHost}, ""},
-		{"userinfo", "", "https://user@asp.localdev.keycard.sh", "", true, []string{noHost}, ""},
-		{"unicode host", "", "https://asp.localdév.keycard.sh", "", true, []string{noHost}, ""},
+		{"space in host", "", "https://asp .example.com", "", true, []string{noHost}, ""},
+		{"userinfo", "", "https://user@asp.example.com", "", true, []string{noHost}, ""},
+		{"unicode host", "", "https://asp.exämple.com", "", true, []string{noHost}, ""},
 		{"port out of range", "", host + ":65536", "", true, []string{"the issuer port must be 1-65535"}, ""},
 		{"space in path", "", host + "/a b", "", true, []string{"the issuer must have an optional port and a path"}, ""},
 		{"query", "", valid + "?a=b", "", true, []string{"the issuer must have no query or fragment"}, ""},
 		{"fragment", "", valid + "#a", "", true, []string{"the issuer must have no query or fragment"}, ""},
 		{"trailing slash", "", valid + "/", "", true, []string{"the issuer must have no trailing slash"}, ""},
-		{"localdev cluster", localdev, valid, "", true, []string{"'localdev' is the Keycard localdev stack"}, ""},
 		{"option as cluster", "--verbose", valid, "", true, []string{badName + "'--verbose')"}, ""},
 		{
 			"quoted in file",
@@ -64,6 +64,9 @@ func TestBootstrapDryRun(t *testing.T) {
 		{"cluster over 32 characters", strings.Repeat("a", 33), valid, "", true, []string{badName}, ""},
 		{"file assigns a script variable", "", valid, "cluster=other\n", true, []string{refused}, ""},
 		{"file runs a command", "", valid, "touch MARKER\n", true, []string{refused}, ""},
+		{"example file", noFlag, valid, string(example), false, []string{
+			"k3d\ncluster\ncreate\nkeycard-sandbox-local\n",
+		}, ""},
 		{"valid", "", valid, "# comment\n\nKEYCARD_LOCAL_CLUSTER=other\n", false, []string{
 			"k3d\ncluster\ncreate\nasp\n--image\nrancher/k3s:v1.36.4-k3s1\n",
 			"--k3s-arg\n--kube-apiserver-arg=service-account-issuer=" + valid + "@server:*\n",
@@ -110,7 +113,7 @@ func TestBootstrapNeedsMise(t *testing.T) {
 	}
 	//nolint:gosec // The arguments are fixed inputs to a script in this repository.
 	cmd := exec.CommandContext(t.Context(), filepath.Join(bin, "bash"), "bootstrap.sh",
-		"--env", env, "--cluster", "asp", "--issuer", "https://asp.localdev.keycard.sh")
+		"--env", env, "--cluster", "asp", "--issuer", "https://asp.example.com")
 	cmd.Env = []string{"PATH=" + bin}
 
 	out, err := cmd.CombinedOutput()

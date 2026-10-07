@@ -45,6 +45,14 @@ renders the whole pod.
 The tests in `internal/chart` render both charts and check that the two pod
 specs differ only in the ServiceAccount and the two ConfigMap names.
 
+## A zone that is not on the internet
+
+Give `zoneTrust` and `hostAliases` the values the install chart has.
+A non-empty `zoneTrust.configMap` mounts the root certificate on the proxy and
+writes its path into `tls.upstream_ca_files` in both documents. The proxy
+refuses to dial a zone address on its deny list, so a private zone address
+also goes in `policy.denyListExceptions`.
+
 ## Checking the configuration document
 
 `egress-proxy` does not have a subcommand that validates a document. Running

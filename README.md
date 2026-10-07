@@ -9,7 +9,9 @@ The pinned tools install with [mise](https://mise.jdx.dev):
 
     mise install
 
-The local lane also needs Docker, from OrbStack or Docker Desktop.
+The scripts under `local/` run the sandbox on a local k3d cluster against a
+Keycard zone. They also need Docker, from OrbStack or Docker Desktop.
+`docs/local.md` describes how to run them.
 
 Run every gate CI runs:
 

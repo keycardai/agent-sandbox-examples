@@ -5,8 +5,10 @@ min_version = "2026.9.7"
 use_versions_host_track = false
 
 [tools]
+cloudflared = "2026.10.0"
 go = "1.27.1"
 helm = "4.3.0"
 jq = "1.8.2"
 k3d = "5.9.0"
 kubectl = "1.37.1"
+yq = "4.54.1"
