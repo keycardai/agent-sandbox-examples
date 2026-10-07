@@ -74,6 +74,7 @@ netsetup:
   args:
     - --proxy-uid=1337
     - --redirect-port=1015
+    - --dns-port=53
     - --capture-ports=80,443
     - --ipv6=auto
     - --receipt=/run/egress/netsetup/netsetup.json

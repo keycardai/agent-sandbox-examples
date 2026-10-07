@@ -50,10 +50,10 @@ spec:
         seccompProfile:
           type: RuntimeDefault
         # The lowest port a process without CAP_NET_BIND_SERVICE may bind.
-        # Keep it above proxy.redirectPort so only the proxy can bind the
-        # redirect port. The pod sets it because a node may not use the
-        # kernel default: containerd sets it to 0. The proxy refuses to start
-        # when it is at or below the redirect port.
+        # Keep it above proxy.redirectPort and the resolver port, 53, so only
+        # the proxy can bind either port. The pod sets it because a node may
+        # not use the kernel default: containerd sets it to 0. The proxy
+        # refuses to start when it is at or below the higher of the two.
         sysctls:
           - name: net.ipv4.ip_unprivileged_port_start
             value: {{ .Values.proxy.unprivilegedPortStart | quote }}
@@ -107,8 +107,8 @@ spec:
               # NEVER remove NET_BIND_SERVICE. The binary has the file
               # capability cap_net_bind_service=+ep, and the kernel refuses to
               # exec it when the capability is not in the bounding set. The
-              # proxy also needs it to bind the redirect port, which is below
-              # 1024.
+              # proxy also needs it to bind the redirect port and the resolver
+              # port, which are both below 1024.
               add: ["NET_BIND_SERVICE"]
           # Kubernetes starts the agent after this probe first passes, so the
           # proxy is already listening when the agent starts.

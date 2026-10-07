@@ -2,11 +2,13 @@ package chart_test
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"net/url"
 	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -38,9 +40,11 @@ type sandboxID struct {
 	ID string `json:"id"`
 }
 
-// listenDoc is the frontend the capture redirects to.
+// listenDoc holds the listeners the capture redirects to: the transparent
+// frontend and the resolver.
 type listenDoc struct {
-	TransparentPort int `json:"transparent_port"`
+	TransparentPort int    `json:"transparent_port"`
+	DNS             string `json:"dns"`
 }
 
 type identity struct {
@@ -182,14 +186,33 @@ func (id identity) clientAuthProblems() []string {
 	return found
 }
 
-// problems requires listen.transparent_port. The proxy accepts 0 and then
-// does not run a transparent frontend. A sandbox pod always captures traffic,
-// so the chart must set the port.
+// problems requires listen.transparent_port and listen.dns. The proxy
+// accepts a document without them and then does not run a transparent
+// frontend or a resolver. A sandbox pod always captures traffic, so the
+// chart must set both.
 func (l listenDoc) problems() []string {
+	var found []string
 	if l.TransparentPort < 1 || l.TransparentPort > maxPort {
-		return []string{fmt.Sprintf("listen.transparent_port is %d, outside 1-%d", l.TransparentPort, maxPort)}
+		found = append(found, fmt.Sprintf("listen.transparent_port is %d, outside 1-%d", l.TransparentPort, maxPort))
 	}
-	return nil
+	if l.dnsPort() == 0 {
+		found = append(found, fmt.Sprintf("listen.dns %q is not host:port with a port in 1-%d", l.DNS, maxPort))
+	}
+	return found
+}
+
+// dnsPort returns the port of listen.dns. It returns 0 when listen.dns does
+// not have a port in 1-maxPort.
+func (l listenDoc) dnsPort() int {
+	_, text, err := net.SplitHostPort(l.DNS)
+	if err != nil {
+		return 0
+	}
+	port, err := strconv.Atoi(text)
+	if err != nil || port < 1 || port > maxPort {
+		return 0
+	}
+	return port
 }
 
 func (p policyDoc) problems() []string {
@@ -364,6 +387,7 @@ identity:
     user: igmua2g0
 listen:
   transparent_port: 1015
+  dns: ":53"
 policy:
   cluster_cidrs: ["10.0.0.0/16"]
   deny_list_exceptions: []
@@ -405,8 +429,18 @@ func TestDocumentMirrorRefuses(t *testing.T) {
 		},
 		{
 			"no transparent listener",
-			strings.Replace(validDocument, "listen:\n  transparent_port: 1015\n", "", 1),
+			strings.Replace(validDocument, "  transparent_port: 1015\n", "", 1),
 			"listen.transparent_port is 0, outside 1-65535",
+		},
+		{
+			"no resolver",
+			strings.Replace(validDocument, "  dns: \":53\"\n", "", 1),
+			`listen.dns "" is not host:port with a port in 1-65535`,
+		},
+		{
+			"resolver without a port",
+			strings.Replace(validDocument, `dns: ":53"`, `dns: "127.0.0.1"`, 1),
+			`listen.dns "127.0.0.1" is not host:port`,
 		},
 		{
 			"exception uncovering the metadata address",
@@ -487,8 +521,8 @@ func TestDocumentMirrorRefuses(t *testing.T) {
 }
 
 // TestDocumentMirrorRefusesUnknownKey checks that a key the proxy does not
-// read is an error. The copy reads one key of listen, so an unknown key
-// inside listen is a separate case.
+// read is an error. The copy reads only some keys of listen, so an unknown
+// key inside listen is a separate case.
 func TestDocumentMirrorRefusesUnknownKey(t *testing.T) {
 	t.Parallel()
 	cases := []struct{ name, doc string }{

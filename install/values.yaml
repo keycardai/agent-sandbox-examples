@@ -43,10 +43,10 @@ proxy:
   # --redirect-port in netsetup.args. It is below 1024, so only the proxy,
   # which holds NET_BIND_SERVICE, can bind it.
   redirectPort: 1015
-  # net.ipv4.ip_unprivileged_port_start on the pod. Keep it above
-  # redirectPort. It is on the kubelet's safe sysctl list
-  # (kubernetes/pkg/kubelet/sysctl/safe_sysctls.go), so it does not need
-  # node configuration.
+  # net.ipv4.ip_unprivileged_port_start on the pod. Keep it above the higher
+  # of redirectPort and the resolver port, 53. It is on the kubelet's safe
+  # sysctl list (kubernetes/pkg/kubelet/sysctl/safe_sysctls.go), so it does
+  # not need node configuration.
   unprivilegedPortStart: 1024
   # The ConfigMap that holds the proxy's configuration document, and the path
   # the proxy reads it from. Only the proxy mounts it, because it holds the
@@ -78,10 +78,12 @@ proxy:
 
 netsetup:
   # Arguments of the egress-netsetup init container. It redirects tcp/80 and
-  # tcp/443 from every uid except the proxy's to the redirect port, and DNS
-  # to the proxy's resolver. It drops all other traffic except the proxy's,
-  # loopback and established connections. It writes a receipt of the rules
-  # it programmed to --receipt, on the volume the proxy reads it from.
+  # tcp/443 from every uid except the proxy's to the redirect port, and
+  # udp/53 and tcp/53 to the proxy's resolver on --dns-port. The sandbox
+  # chart sets listen.dns to :53, so --dns-port must be 53. It drops all
+  # other traffic except the proxy's, loopback and established connections.
+  # It writes a receipt of the rules it programmed to --receipt, on the
+  # volume the proxy reads it from.
   #
   # Set every argument. egress-netsetup reads flags only, not environment
   # variables, and the netsetup image is pinned separately from the proxy
@@ -90,6 +92,7 @@ netsetup:
   args:
     - --proxy-uid=1337
     - --redirect-port=1015
+    - --dns-port=53
     - --capture-ports=80,443
     - --ipv6=auto
     - --receipt=/run/egress/netsetup/netsetup.json

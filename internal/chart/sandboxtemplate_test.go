@@ -89,8 +89,8 @@ func TestInstallSandboxTemplate(t *testing.T) {
 			Name:  "egress-netsetup",
 			Image: "ghcr.io/keycardai/egress-netsetup:0.1.0",
 			Args: []string{
-				"--proxy-uid=1337", "--redirect-port=1015", "--capture-ports=80,443", "--ipv6=auto",
-				"--receipt=/run/egress/netsetup/netsetup.json",
+				"--proxy-uid=1337", "--redirect-port=1015", "--dns-port=53", "--capture-ports=80,443",
+				"--ipv6=auto", "--receipt=/run/egress/netsetup/netsetup.json",
 			},
 			SecurityContext: &corev1.SecurityContext{
 				RunAsUser:                new(int64(0)),

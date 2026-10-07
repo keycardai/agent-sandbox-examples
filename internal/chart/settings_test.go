@@ -65,6 +65,7 @@ type settingsNetsetup struct {
 	ProxyUID     int64  `json:"proxy_uid"`
 	RedirectPort int    `json:"redirect_port"`
 	CapturePorts []int  `json:"capture_ports"`
+	DNSPort      int    `json:"dns_port"`
 	ReceiptPath  string `json:"receipt_path"`
 }
 
@@ -173,6 +174,7 @@ func assertNetsetupArgs(t *testing.T, report settings, spec corev1.PodSpec) {
 	cases := []struct{ flag, want string }{
 		{"--proxy-uid=", strconv.FormatInt(report.Netsetup.ProxyUID, 10)},
 		{"--redirect-port=", strconv.Itoa(report.Netsetup.RedirectPort)},
+		{"--dns-port=", strconv.Itoa(report.Netsetup.DNSPort)},
 		{"--capture-ports=", strings.Join(ports, ",")},
 		{"--receipt=", report.Netsetup.ReceiptPath},
 	}
@@ -198,8 +200,9 @@ func assertProxyUID(t *testing.T, report settings, spec corev1.PodSpec) {
 }
 
 // assertRedirectPortIsPrivileged checks that the pod sets the sysctl above
-// the redirect port. The agent does not hold CAP_NET_BIND_SERVICE, so it
-// cannot bind the redirect port while the sidecar restarts.
+// the higher of the redirect port and the DNS port. The agent does not hold
+// CAP_NET_BIND_SERVICE, so it cannot bind either port while the sidecar
+// restarts.
 func assertRedirectPortIsPrivileged(t *testing.T, report settings, spec corev1.PodSpec) {
 	t.Helper()
 	if spec.SecurityContext == nil {
@@ -213,8 +216,9 @@ func assertRedirectPortIsPrivileged(t *testing.T, report settings, spec corev1.P
 	if err != nil {
 		t.Fatalf("%s is %q, which is not a port number", portStartSysctl, spec.SecurityContext.Sysctls[i].Value)
 	}
-	if start <= report.Netsetup.RedirectPort {
-		t.Errorf("%s is %d, want it above redirect_port %d", portStartSysctl, start, report.Netsetup.RedirectPort)
+	if highest := max(report.Netsetup.RedirectPort, report.Netsetup.DNSPort); start <= highest {
+		t.Errorf("%s is %d, want it above %d, the higher of redirect_port %d and dns_port %d",
+			portStartSysctl, start, highest, report.Netsetup.RedirectPort, report.Netsetup.DNSPort)
 	}
 }
 
@@ -317,9 +321,9 @@ func assertProxyTakesDefaults(t *testing.T, report settings, proxy corev1.Contai
 	}
 }
 
-// TestSettingsTransparentPort checks that listen.transparent_port in the
-// document is the port the capture redirects to. Only the sandbox chart
-// renders a document.
+// TestSettingsTransparentPort checks that listen.transparent_port and the
+// port of listen.dns in the document are the ports the capture redirects
+// to. Only the sandbox chart renders a document.
 func TestSettingsTransparentPort(t *testing.T) {
 	t.Parallel()
 	report := readSettings(t)
@@ -337,6 +341,10 @@ func TestSettingsTransparentPort(t *testing.T) {
 			if doc.Listen.TransparentPort != report.Netsetup.RedirectPort {
 				t.Errorf("listen.transparent_port is %d, want redirect_port %d",
 					doc.Listen.TransparentPort, report.Netsetup.RedirectPort)
+			}
+			if doc.Listen.dnsPort() != report.Netsetup.DNSPort {
+				t.Errorf("listen.dns %q has port %d, want dns_port %d",
+					doc.Listen.DNS, doc.Listen.dnsPort(), report.Netsetup.DNSPort)
 			}
 		})
 	}
