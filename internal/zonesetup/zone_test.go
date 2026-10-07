@@ -819,7 +819,7 @@ func TestApplication(t *testing.T) {
 		},
 		{
 			name: "none is created with implicit consent", apps: []fakeApp{other}, wantID: "application-new-1",
-			wantPost: `{"identifier":"urn:keycard:sandbox-proxy:agents","name":"Keycard egress proxy",` +
+			wantPost: `{"identifier":"urn:keycard:sandbox-proxy:agents","name":"Sandbox Egress Proxy",` +
 				`"description":"Egress proxy sidecar that mints credentials for sandboxes in namespace agents",` +
 				`"consent":"implicit"}`,
 		},

@@ -43,7 +43,7 @@ func TestUserPolicies(t *testing.T) {
 			want: []policy{
 				{
 					name: "Sandbox impersonation: ada@example.com",
-					description: "Permits Keycard egress proxy to act on behalf of ada@example.com on resources " +
+					description: "Permits Sandbox Egress Proxy to act on behalf of ada@example.com on resources " +
 						"listed in its dependencies, for requests from their sandbox",
 					cedar: `@id("sandbox-impersonation-user-1")
 permit (
@@ -62,7 +62,7 @@ permit (
 				},
 				{
 					name:        "Sandbox access: ada@example.com",
-					description: "Permits ada@example.com's sandbox to act on their behalf through Keycard egress proxy",
+					description: "Permits ada@example.com's sandbox to act on their behalf through Sandbox Egress Proxy",
 					cedar: `@id("sandbox-access-user-1")
 permit (
   principal is Keycard::User,
@@ -82,7 +82,7 @@ permit (
 			want: []policy{
 				{
 					name: "Sandbox (team-b) impersonation: ada@example.com",
-					description: "Permits Keycard egress proxy to act on behalf of ada@example.com on resources " +
+					description: "Permits Sandbox Egress Proxy to act on behalf of ada@example.com on resources " +
 						"listed in its dependencies, for requests from their sandbox",
 					cedar: `@id("sandbox-team-b-impersonation-user-1")
 permit (
@@ -101,7 +101,7 @@ permit (
 				},
 				{
 					name:        "Sandbox (team-b) access: ada@example.com",
-					description: "Permits ada@example.com's sandbox to act on their behalf through Keycard egress proxy",
+					description: "Permits ada@example.com's sandbox to act on their behalf through Sandbox Egress Proxy",
 					cedar: `@id("sandbox-team-b-access-user-1")
 permit (
   principal is Keycard::User,

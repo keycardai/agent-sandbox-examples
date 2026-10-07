@@ -158,7 +158,7 @@ func (s *Session) FindApplication(ctx context.Context, identifier string) (keyca
 
 // ApplicationName is the name CreateApplication gives the egress proxy
 // Application.
-const ApplicationName = "Keycard egress proxy"
+const ApplicationName = "Sandbox Egress Proxy"
 
 // CreateApplication creates the egress proxy Application for the sandboxes in
 // namespace with implicit consent, and returns its id.
