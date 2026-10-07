@@ -2,11 +2,13 @@ package chart_test
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"net/url"
 	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -19,14 +21,16 @@ import (
 // sandbox/README.md says why it is a copy.
 //
 // The decode is strict. A key the proxy does not read is an error. The copy
-// leaves out the sections the chart does not set: listen, ca, limits,
-// credentials and netsetup. Add a section here when the chart sets it.
+// leaves out the sections the chart does not set (ca, limits, credentials and
+// netsetup) and every key of listen except transparent_port. Add a section or
+// key here when the chart sets it.
 
 // document is the proxy's configuration document.
 type document struct {
 	Version   int        `json:"version"`
 	Sandbox   sandboxID  `json:"sandbox"`
 	Identity  *identity  `json:"identity,omitempty"`
+	Listen    listenDoc  `json:"listen"`
 	TLS       *tlsDoc    `json:"tls,omitempty"`
 	Policy    policyDoc  `json:"policy"`
 	Endpoints []endpoint `json:"endpoints"`
@@ -34,6 +38,13 @@ type document struct {
 
 type sandboxID struct {
 	ID string `json:"id"`
+}
+
+// listenDoc holds the listeners the capture redirects to: the transparent
+// frontend and the resolver.
+type listenDoc struct {
+	TransparentPort int    `json:"transparent_port"`
+	DNS             string `json:"dns"`
 }
 
 type identity struct {
@@ -56,11 +67,17 @@ type policyDoc struct {
 }
 
 type endpoint struct {
-	Host       string      `json:"host"`
-	Port       int         `json:"port"`
-	PathPrefix string      `json:"path_prefix"`
-	Resource   string      `json:"resource"`
+	URL        string      `json:"url"`
 	Credential *credential `json:"credential,omitempty"`
+}
+
+// endpointURL holds the parts of an endpoint URL. The host is lowercase and
+// has no trailing dot. The path is as written.
+type endpointURL struct {
+	scheme string
+	host   string
+	port   int
+	path   string
 }
 
 type credential struct {
@@ -84,7 +101,17 @@ const (
 	maxDNSName      = 253
 	maxDNSLabel     = 63
 	maxPort         = 65535
-	defaultPort     = 443
+	httpsPort       = 443
+	httpPort        = 80
+
+	// The reasons the proxy refuses an endpoint URL before it reads its parts.
+	refusedScheme = "must be an absolute http or https URL"
+	refusedExtras = "must not have userinfo, a query or a fragment"
+	refusedPort   = "must name a port between 1 and 65535"
+
+	// URLs of the demo endpoints in sandbox/values.example.yaml.
+	githubAPIURL  = "https://api.github.com"
+	openRouterURL = "https://openrouter.ai/api/v1"
 )
 
 var hostLabelRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
@@ -113,6 +140,7 @@ func validateDocument(doc document) []string {
 	if doc.Identity != nil {
 		found = append(found, doc.Identity.problems()...)
 	}
+	found = append(found, doc.Listen.problems()...)
 	if doc.TLS != nil {
 		for i, file := range doc.TLS.UpstreamCAFiles {
 			if !strings.HasPrefix(file, "/") {
@@ -121,13 +149,26 @@ func validateDocument(doc document) []string {
 		}
 	}
 	found = append(found, doc.Policy.problems()...)
+	for i, entry := range doc.Endpoints {
+		found = append(found, entry.problems(i)...)
+	}
+	return append(found, repeatProblems(doc.Endpoints)...)
+}
+
+// repeatProblems reports each endpoint with the same host, port and path as
+// an earlier one.
+func repeatProblems(endpoints []endpoint) []string {
+	var found []string
 	seen := map[string]int{}
-	for i, e := range doc.Endpoints {
-		found = append(found, e.problems(i)...)
-		key := strings.ToLower(e.Host) + e.prefix()
+	for i, entry := range endpoints {
+		parsed, problem := parseEndpointURL(entry.URL)
+		if problem != "" {
+			continue
+		}
+		key := net.JoinHostPort(parsed.host, strconv.Itoa(parsed.port)) + parsed.path
 		if previous, repeat := seen[key]; repeat {
-			found = append(found, fmt.Sprintf("endpoints[%d] repeats the host and path prefix of endpoints[%d]",
-				i, previous))
+			found = append(found, fmt.Sprintf("endpoints[%d]: url %q names the same endpoint as endpoints[%d]",
+				i, entry.URL, previous))
 		}
 		seen[key] = i
 	}
@@ -170,6 +211,35 @@ func (id identity) clientAuthProblems() []string {
 	return found
 }
 
+// problems requires listen.transparent_port and listen.dns. The proxy
+// accepts a document without them and then does not run a transparent
+// frontend or a resolver. A sandbox pod always captures traffic, so the
+// chart must set both.
+func (l listenDoc) problems() []string {
+	var found []string
+	if l.TransparentPort < 1 || l.TransparentPort > maxPort {
+		found = append(found, fmt.Sprintf("listen.transparent_port is %d, outside 1-%d", l.TransparentPort, maxPort))
+	}
+	if l.dnsPort() == 0 {
+		found = append(found, fmt.Sprintf("listen.dns %q is not host:port with a port in 1-%d", l.DNS, maxPort))
+	}
+	return found
+}
+
+// dnsPort returns the port of listen.dns. It returns 0 when listen.dns does
+// not have a port in 1-maxPort.
+func (l listenDoc) dnsPort() int {
+	_, text, err := net.SplitHostPort(l.DNS)
+	if err != nil {
+		return 0
+	}
+	port, err := strconv.Atoi(text)
+	if err != nil || port < 1 || port > maxPort {
+		return 0
+	}
+	return port
+}
+
 func (p policyDoc) problems() []string {
 	var found []string
 	for i, raw := range p.ClusterCIDRs {
@@ -190,69 +260,101 @@ func (p policyDoc) problems() []string {
 	return found
 }
 
-// prefix returns the path prefix the proxy matches, or "/" when it is unset.
-func (e endpoint) prefix() string {
-	if e.PathPrefix == "" {
-		return "/"
+// parseEndpointURL reads an endpoint URL as the proxy does. It returns the
+// reason the proxy refuses the URL, or an empty string.
+func parseEndpointURL(raw string) (endpointURL, string) {
+	raw = strings.TrimSpace(raw)
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return endpointURL{}, refusedScheme
 	}
-	return e.PathPrefix
+	if problem := endpointURLShape(parsed); problem != "" {
+		return endpointURL{}, problem
+	}
+	port := schemePort(parsed.Scheme)
+	if text := parsed.Port(); text != "" {
+		port, err = strconv.Atoi(text)
+		if err != nil || port < 1 || port > maxPort {
+			return endpointURL{}, refusedPort
+		}
+	}
+	// The path is everything from the first "/" after "scheme://".
+	rest := raw[len(parsed.Scheme)+len("://"):]
+	urlPath := "/"
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		urlPath = rest[i:]
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	return endpointURL{scheme: parsed.Scheme, host: host, port: port, path: urlPath}, ""
 }
 
-// resource returns the exchange's resource parameter, or https://<host>/
-// when it is unset.
-func (e endpoint) resource() string {
-	if e.Resource == "" {
-		return "https://" + strings.ToLower(e.Host) + "/"
+// endpointURLShape returns refusedScheme for a URL that is not absolute http
+// or https, and refusedExtras for a URL with userinfo, a query or a fragment.
+func endpointURLShape(parsed *url.URL) string {
+	switch {
+	case schemePort(parsed.Scheme) == 0 || parsed.Host == "" || parsed.Opaque != "":
+		return refusedScheme
+	case parsed.User != nil || parsed.ForceQuery || parsed.RawQuery != "" || parsed.Fragment != "":
+		return refusedExtras
+	default:
+		return ""
 	}
-	return e.Resource
 }
 
-// port returns the endpoint's port, or the HTTPS port when it is unset.
-func (e endpoint) port() int {
-	if e.Port == 0 {
-		return defaultPort
+// schemePort returns the default port of http or https. It returns 0 for
+// any other scheme.
+func schemePort(scheme string) int {
+	switch scheme {
+	case "https":
+		return httpsPort
+	case "http":
+		return httpPort
+	default:
+		return 0
 	}
-	return e.Port
+}
+
+// resource returns the canonical URL that the token exchange sends as its
+// resource parameter. It leaves out the port when the port is the scheme's
+// default, and leaves out a root path. Any other path stays as written.
+func (u endpointURL) resource() string {
+	authority := u.host
+	if u.port != schemePort(u.scheme) {
+		authority = net.JoinHostPort(u.host, strconv.Itoa(u.port))
+	}
+	urlPath := u.path
+	if urlPath == "/" {
+		urlPath = ""
+	}
+	return u.scheme + "://" + authority + urlPath
 }
 
 func (e endpoint) problems(i int) []string {
-	found := e.hostProblems(i)
-	if port := e.port(); port < 1 || port > maxPort {
-		found = append(found, fmt.Sprintf("endpoints[%d]: port %d is out of range", i, port))
+	parsed, problem := parseEndpointURL(e.URL)
+	if problem != "" {
+		return []string{fmt.Sprintf("endpoints[%d]: url %q %s", i, e.URL, problem)}
 	}
-	if prefix := e.prefix(); !strings.HasPrefix(prefix, "/") || strings.ContainsAny(prefix, "?#") ||
-		!shortestForm(prefix) {
+	found := hostProblems(i, parsed.host)
+	if !normalizedPrefix(parsed.path) {
 		found = append(found, fmt.Sprintf(
-			"endpoints[%d]: path_prefix %q must be an absolute path in its shortest form", i, prefix,
+			"endpoints[%d]: url path %q must be an absolute path in its shortest form", i, parsed.path,
 		))
 	}
-	found = append(found, e.resourceProblems(i)...)
 	if e.Credential != nil {
+		if parsed.scheme == "http" {
+			found = append(found, fmt.Sprintf("endpoints[%d]: url %q is http and cannot have a credential", i, e.URL))
+		}
 		found = append(found, e.Credential.Placement.problems(i)...)
 	}
 	return found
 }
 
-func (e endpoint) resourceProblems(i int) []string {
-	resource, err := url.Parse(e.resource())
-	switch {
-	case err != nil || resource.Scheme != "https" || resource.Host == "":
-		return []string{fmt.Sprintf("endpoints[%d]: resource %q must be an absolute https URL", i, e.resource())}
-	case resource.User != nil || resource.RawQuery != "" || resource.Fragment != "":
-		return []string{fmt.Sprintf(
-			"endpoints[%d]: resource %q has userinfo, a query or a fragment", i, e.resource(),
-		)}
-	}
-	return nil
-}
-
 // hostProblems checks that the name is valid as a TLS SNI host name: ASCII
 // labels, and a last label that is not all digits. The digit rule refuses an
 // address written as 0177.0.0.1.
-func (e endpoint) hostProblems(i int) []string {
-	host := strings.ToLower(e.Host)
+func hostProblems(i int, host string) []string {
 	if host == "" {
-		return []string{fmt.Sprintf("endpoints[%d]: host is empty", i)}
+		return []string{fmt.Sprintf("endpoints[%d]: url does not have a host", i)}
 	}
 	if _, err := netip.ParseAddr(host); err == nil {
 		return []string{fmt.Sprintf("endpoints[%d]: host %q is an IP literal", i, host)}
@@ -314,9 +416,17 @@ func (p placement) headerProblems(i int) []string {
 	return found
 }
 
-// shortestForm reports whether path.Clean leaves the prefix unchanged, apart
-// from one trailing slash.
-func shortestForm(prefix string) bool {
+// normalizedPrefix reports whether the path is absolute, has no query or
+// fragment, is in the escaped form a client sends, and is unchanged by
+// path.Clean apart from one trailing slash.
+func normalizedPrefix(prefix string) bool {
+	if !strings.HasPrefix(prefix, "/") || strings.ContainsAny(prefix, "?#") {
+		return false
+	}
+	parsed, err := url.Parse(prefix)
+	if err != nil || parsed.EscapedPath() != prefix {
+		return false
+	}
 	cleaned := path.Clean(prefix)
 	return cleaned == prefix || cleaned+"/" == prefix
 }
@@ -332,12 +442,14 @@ identity:
   workload_token_file: /var/run/secrets/keycard/token
   impersonate:
     user: igmua2g0
+listen:
+  transparent_port: 1015
+  dns: ":53"
 policy:
   cluster_cidrs: ["10.0.0.0/16"]
   deny_list_exceptions: []
 endpoints:
-  - host: api.github.com
-    resource: https://api.github.com/
+  - url: https://api.github.com
     credential:
       placement: {kind: header, name: Authorization, template: "Bearer {credential}"}
 `
@@ -371,29 +483,74 @@ func TestDocumentMirrorRefuses(t *testing.T) {
 			"must be an absolute path",
 		},
 		{
+			"no transparent listener",
+			strings.Replace(validDocument, "  transparent_port: 1015\n", "", 1),
+			"listen.transparent_port is 0, outside 1-65535",
+		},
+		{
+			"no resolver",
+			strings.Replace(validDocument, "  dns: \":53\"\n", "", 1),
+			`listen.dns "" is not host:port with a port in 1-65535`,
+		},
+		{
+			"resolver without a port",
+			strings.Replace(validDocument, `dns: ":53"`, `dns: "127.0.0.1"`, 1),
+			`listen.dns "127.0.0.1" is not host:port`,
+		},
+		{
 			"exception uncovering the metadata address",
 			strings.Replace(validDocument, "deny_list_exceptions: []", `deny_list_exceptions: ["169.254.0.0/16"]`, 1),
 			"covers 169.254.169.254",
 		},
 		{
+			"url is not http or https",
+			strings.Replace(validDocument, "url: https://api.github.com", "url: ftp://api.github.com", 1),
+			refusedScheme,
+		},
+		{
+			"url has userinfo",
+			strings.Replace(validDocument, "url: https://api.github.com", "url: https://git@api.github.com", 1),
+			refusedExtras,
+		},
+		{
+			"url has a query",
+			strings.Replace(validDocument, "url: https://api.github.com", "url: https://api.github.com/?a=1", 1),
+			refusedExtras,
+		},
+		{
+			"url has a fragment",
+			strings.Replace(validDocument, "url: https://api.github.com", "url: https://api.github.com/#a", 1),
+			refusedExtras,
+		},
+		{
+			"port out of range",
+			strings.Replace(validDocument, "url: https://api.github.com", "url: https://api.github.com:65536", 1),
+			refusedPort,
+		},
+		{
+			"http endpoint with a credential",
+			strings.Replace(validDocument, "url: https://api.github.com", "url: http://api.github.com", 1),
+			"is http and cannot have a credential",
+		},
+		{
 			"host is an IP literal",
-			strings.Replace(validDocument, "host: api.github.com", "host: 10.0.0.1", 1),
+			strings.Replace(validDocument, "url: https://api.github.com", "url: https://10.0.0.1", 1),
 			"is an IP literal",
 		},
 		{
 			"host ends in an all-digit label",
-			strings.Replace(validDocument, "host: api.github.com", `host: "2852039166"`, 1),
+			strings.Replace(validDocument, "url: https://api.github.com", "url: https://2852039166", 1),
 			"ends in an all-digit label",
 		},
 		{
-			"path prefix has dot segments",
-			strings.Replace(validDocument, "    resource:", "    path_prefix: /api/../secret\n    resource:", 1),
+			"path has dot segments",
+			strings.Replace(validDocument, "url: https://api.github.com", "url: https://api.github.com/api/../secret", 1),
 			"shortest form",
 		},
 		{
-			"resource has a query",
-			strings.Replace(validDocument, "resource: https://api.github.com/", "resource: https://api.github.com/?a=1", 1),
-			"userinfo, a query or a fragment",
+			"path holds a character a client escapes",
+			strings.Replace(validDocument, "url: https://api.github.com", `url: "https://api.github.com/a b"`, 1),
+			"shortest form",
 		},
 		{
 			"header template has nowhere for the credential",
@@ -421,10 +578,11 @@ func TestDocumentMirrorRefuses(t *testing.T) {
 			`tls.upstream_ca_files[0] "zone-ca.pem" must be an absolute path`,
 		},
 		{
-			"repeated host and prefix",
-			validDocument + "  - host: api.github.com\n",
-			"repeats the host and path prefix",
+			"repeated host, port and path",
+			validDocument + "  - url: https://API.github.com.:443/\n",
+			"names the same endpoint as endpoints[0]",
 		},
+		{"same host and path on another port", validDocument + "  - url: https://api.github.com:8443\n", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -444,12 +602,62 @@ func TestDocumentMirrorRefuses(t *testing.T) {
 }
 
 // TestDocumentMirrorRefusesUnknownKey checks that a key the proxy does not
-// read is an error.
+// read is an error. The copy reads only some keys of listen, so an unknown
+// key inside listen is a separate case.
 func TestDocumentMirrorRefusesUnknownKey(t *testing.T) {
 	t.Parallel()
-	var doc document
-	err := yaml.UnmarshalStrict([]byte(validDocument+"listen:\n  connect: 127.0.0.1:3128\n"), &doc)
-	if err == nil {
-		t.Fatal("a key outside the mirror was accepted")
+	endpoint := "  - url: https://api.github.com\n"
+	cases := []struct{ name, doc string }{
+		{"a section the copy does not read", validDocument + "ca:\n  out_dir: /shared-ca/out\n"},
+		{
+			"a key inside a section the copy reads",
+			strings.Replace(validDocument, "listen:\n", "listen:\n  connect: 127.0.0.1:3128\n", 1),
+		},
+		// The proxy reads an endpoint's host, port, path and resource from its
+		// url. It refuses each of them as a key.
+		{"endpoint host", strings.Replace(validDocument, endpoint, endpoint+"    host: api.github.com\n", 1)},
+		{"endpoint port", strings.Replace(validDocument, endpoint, endpoint+"    port: 443\n", 1)},
+		{"endpoint path_prefix", strings.Replace(validDocument, endpoint, endpoint+"    path_prefix: /\n", 1)},
+		{
+			"endpoint resource",
+			strings.Replace(validDocument, endpoint, endpoint+"    resource: https://api.github.com/\n", 1),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var doc document
+			if err := yaml.UnmarshalStrict([]byte(tc.doc), &doc); err == nil {
+				t.Fatal("a key outside the mirror was accepted")
+			}
+		})
+	}
+}
+
+// TestEndpointResource checks the canonical resource the copy computes from
+// an endpoint URL. The zone matches a Resource identifier against it as an
+// exact string.
+func TestEndpointResource(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ url, want string }{
+		{githubAPIURL + "/", githubAPIURL},
+		{"https://GitHub.com./", "https://github.com"},
+		{githubAPIURL + ":443", githubAPIURL},
+		{"https://example.com:80/", "https://example.com:80"},
+		{"http://example.com:80/", "http://example.com"},
+		{openRouterURL, openRouterURL},
+		{"https://registry.internal:5000/v2/", "https://registry.internal:5000/v2/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.url, func(t *testing.T) {
+			t.Parallel()
+			u, problem := parseEndpointURL(tc.url)
+			if problem != "" {
+				t.Fatalf("url %q is refused: %s", tc.url, problem)
+			}
+			if got := u.resource(); got != tc.want {
+				t.Errorf("resource = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

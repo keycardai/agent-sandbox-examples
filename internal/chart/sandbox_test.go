@@ -21,10 +21,8 @@ const (
 	sandboxUserEmail = "someone@example.com"
 	sandboxClientID  = "cred_01hzx"
 	proxyConfigMap   = sandboxUserID + "-proxy-config"
-	agentConfigMap   = sandboxUserID + "-agent-config"
-	// The pod volumes that read the two ConfigMaps.
+	// The pod volume that reads the proxy's ConfigMap.
 	egressConfig = "egress-config"
-	agentConfig  = "agent-config"
 )
 
 // sandboxObject is the part of an agents.x-k8s.io/v1beta1 Sandbox that the
@@ -83,7 +81,6 @@ func TestSandbox(t *testing.T) {
 	t.Parallel()
 	objects := renderSandbox(t)
 	want := map[string]bool{
-		"ConfigMap/" + agentConfigMap:     true,
 		"ConfigMap/" + proxyConfigMap:     true,
 		"Sandbox/" + sandboxUserID:        true,
 		"ServiceAccount/" + sandboxUserID: true,
@@ -170,7 +167,7 @@ func TestSandboxRefuses(t *testing.T) {
 
 // TestSandboxPodMatchesInstall checks that the sandbox chart renders the pod
 // of the install chart's SandboxTemplate, apart from the user's
-// ServiceAccount and the two ConfigMap names. The install chart's tests check
+// ServiceAccount and the ConfigMap name. The install chart's tests check
 // each field of the template, so they cover the sandbox chart's pod too.
 func TestSandboxPodMatchesInstall(t *testing.T) {
 	t.Parallel()
@@ -178,7 +175,7 @@ func TestSandboxPodMatchesInstall(t *testing.T) {
 }
 
 // assertPodsMatch compares the install chart's SandboxTemplate pod with the
-// sandbox chart's Sandbox pod after the three per-sandbox substitutions.
+// sandbox chart's Sandbox pod after the two per-sandbox substitutions.
 func assertPodsMatch(t *testing.T, install, sandbox map[string][]byte) {
 	t.Helper()
 	var tmpl struct {
@@ -197,20 +194,18 @@ func assertPodsMatch(t *testing.T, install, sandbox map[string][]byte) {
 		t.Fatalf("the install pod template has no spec: %v", want)
 	}
 	spec["serviceAccountName"] = sandboxUserID
-	perSandbox := map[string]string{egressConfig: proxyConfigMap, agentConfig: agentConfigMap}
 	rewired := 0
 	volumes, _ := spec["volumes"].([]any)
 	for _, raw := range volumes {
 		volume, _ := raw.(map[string]any)
-		volumeName, _ := volume["name"].(string)
 		source, isConfigMap := volume["configMap"].(map[string]any)
-		if name, wanted := perSandbox[volumeName]; isConfigMap && wanted {
-			source["name"] = name
+		if isConfigMap && volume["name"] == egressConfig {
+			source["name"] = proxyConfigMap
 			rewired++
 		}
 	}
-	if rewired != 2 {
-		t.Fatalf("rewired %d ConfigMap volumes in the install pod, want 2", rewired)
+	if rewired != 1 {
+		t.Fatalf("rewired %d ConfigMap volumes in the install pod, want 1", rewired)
 	}
 
 	var box sandboxObject
@@ -221,51 +216,52 @@ func assertPodsMatch(t *testing.T, install, sandbox map[string][]byte) {
 	}
 }
 
-// configDocument returns the document in a ConfigMap, under the file name in
-// the proxy's --config argument.
-func configDocument(t *testing.T, objects map[string][]byte, name string) string {
+// configDocument returns the proxy's document from its ConfigMap, under the
+// file name in the proxy's --config argument.
+func configDocument(t *testing.T, objects map[string][]byte) string {
 	t.Helper()
 	var configMap corev1.ConfigMap
-	decode(t, objects, "ConfigMap/"+name, &configMap)
+	decode(t, objects, "ConfigMap/"+proxyConfigMap, &configMap)
 	doc, ok := configMap.Data["config.yaml"]
 	if !ok {
-		t.Fatalf("ConfigMap %s has no config.yaml: %v", name, configMap.Data)
+		t.Fatalf("ConfigMap %s has no config.yaml: %v", proxyConfigMap, configMap.Data)
 	}
 	return doc
 }
 
-// TestSandboxDocumentValid checks both rendered documents against the copy of
+// TestSandboxDocumentValid checks the rendered document against the copy of
 // the proxy's rules in document_test.go.
 func TestSandboxDocumentValid(t *testing.T) {
 	t.Parallel()
-	objects := renderSandbox(t)
-	for _, name := range []string{proxyConfigMap, agentConfigMap} {
-		for _, problem := range validateDocument(parseDocument(t, configDocument(t, objects, name))) {
-			t.Errorf("%s: %s", name, problem)
-		}
+	doc := parseDocument(t, configDocument(t, renderSandbox(t)))
+	for _, problem := range validateDocument(doc) {
+		t.Error(problem)
 	}
 }
 
-// TestSandboxDocuments checks the proxy's document, and checks that the
-// agent's copy is the same document without the identity section.
-func TestSandboxDocuments(t *testing.T) {
+// TestSandboxDocument checks the proxy's document. listen.transparent_port
+// and the port of listen.dns must equal the --redirect-port and --dns-port
+// that TestInstallSandboxTemplate checks. The proxy refuses to start when
+// either pair differs.
+func TestSandboxDocument(t *testing.T) {
 	t.Parallel()
 	objects := renderSandbox(t)
-	proxy := parseDocument(t, configDocument(t, objects, proxyConfigMap))
-	hosts := make([]string, 0, len(proxy.Endpoints))
+	proxy := parseDocument(t, configDocument(t, objects))
+	urls := make([]string, 0, len(proxy.Endpoints))
 	for _, e := range proxy.Endpoints {
-		hosts = append(hosts, e.Host)
+		urls = append(urls, e.URL)
 	}
 	if want := []string{
-		"api.github.com", "github.com", "openrouter.ai", "pypi.org", "files.pythonhosted.org",
-	}; !reflect.DeepEqual(hosts, want) {
-		t.Errorf("endpoint hosts = %v, want %v", hosts, want)
+		githubAPIURL, "https://github.com", openRouterURL, "https://pypi.org", "https://files.pythonhosted.org",
+	}; !reflect.DeepEqual(urls, want) {
+		t.Errorf("endpoint urls = %v, want %v", urls, want)
 	}
 	got := proxy
 	got.Endpoints = nil
 	want := document{
 		Version: 1,
 		Sandbox: sandboxID{ID: sandboxUserID},
+		Listen:  listenDoc{TransparentPort: 1015, DNS: ":53"},
 		//nolint:gosec // G101: a public client id and a file path, not a secret.
 		Identity: &identity{
 			ZoneURL:           "https://acme.keycard.cloud",
@@ -277,15 +273,5 @@ func TestSandboxDocuments(t *testing.T) {
 	want.Identity.Impersonate.User = sandboxUserID
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("proxy document = %s\nwant %s", asJSON(got), asJSON(want))
-	}
-
-	agentRaw := configDocument(t, objects, agentConfigMap)
-	if strings.Contains(agentRaw, sandboxClientID) {
-		t.Error("the agent's document names the workload-identity credential")
-	}
-	agent := parseDocument(t, agentRaw)
-	proxy.Identity = nil
-	if !reflect.DeepEqual(agent, proxy) {
-		t.Errorf("agent document = %s\nwant the proxy's without identity: %s", asJSON(agent), asJSON(proxy))
 	}
 }

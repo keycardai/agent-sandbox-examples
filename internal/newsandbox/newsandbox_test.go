@@ -123,7 +123,7 @@ func command(t *testing.T, kube *fakeKube, apply bool) *newsandbox.Command {
 	}
 }
 
-// TestRunRenders checks that a run without Apply returns the four objects
+// TestRunRenders checks that a run without Apply returns the three objects
 // and does not call kubectl.
 func TestRunRenders(t *testing.T) {
 	t.Parallel()
@@ -137,7 +137,6 @@ func TestRunRenders(t *testing.T) {
 		"kind: ConfigMap",
 		"kind: Sandbox",
 		"name: " + userID + "-proxy-config",
-		"name: " + userID + "-agent-config",
 		"serviceAccountName: " + userID,
 		"client_id: " + clientID,
 	} {

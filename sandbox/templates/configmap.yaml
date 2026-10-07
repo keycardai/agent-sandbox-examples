@@ -13,20 +13,4 @@ metadata:
     {{- include "keycard-sandbox-user.annotations" . | nindent 4 }}
 data:
   {{ base .Values.proxy.configPath }}: |
-    {{- include "keycard-sandbox-user.document" (dict "root" . "identity" true) | nindent 4 }}
----
-# The agent's copy of the document, without the identity section. The base
-# image entrypoint exports one placeholder variable for each endpoint with a
-# credential. NEVER put the identity section in this ConfigMap.
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ include "keycard-sandbox-user.agentConfigMap" . }}
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "keycard-sandbox-user.labels" . | nindent 4 }}
-  annotations:
-    {{- include "keycard-sandbox-user.annotations" . | nindent 4 }}
-data:
-  {{ base .Values.agent.configPath }}: |
-    {{- include "keycard-sandbox-user.document" (dict "root" . "identity" false) | nindent 4 }}
+    {{- include "keycard-sandbox-user.document" . | nindent 4 }}

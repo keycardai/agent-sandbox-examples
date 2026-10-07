@@ -42,16 +42,22 @@ namespace: agents
 users:
   - email: someone@example.com
 
-# The destinations the proxy mints credentials for. The identifier is what
-# the proxy sends as the exchange's `resource` parameter, verbatim. name
+# The destinations the proxy mints credentials for. The identifier must
+# equal the canonical url of a sandbox endpoint, which the proxy sends as
+# the exchange's `resource` parameter. The zone matches it exactly, so
+# https://api.github.com/ with a trailing slash does not match. name
 # defaults to the identifier.
 #
 # Exactly one of credential_provider and secret_env is set per resource:
 #   credential_provider  the identifier of an existing provider in the zone
 #   secret_env           the environment variable holding a static token
 resources:
-  - identifier: https://api.github.com/
+  - identifier: https://api.github.com
     name: GitHub
+    prefix: true
+    credential_provider: github
+  - identifier: https://github.com
+    name: GitHub git
     prefix: true
     credential_provider: github
   - identifier: https://openrouter.ai/api/v1
