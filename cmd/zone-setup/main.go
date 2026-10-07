@@ -509,7 +509,7 @@ func ensurePolicySet(
 	if err != nil {
 		return fmt.Errorf("reading the policy set %s: %w", set.ID, err)
 	}
-	entries, err := withPlaceholder(ctx, session, mergeManifest(base.Entries, policies, owned))
+	entries, err := desiredEntries(ctx, cmd, session, base.Entries, policies, owned)
 	if err != nil {
 		return err
 	}
@@ -613,6 +613,63 @@ func mergeManifest(
 		}
 	}
 	return out
+}
+
+// desiredEntries returns the entries of an apply that starts from base. It
+// drops each entry for a policy the zone has archived, merges policies into
+// the rest, and adds the placeholder policy when nothing is left.
+func desiredEntries(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	base []zonesetup.ManifestEntry,
+	policies []zonesetup.UserPolicy,
+	owned map[string]keycard.Policy,
+) ([]zonesetup.ApplyEntry, error) {
+	live, err := dropArchived(ctx, cmd, session, base, owned)
+	if err != nil {
+		return nil, err
+	}
+	return withPlaceholder(ctx, session, mergeManifest(live, policies, owned))
+}
+
+// dropArchived returns base without the entries whose policy the zone has
+// archived. svc-pdp refuses an apply that pins an archived policy. Dropping
+// the entry ends the policy's enforcement, which is what archiving it asked
+// for. owned policies are unarchived and are not looked up.
+func dropArchived(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	base []zonesetup.ManifestEntry,
+	owned map[string]keycard.Policy,
+) ([]zonesetup.ManifestEntry, error) {
+	ownedIDs := map[string]bool{}
+	for _, policy := range owned {
+		ownedIDs[policy.ID] = true
+	}
+	var others []string
+	for _, entry := range base {
+		if !ownedIDs[entry.PolicyID] {
+			others = append(others, entry.PolicyID)
+		}
+	}
+	if len(others) == 0 {
+		return base, nil
+	}
+	live, err := session.LivePolicyIDs(ctx, others)
+	if err != nil {
+		return nil, fmt.Errorf("reading the policies the set pins: %w", err)
+	}
+	kept := make([]zonesetup.ManifestEntry, 0, len(base))
+	for _, entry := range base {
+		if ownedIDs[entry.PolicyID] || live[entry.PolicyID] {
+			kept = append(kept, entry)
+			continue
+		}
+		sayf(cmd, "dropping policy %s from the set: the zone has no unarchived policy with that id", entry.PolicyID)
+	}
+	return kept, nil
 }
 
 // withPlaceholder returns entries, or the placeholder policy's entry when

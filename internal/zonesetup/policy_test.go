@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -323,6 +325,12 @@ func TestPolicyReads(t *testing.T) {
 	}
 	// noManifest is what the read closure prints for a refused manifest.
 	const noManifest = "  [] "
+	// livePolicies asks about liveIDs and prints the live ones in order.
+	liveIDs := []string{"pol-a", "pol-b", "pol-c"}
+	livePolicies := func(ctx context.Context, s *zonesetup.Session) (string, error) {
+		live, err := s.LivePolicyIDs(ctx, liveIDs)
+		return strings.Join(slices.Sorted(maps.Keys(live)), " "), err
+	}
 	const versionK = `{"policy_set_id":"set-k","policy_set_version_id":"set-version-k","schema_version":"2026-03-16",` +
 		`"entries":[{"policy_id":"policy-k","policy_version_id":"version-k"}]}`
 	cases := []struct {
@@ -370,6 +378,19 @@ func TestPolicyReads(t *testing.T) {
 			wantErr:  zonesetup.ErrAPI,
 		},
 		{
+			name: "only listed, unarchived ids are live", path: policiesPath,
+			response: `{"items":[{"id":"pol-a"},{"id":"pol-b","archived_at":"2026-01-01T00:00:00Z"},{"id":"pol-x"}],` +
+				`"pagination":{"after_cursor":""}}`,
+			read: livePolicies,
+			want: "pol-a",
+		},
+		{
+			name: "a policy listing that reports more results is refused", path: policiesPath,
+			response: `{"items":[{"id":"pol-a"}],"pagination":{"after_cursor":"pol-a"}}`,
+			read:     livePolicies,
+			wantErr:  zonesetup.ErrAPI,
+		},
+		{
 			name: "only zone-wide sets with an active binding are active", path: policySetsPath,
 			response: `{"items":[{"id":"set-k","active":false,"target_type":"zone"},` +
 				`{"id":"set-other","active":true,"target_type":"zone"},` +
@@ -390,6 +411,11 @@ func TestPolicyReads(t *testing.T) {
 			t.Parallel()
 			fake := &fakeAPI{zones: []fakeItem{{zoneA, issuerA}}, handlers: map[string]http.HandlerFunc{
 				tc.path: func(w http.ResponseWriter, r *http.Request) {
+					if query := r.URL.Query(); r.URL.Path == policiesPath &&
+						(!slices.Equal(query["filter[id]"], liveIDs) || query.Get("limit") != "3") {
+						t.Errorf("listed policies with filter[id] %q and limit %q, want %q and 3",
+							query["filter[id]"], query.Get("limit"), liveIDs)
+					}
 					if tc.etag != "" {
 						w.Header().Set("ETag", tc.etag)
 					}

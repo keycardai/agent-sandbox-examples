@@ -55,7 +55,6 @@ func (f *fakeZone) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	sent, _ := io.ReadAll(r.Body)
 	f.record(r, call, string(sent))
-	page := func(items string) string { return `{"items":[` + items + `],"pagination":{"after_cursor":""}}` }
 	query := r.URL.Query()
 	body := map[string]string{
 		"POST /service-account-token": `{"access_token":"sa-token","token_type":"Bearer"}`,
@@ -92,12 +91,69 @@ func (f *fakeZone) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if override, ok := f.bodies[call]; ok {
 		body = override
 	}
+	body = onlyIDs(body, query["filter[id]"])
 	w.Header().Set("Content-Type", "application/json")
 	if body == "" {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	_, _ = w.Write([]byte(body))
+}
+
+// page is a complete page of a list response.
+func page(items string) string {
+	return `{"items":[` + items + `],"pagination":{"after_cursor":""}}`
+}
+
+// manifest is the manifest of version versionID of set-k.
+func manifest(versionID, schema, entries string) string {
+	return `{"policy_set_id":"set-k","policy_set_version_id":"` + versionID + `","schema_version":"` + schema +
+		`","entries":[` + entries + `]}`
+}
+
+// applied is an apply response that activates set-version-l.
+func applied(created bool) string {
+	return `{"created":` + strconv.FormatBool(created) + `,"policy_set_version":{"id":"set-version-l"},` +
+		`"binding":{"policy_set_version_id":"set-version-l"},"changes":[]}`
+}
+
+// archived is the response to archiving the policy.
+func archived(policyID string) string {
+	return `{"id":"` + policyID + `","archived_at":"2026-10-06T00:00:00Z"}`
+}
+
+// pin is a manifest entry that pins one version of a policy.
+func pin(policyID, versionID string) zonesetup.ApplyEntry {
+	return zonesetup.ApplyEntry{PolicyID: policyID, PolicyVersionID: versionID}
+}
+
+// merged returns base with more's entries added or replaced.
+func merged(base, more map[string]string) map[string]string {
+	out := maps.Clone(base)
+	maps.Copy(out, more)
+	return out
+}
+
+// onlyIDs keeps the items of a page whose id is in ids, as svc-pdp answers
+// filter[id]. It returns page unchanged when ids is empty.
+func onlyIDs(page string, ids []string) string {
+	if len(ids) == 0 {
+		return page
+	}
+	var all struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	_ = json.Unmarshal([]byte(page), &all)
+	kept := []string{}
+	for _, item := range all.Items {
+		var policy struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(item, &policy) == nil && slices.Contains(ids, policy.ID) {
+			kept = append(kept, string(item))
+		}
+	}
+	return `{"items":[` + strings.Join(kept, ",") + `],"pagination":{"after_cursor":""}}`
 }
 
 func (f *fakeZone) record(r *http.Request, call, sent string) {
@@ -343,31 +399,16 @@ func TestEnsurePolicies(t *testing.T) {
 			`{"policy_id":"access-k","policy_version_id":"access-version-k"}`
 		ownPolicies = `{"id":"policy-k","name":"Sandbox impersonation: ada@example.com"},` +
 			`{"id":"access-k","name":"Sandbox access: ada@example.com"}`
+		// otherPolicies are live policies in the set that zone-setup does not manage.
+		otherPolicies = `{"id":"policy-other","name":"Production"},{"id":"policy-old","name":"Production v1"}`
 	)
 	user := keycard.User{ID: adaID, Identifier: adaIdentifier, Email: "ada@example.com"}
 	access := []userAccess{{UserEmail: user.Email, UserID: user.ID, UserIdentifier: user.Identifier}}
 	impersonation := zonesetup.ImpersonationPolicy(namespace, issuer, zonesetup.ApplicationName, user)
 	accessPolicy := zonesetup.AccessPolicy(namespace, issuer, zonesetup.ApplicationName, user)
 	placeholder := zonesetup.PlaceholderPolicy()
-	archived := func(policyID string) string {
-		return `{"id":"` + policyID + `","archived_at":"2026-10-06T00:00:00Z"}`
-	}
-	page := func(items string) string { return `{"items":[` + items + `],"pagination":{"after_cursor":""}}` }
-	manifest := func(versionID, schema, entries string) string {
-		return `{"policy_set_id":"set-k","policy_set_version_id":"` + versionID + `","schema_version":"` + schema +
-			`","entries":[` + entries + `]}`
-	}
-	applied := func(created bool) string {
-		return `{"created":` + strconv.FormatBool(created) + `,"policy_set_version":{"id":"set-version-l"},` +
-			`"binding":{"policy_set_version_id":"set-version-l"},"changes":[]}`
-	}
-	merged := func(base, more map[string]string) map[string]string {
-		out := maps.Clone(base)
-		maps.Copy(out, more)
-		return out
-	}
 	existing := map[string]string{
-		listPoliciesCall: page(ownPolicies),
+		listPoliciesCall: page(ownPolicies + "," + otherPolicies),
 		listSetsCall:     page(activeK),
 		getManifestKCall: manifest(
 			"set-version-k",
@@ -383,7 +424,8 @@ func TestEnsurePolicies(t *testing.T) {
 	// one of another namespace, the user's policies, and the policies of a
 	// user the values file does not list.
 	pruned := with(map[string]string{
-		listPoliciesCall: page(ownPolicies + `,{"id":"policy-gone","name":"Sandbox impersonation: bob@example.com"},` +
+		listPoliciesCall: page(ownPolicies + "," + otherPolicies +
+			`,{"id":"policy-gone","name":"Sandbox impersonation: bob@example.com"},` +
 			`{"id":"access-gone","name":"Sandbox access: bob@example.com"},` +
 			`{"id":"policy-ns2","name":"Sandbox (agents-2) impersonation: ada@example.com"}`),
 		getManifestKCall: manifest("set-version-k", setSchema,
@@ -405,9 +447,6 @@ func TestEnsurePolicies(t *testing.T) {
 	lastUserWrites := []string{applyKCall, archiveCall("access-k"), archiveCall("policy-k")}
 	otherActive := map[string]string{
 		listActiveSetsCall: page(`{"id":"set-other","name":"Production","active":true,"target_type":"zone"}`),
-	}
-	pin := func(policyID, versionID string) zonesetup.ApplyEntry {
-		return zonesetup.ApplyEntry{PolicyID: policyID, PolicyVersionID: versionID}
 	}
 	userEntries := []zonesetup.ApplyEntry{
 		{PolicyID: "policy-k", CedarRaw: impersonation.Cedar},
@@ -465,6 +504,35 @@ func TestEnsurePolicies(t *testing.T) {
 			wantApply: &applyBody{
 				SchemaVersion: setSchema,
 				Entries:       append([]zonesetup.ApplyEntry{pin("policy-old", "version-old")}, userEntries...),
+			},
+		},
+		{
+			name: "an entry for an archived policy leaves the set",
+			bodies: with(map[string]string{
+				getManifestKCall: manifest("set-version-k", setSchema,
+					`{"policy_id":"policy-archived","policy_version_id":"version-archived"},`+
+						`{"policy_id":"policy-other","policy_version_id":"version-other"},`+userPolicies),
+			}),
+			wantWrites: []string{applyKCall},
+			wantApply: &applyBody{
+				SchemaVersion: setSchema,
+				Entries:       append([]zonesetup.ApplyEntry{pin("policy-other", "version-other")}, userEntries...),
+			},
+			wantLog: []string{"dropping policy policy-archived from the set: the zone has no unarchived policy with that id"},
+		},
+		{
+			name: "an archived policy of a listed user leaves the set and is created again",
+			bodies: with(map[string]string{
+				listPoliciesCall: page(`{"id":"access-k","name":"Sandbox access: ada@example.com"},` + otherPolicies),
+			}),
+			wantWrites: []string{applyKCall},
+			wantApply: &applyBody{
+				SchemaVersion: setSchema,
+				Entries: []zonesetup.ApplyEntry{
+					pin("policy-other", "version-other"),
+					{PolicyID: "access-k", CedarRaw: accessPolicy.Cedar},
+					freshEntries[0],
+				},
 			},
 		},
 		{

@@ -195,6 +195,36 @@ func (s *Session) FindPolicy(ctx context.Context, name string) (keycard.Policy, 
 	}
 }
 
+// maxPolicyIDsPerList is the most IDs svc-pdp accepts in one filter[id] list.
+const maxPolicyIDsPerList = 100
+
+// LivePolicyIDs returns which of ids name an unarchived policy in the zone.
+// The zone's policy list leaves out archived policies and IDs it does not
+// have, so an ID it does not return names an archived policy or none. A page
+// that reports more results fails the read, so a live ID is never left out.
+// Every error wraps ErrAPI.
+func (s *Session) LivePolicyIDs(ctx context.Context, ids []string) (map[string]bool, error) {
+	live := map[string]bool{}
+	for chunk := range slices.Chunk(ids, maxPolicyIDsPerList) {
+		page, err := s.zones.Policies.List(ctx, s.Zone.ID, keycard.ZonePolicyListParams{
+			FilterID: chunk, Limit: keycard.Int(int64(len(chunk))),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("%w: list policies by id: %w", ErrAPI, requestError(err))
+		}
+		if page == nil || !page.JSON.Items.Valid() || !page.JSON.Pagination.Valid() ||
+			page.Pagination.AfterCursor != "" {
+			return nil, fmt.Errorf("%w: list policies by id: %w", ErrAPI, errNoPage)
+		}
+		for _, policy := range page.Items {
+			if slices.Contains(chunk, policy.ID) && policy.ArchivedAt.IsZero() {
+				live[policy.ID] = true
+			}
+		}
+	}
+	return live, nil
+}
+
 // ArchivePolicy archives the policy. Every error wraps ErrAPI.
 func (s *Session) ArchivePolicy(ctx context.Context, policyID string) error {
 	policy, err := s.zones.Policies.Archive(ctx, policyID, keycard.ZonePolicyArchiveParams{ZoneID: s.Zone.ID})
