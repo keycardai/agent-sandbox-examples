@@ -1,0 +1,8 @@
+The {{ .Release.Name }} install is in namespace {{ .Release.Namespace }}.
+
+Next, create the zone entities for each user:
+
+    go run ./cmd/zone-setup --values zone-setup.yaml
+
+The namespace runs at the privileged Pod Security level, which the
+egress-netsetup init container needs.
