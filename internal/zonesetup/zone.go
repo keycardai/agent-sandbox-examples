@@ -30,7 +30,6 @@ type Session struct {
 	Zone            *keycard.Zone
 	zones           keycard.ZoneService
 	vaultProviderID string
-	schemaVersion   string
 }
 
 // Connect authenticates as the organization service account and resolves the

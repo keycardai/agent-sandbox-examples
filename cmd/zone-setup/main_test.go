@@ -41,6 +41,8 @@ type fakeZone struct {
 	reads  []string
 	// sent maps a write to the body of its last request.
 	sent map[string]string
+	// ifMatch maps a write to the If-Match header of its last request.
+	ifMatch map[string]string
 }
 
 func (f *fakeZone) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -48,24 +50,13 @@ func (f *fakeZone) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("filter[active]") == "true" {
 		call = listActiveSetsCall
 	}
-	sent, _ := io.ReadAll(r.Body)
-	f.mu.Lock()
-	if r.Method == http.MethodGet {
-		f.reads = append(f.reads, call)
-	} else if r.URL.Path != "/service-account-token" {
-		f.writes = append(f.writes, call)
-		if f.sent == nil {
-			f.sent = map[string]string{}
-		}
-		f.sent[call] = string(sent)
+	if version := r.URL.Query().Get("version"); version != "" {
+		call += "?version=" + version
 	}
-	f.mu.Unlock()
+	sent, _ := io.ReadAll(r.Body)
+	f.record(r, call, string(sent))
 	page := func(items string) string { return `{"items":[` + items + `],"pagination":{"after_cursor":""}}` }
 	query := r.URL.Query()
-	newPolicy := `{"id":"policy-new"}`
-	if strings.Contains(string(sent), "Sandbox access") {
-		newPolicy = `{"id":"access-new"}`
-	}
 	body := map[string]string{
 		"POST /service-account-token": `{"access_token":"sa-token","token_type":"Bearer"}`,
 		"GET /zones/zone-a":           `{"id":"zone-a"}`,
@@ -84,19 +75,20 @@ func (f *fakeZone) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"GET /zones/zone-a/users": page(map[string]string{
 			"ada@example.com": `{"id":"user-1","email":"ada@example.com","identifier":"ada-identifier"}`,
 		}[query.Get("filter[email]")]),
-		listBindingsCall:                   page(""),
-		bindCall:                           `{"id":"credential-new","type":"token"}`,
-		"GET /zones/zone-a/policy-schemas": page(`{"version":"2026-02-24","is_default":true}`),
-		listPoliciesCall:                   page(""),
-		postPolicyCall:                     newPolicy,
-		postAccessVersionCall:              `{"id":"access-version-new","policy_id":"access-new"}`,
-		postPolicyVersionCall:              `{"id":"version-new","policy_id":"policy-new"}`,
-		listSetsCall:                       page(""),
-		listActiveSetsCall:                 page(""),
-		postSetCall:                        `{"id":"set-new"}`,
-		postSetVersionCall:                 `{"id":"set-version-new"}`,
-		activateCall:                       `{"id":"set-version-new","active":true}`,
+		listBindingsCall:   page(""),
+		bindCall:           `{"id":"credential-new","type":"token"}`,
+		listPoliciesCall:   page(""),
+		listSetsCall:       page(""),
+		listActiveSetsCall: page(""),
+		postSetCall:        `{"id":"set-new"}`,
+		getManifestNewCall: `{"policy_set_id":"set-new","policy_set_version_id":null,"schema_version":null,"entries":[]}`,
+		applyNewCall: `{"created":true,"policy_set_version":{"id":"set-version-new"},` +
+			`"binding":{"policy_set_version_id":"set-version-new"},"changes":[` +
+			`{"policy_id":"policy-new","name":"Sandbox impersonation: agents/user-1","action":"created_policy"}]}`,
 	}[call]
+	if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/manifest") && query.Get("version") == "" {
+		w.Header().Set("ETag", latestETag)
+	}
 	if override, ok := f.bodies[call]; ok {
 		body = override
 	}
@@ -106,6 +98,24 @@ func (f *fakeZone) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = w.Write([]byte(body))
+}
+
+func (f *fakeZone) record(r *http.Request, call, sent string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if r.Method == http.MethodGet {
+		f.reads = append(f.reads, call)
+		return
+	}
+	if r.URL.Path == "/service-account-token" {
+		return
+	}
+	f.writes = append(f.writes, call)
+	if f.sent == nil {
+		f.sent, f.ifMatch = map[string]string{}, map[string]string{}
+	}
+	f.sent[call] = sent
+	f.ifMatch[call] = r.Header.Get("If-Match")
 }
 
 func TestEnsureUserAccess(t *testing.T) {
@@ -306,57 +316,62 @@ func TestEnsureResources(t *testing.T) {
 }
 
 const (
-	listActiveSetsCall      = "GET /zones/zone-a/policy-sets?filter[active]=true"
-	listSetsCall            = "GET /zones/zone-a/policy-sets"
-	postPolicyCall          = "POST /zones/zone-a/policies"
-	postPolicyVersionCall   = "POST /zones/zone-a/policies/policy-new/versions"
-	postAccessVersionCall   = "POST /zones/zone-a/policies/access-new/versions"
-	postSetCall             = "POST /zones/zone-a/policy-sets"
-	postSetVersionCall      = "POST /zones/zone-a/policy-sets/set-new/versions"
-	activateCall            = "PATCH /zones/zone-a/policy-sets/set-new/versions/set-version-new"
-	listPoliciesCall        = "GET /zones/zone-a/policies"
-	getSetVersionKCall      = "GET /zones/zone-a/policy-sets/set-k/versions/set-version-k"
-	postSetKVersionCall     = "POST /zones/zone-a/policy-sets/set-k/versions"
-	activateSetVersionLCall = "PATCH /zones/zone-a/policy-sets/set-k/versions/set-version-l"
+	listActiveSetsCall = "GET /zones/zone-a/policy-sets?filter[active]=true"
+	listSetsCall       = "GET /zones/zone-a/policy-sets"
+	listPoliciesCall   = "GET /zones/zone-a/policies"
+	postSetCall        = "POST /zones/zone-a/policy-sets"
+	getManifestNewCall = "GET /zones/zone-a/policy-sets/set-new/manifest"
+	applyNewCall       = "PUT /zones/zone-a/policy-sets/set-new/manifest"
+	getManifestKCall   = "GET /zones/zone-a/policy-sets/set-k/manifest"
+	applyKCall         = "PUT /zones/zone-a/policy-sets/set-k/manifest"
+	latestETag         = `"etag-latest"`
 )
 
-// TestEnsurePolicies checks the writes and the published manifest for each
-// state of the user's policies and the policy set. Stored versions hold Cedar
-// JSON and no cedar_raw, as a zone returns them for format=json.
+// TestEnsurePolicies checks the writes and the applied content for each state
+// of the user's policies and the policy set. An apply to an existing set sends
+// the schema of the version it starts from.
 func TestEnsurePolicies(t *testing.T) {
 	t.Parallel()
 	const (
 		namespace = "agents"
 		issuer    = "https://oidc.example.com"
 		setK      = `{"id":"set-k","name":"Kubernetes Sandbox"`
-		// setVersionL is the response to publishing or activating set-version-l.
-		setVersionL = `{"id":"set-version-l"}`
+		activeK   = setK + `,"active":true,"active_version_id":"set-version-k"}`
+		setSchema = "2026-03-16"
 		// userPolicies are the entries of the user's existing policies.
 		userPolicies = `{"policy_id":"policy-k","policy_version_id":"version-k"},` +
 			`{"policy_id":"access-k","policy_version_id":"access-version-k"}`
+		ownPolicies = `{"id":"policy-k","name":"Sandbox impersonation: agents/user-1"},` +
+			`{"id":"access-k","name":"Sandbox access: agents/user-1"}`
 	)
 	user := keycard.User{ID: adaID, Identifier: adaIdentifier}
 	access := []userAccess{{UserEmail: "ada@example.com", UserID: user.ID, UserIdentifier: user.Identifier}}
 	impersonation := zonesetup.ImpersonationPolicy(namespace, issuer, user)
 	accessPolicy := zonesetup.AccessPolicy(namespace, issuer, user)
 	page := func(items string) string { return `{"items":[` + items + `],"pagination":{"after_cursor":""}}` }
-	storedVersion := func(policyID, versionID, digest string) string {
-		return page(`{"id":"` + versionID + `","policy_id":"` + policyID + `","cedar_json":{"staticPolicies":{` +
-			`"p":{"effect":"permit","annotations":{"id":"p","sandbox_digest":"` + digest + `"}}},` +
-			`"templates":{},"templateLinks":[]}}`)
+	manifest := func(versionID, schema, entries string) string {
+		return `{"policy_set_id":"set-k","policy_set_version_id":"` + versionID + `","schema_version":"` + schema +
+			`","entries":[` + entries + `]}`
 	}
-	ownPolicies := `{"id":"policy-k","name":"Sandbox impersonation: agents/user-1"},` +
-		`{"id":"access-k","name":"Sandbox access: agents/user-1"}`
-	existing := map[string]string{
-		listPoliciesCall: page(ownPolicies),
-		"GET /zones/zone-a/policies/policy-k/versions": storedVersion("policy-k", "version-k", impersonation.Digest),
-		"GET /zones/zone-a/policies/access-k/versions": storedVersion("access-k", "access-version-k", accessPolicy.Digest),
-		getSetVersionKCall: `{"id":"set-version-k","policy_set_id":"set-k","manifest":{"entries":[` + userPolicies + `]}}`,
+	applied := func(created bool) string {
+		return `{"created":` + strconv.FormatBool(created) + `,"policy_set_version":{"id":"set-version-l"},` +
+			`"binding":{"policy_set_version_id":"set-version-l"},"changes":[]}`
 	}
 	merged := func(base, more map[string]string) map[string]string {
 		out := maps.Clone(base)
 		maps.Copy(out, more)
 		return out
+	}
+	existing := map[string]string{
+		listPoliciesCall: page(ownPolicies),
+		listSetsCall:     page(activeK),
+		getManifestKCall: manifest(
+			"set-version-k",
+			setSchema,
+			`{"policy_id":"policy-other","policy_version_id":"version-other"},`+
+				userPolicies,
+		),
+		applyKCall: applied(true),
 	}
 	with := func(more map[string]string) map[string]string { return merged(existing, more) }
 	archiveCall := func(policyID string) string { return "DELETE /zones/zone-a/policies/" + policyID }
@@ -367,107 +382,100 @@ func TestEnsurePolicies(t *testing.T) {
 		listPoliciesCall: page(ownPolicies + `,{"id":"policy-gone","name":"Sandbox impersonation: agents/user-2"},` +
 			`{"id":"access-gone","name":"Sandbox access: agents/user-2"},` +
 			`{"id":"policy-ns2","name":"Sandbox impersonation: agents-2/user-1"}`),
-		listSetsCall: page(setK + `,"active":true,"active_version_id":"set-version-k"}`),
-		getSetVersionKCall: `{"id":"set-version-k","policy_set_id":"set-k","manifest":{"entries":[` +
-			`{"policy_id":"policy-other","policy_version_id":"version-other"},` +
-			`{"policy_id":"policy-ns2","policy_version_id":"version-ns2"},` + userPolicies + `,` +
-			`{"policy_id":"policy-gone","policy_version_id":"version-gone"},` +
-			`{"policy_id":"access-gone","policy_version_id":"access-version-gone"}]}}`,
-		postSetKVersionCall:        setVersionL,
-		activateSetVersionLCall:    setVersionL,
+		getManifestKCall: manifest("set-version-k", setSchema,
+			`{"policy_id":"policy-other","policy_version_id":"version-other"},`+
+				`{"policy_id":"policy-ns2","policy_version_id":"version-ns2"},`+userPolicies+`,`+
+				`{"policy_id":"policy-gone","policy_version_id":"version-gone"},`+
+				`{"policy_id":"access-gone","policy_version_id":"access-version-gone"}`),
 		archiveCall("policy-k"):    `{"id":"policy-k","archived_at":"2026-10-06T00:00:00Z"}`,
 		archiveCall("access-k"):    `{"id":"access-k","archived_at":"2026-10-06T00:00:00Z"}`,
 		archiveCall("policy-gone"): `{"id":"policy-gone","archived_at":"2026-10-06T00:00:00Z"}`,
 		archiveCall("access-gone"): `{"id":"access-gone","archived_at":"2026-10-06T00:00:00Z"}`,
 	})
-	// The set update comes first, and archives follow in policy name order.
-	prunedWrites := []string{
-		postSetKVersionCall, activateSetVersionLCall, archiveCall("access-gone"), archiveCall("policy-gone"),
-	}
 	otherActive := map[string]string{
 		listActiveSetsCall: page(`{"id":"set-other","name":"Production","active":true,"target_type":"zone"}`),
 	}
-	freshWrites := []string{
-		postPolicyCall, postPolicyVersionCall, postPolicyCall, postAccessVersionCall,
-		postSetCall, postSetVersionCall, activateCall,
+	pin := func(policyID, versionID string) zonesetup.ApplyEntry {
+		return zonesetup.ApplyEntry{PolicyID: policyID, PolicyVersionID: versionID}
 	}
-	freshManifest := `[{"policy_id":"policy-new","policy_version_id":"version-new"},` +
-		`{"policy_id":"access-new","policy_version_id":"access-version-new"}]`
+	userEntries := []zonesetup.ApplyEntry{
+		{PolicyID: "policy-k", CedarRaw: impersonation.Cedar},
+		{PolicyID: "access-k", CedarRaw: accessPolicy.Cedar},
+	}
+	freshEntries := []zonesetup.ApplyEntry{
+		{
+			NewPolicy: &zonesetup.NewPolicy{Name: impersonation.Name, Description: impersonation.Description},
+			CedarRaw:  impersonation.Cedar,
+		},
+		{
+			NewPolicy: &zonesetup.NewPolicy{Name: accessPolicy.Name, Description: accessPolicy.Description},
+			CedarRaw:  accessPolicy.Cedar,
+		},
+	}
 	cases := []struct {
-		name         string
-		dryRun       bool
-		replace      bool
-		noUsers      bool
-		bodies       map[string]string
-		wantWrites   []string
-		wantManifest string
-		wantLog      []string
-		wantErr      error
-		// wantCedar maps a policy version write to the Cedar text it sends.
-		wantCedar map[string]string
+		name       string
+		dryRun     bool
+		replace    bool
+		noUsers    bool
+		bodies     map[string]string
+		wantWrites []string
+		// wantApply is the body of the one apply, or nil when the run does not apply.
+		wantApply *applyBody
+		wantLog   []string
+		wantErr   error
 	}{
 		{
-			name:         "a fresh zone gets both policies and an active set that holds them",
-			wantWrites:   freshWrites,
-			wantManifest: freshManifest,
+			name:       "a fresh zone gets a new set that creates both policies and is active",
+			wantWrites: []string{postSetCall, applyNewCall},
+			wantApply:  &applyBody{Entries: freshEntries},
 			wantLog: []string{
-				`created policy policy-new for "Sandbox impersonation: agents/user-1"`,
-				"published policy policy-new version version-new",
-				`created policy access-new for "Sandbox access: agents/user-1"`,
 				`created policy set set-new for "Kubernetes Sandbox"`,
+				`policy policy-new for "Sandbox impersonation: agents/user-1": created_policy`,
 				"published policy set set-new version set-version-new with 2 policies",
-				"activated policy set set-new version set-version-new",
-			},
-			wantCedar: map[string]string{
-				postPolicyVersionCall: impersonation.Cedar,
-				postAccessVersionCall: accessPolicy.Cedar,
+				"policy set set-new version set-version-new is active",
 			},
 		},
 		{
-			name: "a complete zone is not written",
-			bodies: with(map[string]string{
-				listSetsCall: page(setK + `,"active":true,"active_version_id":"set-version-k"}`),
-			}),
-			wantLog: []string{
-				`found policy policy-k version version-k for "Sandbox impersonation: agents/user-1"`,
-				`found policy access-k version access-version-k for "Sandbox access: agents/user-1"`,
-				"found policy set set-k version set-version-k active with every policy",
-			},
+			name:       "a new set takes the policies the zone already has",
+			bodies:     map[string]string{listPoliciesCall: page(ownPolicies)},
+			wantWrites: []string{postSetCall, applyNewCall},
+			wantApply:  &applyBody{Entries: userEntries},
 		},
 		{
-			name: "a complete but inactive set is activated without a new version",
+			name: "an unchanged set is applied under its own schema and keeps entries the run does not manage",
 			bodies: with(map[string]string{
-				listSetsCall: page(setK + `,"latest_version_id":"set-version-k"}`),
-				"PATCH /zones/zone-a/policy-sets/set-k/versions/set-version-k": `{"id":"set-version-k"}`,
+				applyKCall: applied(false),
 			}),
-			wantWrites: []string{"PATCH /zones/zone-a/policy-sets/set-k/versions/set-version-k"},
+			wantWrites: []string{applyKCall},
+			wantApply: &applyBody{
+				SchemaVersion: setSchema,
+				Entries:       append([]zonesetup.ApplyEntry{pin("policy-other", "version-other")}, userEntries...),
+			},
+			wantLog: []string{"policy set set-k version set-version-l is active"},
 		},
 		{
-			name: "a changed policy publishes new versions and keeps entries the run does not manage",
+			name: "an active version older than the latest is the base, with its own schema",
 			bodies: with(map[string]string{
-				"GET /zones/zone-a/policies/policy-k/versions":  storedVersion("policy-k", "version-k", "an-older-digest"),
-				"POST /zones/zone-a/policies/policy-k/versions": `{"id":"version-l","policy_id":"policy-k"}`,
-				listSetsCall: page(setK + `,"active":true,"active_version_id":"set-version-k"}`),
-				getSetVersionKCall: `{"id":"set-version-k","policy_set_id":"set-k","manifest":{"entries":[` +
-					`{"policy_id":"policy-other","policy_version_id":"version-other"},` + userPolicies + `]}}`,
-				postSetKVersionCall:     setVersionL,
-				activateSetVersionLCall: setVersionL,
+				getManifestKCall: manifest("set-version-m", "2026-06-18", userPolicies),
+				getManifestKCall + "?version=set-version-k": manifest("set-version-k", setSchema,
+					`{"policy_id":"policy-old","policy_version_id":"version-old"}`),
 			}),
-			wantWrites: []string{
-				"POST /zones/zone-a/policies/policy-k/versions",
-				postSetKVersionCall,
-				activateSetVersionLCall,
+			wantWrites: []string{applyKCall},
+			wantApply: &applyBody{
+				SchemaVersion: setSchema,
+				Entries:       append([]zonesetup.ApplyEntry{pin("policy-old", "version-old")}, userEntries...),
 			},
-			wantManifest: `[{"policy_id":"policy-other","policy_version_id":"version-other"},` +
-				`{"policy_id":"policy-k","policy_version_id":"version-l"},` +
-				`{"policy_id":"access-k","policy_version_id":"access-version-k"}]`,
 		},
 		{
 			name:       "a removed user's policies leave the set and are archived, and other namespaces stay",
 			bodies:     pruned,
-			wantWrites: prunedWrites,
-			wantManifest: `[{"policy_id":"policy-other","policy_version_id":"version-other"},` +
-				`{"policy_id":"policy-ns2","policy_version_id":"version-ns2"},` + userPolicies + `]`,
+			wantWrites: []string{applyKCall, archiveCall("access-gone"), archiveCall("policy-gone")},
+			wantApply: &applyBody{
+				SchemaVersion: setSchema,
+				Entries: append([]zonesetup.ApplyEntry{
+					pin("policy-other", "version-other"), pin("policy-ns2", "version-ns2"),
+				}, userEntries...),
+			},
 			wantLog: []string{
 				`archived policy access-gone for "Sandbox access: agents/user-2"`,
 				`archived policy policy-gone for "Sandbox impersonation: agents/user-2"`,
@@ -477,21 +485,24 @@ func TestEnsurePolicies(t *testing.T) {
 			name: "a values file without users removes and archives the namespace's policies", noUsers: true,
 			bodies: pruned,
 			wantWrites: []string{
-				postSetKVersionCall, activateSetVersionLCall, archiveCall("access-k"), archiveCall("access-gone"),
+				applyKCall, archiveCall("access-k"), archiveCall("access-gone"),
 				archiveCall("policy-k"), archiveCall("policy-gone"),
 			},
-			wantManifest: `[{"policy_id":"policy-other","policy_version_id":"version-other"},` +
-				`{"policy_id":"policy-ns2","policy_version_id":"version-ns2"}]`,
+			wantApply: &applyBody{
+				SchemaVersion: setSchema,
+				Entries:       []zonesetup.ApplyEntry{pin("policy-other", "version-other"), pin("policy-ns2", "version-ns2")},
+			},
 		},
 		{
-			name:       "a failed set update archives nothing",
-			bodies:     merged(pruned, map[string]string{postSetKVersionCall: ""}),
-			wantWrites: []string{postSetKVersionCall},
+			name:       "a failed apply archives nothing",
+			bodies:     merged(pruned, map[string]string{applyKCall: ""}),
+			wantWrites: []string{applyKCall},
 			wantErr:    zonesetup.ErrAPI,
 		},
 		{
-			name: "a dry run reports the archives it would make", dryRun: true, bodies: pruned,
+			name: "a dry run reports the apply and the archives it would make", dryRun: true, bodies: pruned,
 			wantLog: []string{
+				"would apply policy set set-k with 4 policies and activate it",
 				`would archive policy access-gone for "Sandbox access: agents/user-2"`,
 				`would archive policy policy-gone for "Sandbox impersonation: agents/user-2"`,
 			},
@@ -507,17 +518,13 @@ func TestEnsurePolicies(t *testing.T) {
 		},
 		{
 			name: "the flag replaces another active set", replace: true, bodies: otherActive,
-			wantWrites:   freshWrites,
-			wantManifest: freshManifest,
-			wantLog:      []string{`policy set "Production" (set-other) is active and will be replaced`},
+			wantWrites: []string{postSetCall, applyNewCall},
+			wantApply:  &applyBody{Entries: freshEntries},
+			wantLog:    []string{`policy set "Production" (set-other) is active and will be replaced`},
 		},
 		{
 			name: "a dry run over a fresh zone writes nothing", dryRun: true,
-			wantLog: []string{
-				`would create the policy "Sandbox impersonation: agents/user-1"`,
-				`would create the policy "Sandbox access: agents/user-1"`,
-				`would publish a version of policy set "Kubernetes Sandbox" with 2 policies and activate it`,
-			},
+			wantLog: []string{`would create the policy set "Kubernetes Sandbox" with 2 policies and activate it`},
 		},
 	}
 	for _, tc := range cases {
@@ -548,20 +555,19 @@ func TestEnsurePolicies(t *testing.T) {
 			if !slices.Equal(fake.writes, tc.wantWrites) {
 				t.Errorf("writes = %q, want %q", fake.writes, tc.wantWrites)
 			}
-			if tc.wantManifest != "" {
-				assertManifest(t, fake, tc.wantManifest)
+			if tc.wantApply != nil {
+				assertApply(t, fake, *tc.wantApply)
 			}
 			assertLogLines(t, stderr.String(), tc.wantLog)
-			for call, want := range tc.wantCedar {
-				var version struct {
-					CedarRaw string `json:"cedar_raw"`
-				}
-				if err := json.Unmarshal([]byte(fake.sent[call]), &version); err != nil || version.CedarRaw != want {
-					t.Errorf("%s sent cedar_raw %q, want %q", call, version.CedarRaw, want)
-				}
-			}
 		})
 	}
+}
+
+// applyBody is the request body of a policy set apply.
+type applyBody struct {
+	SchemaVersion string                 `json:"schema_version"`
+	Activate      bool                   `json:"activate"`
+	Entries       []zonesetup.ApplyEntry `json:"entries"`
 }
 
 // assertLogLines requires each line to appear in the log as a whole line.
@@ -574,30 +580,28 @@ func assertLogLines(t *testing.T, log string, lines []string) {
 	}
 }
 
-// assertManifest compares the entries of the one policy set version the run
-// published.
-func assertManifest(t *testing.T, fake *fakeZone, want string) {
+// assertApply compares the one policy set apply the run sent. Every apply
+// activates and sends the latest manifest's ETag as If-Match.
+func assertApply(t *testing.T, fake *fakeZone, want applyBody) {
 	t.Helper()
-	var published []string
-	for call, body := range fake.sent {
-		if strings.HasPrefix(call, "POST /zones/zone-a/policy-sets/") && strings.HasSuffix(call, "/versions") {
-			published = append(published, body)
+	var calls []string
+	for call := range fake.sent {
+		if strings.HasPrefix(call, "PUT ") && strings.HasSuffix(call, "/manifest") {
+			calls = append(calls, call)
 		}
 	}
-	if len(published) != 1 {
-		t.Fatalf("published %d policy set versions, want 1", len(published))
+	if len(calls) != 1 {
+		t.Fatalf("applied %d policy sets, want 1", len(calls))
 	}
-	var got struct {
-		Manifest struct {
-			Entries json.RawMessage `json:"entries"`
-		} `json:"manifest"`
+	var got applyBody
+	if err := json.Unmarshal([]byte(fake.sent[calls[0]]), &got); err != nil {
+		t.Fatalf("apply body %s: %v", fake.sent[calls[0]], err)
 	}
-	if err := json.Unmarshal([]byte(published[0]), &got); err != nil {
-		t.Fatalf("policy set version body %s: %v", published[0], err)
+	want.Activate = true
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("apply body = %+v, want %+v", got, want)
 	}
-	var gotEntries, wantEntries any
-	if json.Unmarshal(got.Manifest.Entries, &gotEntries) != nil || json.Unmarshal([]byte(want), &wantEntries) != nil ||
-		!reflect.DeepEqual(gotEntries, wantEntries) {
-		t.Errorf("manifest entries = %s, want %s", got.Manifest.Entries, want)
+	if ifMatch := fake.ifMatch[calls[0]]; ifMatch != latestETag {
+		t.Errorf("apply If-Match = %q, want %q", ifMatch, latestETag)
 	}
 }

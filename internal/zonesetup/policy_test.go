@@ -3,10 +3,9 @@ package zonesetup_test
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -19,16 +18,14 @@ import (
 const (
 	policiesPath   = "/zones/zone-a/policies"
 	policySetsPath = "/zones/zone-a/policy-sets"
-	schemasPath    = "/zones/zone-a/policy-schemas"
-	defaultSchema  = `{"items":[{"version":"2026-02-24","is_default":true}],"pagination":{"after_cursor":""}}`
-	noSchema       = `{"items":[],"pagination":{"after_cursor":""}}`
+	manifestPath   = policySetsPath + "/set-k/manifest"
+	etagK          = `"etag-k"`
 )
 
 // TestUserPolicies compares the whole Cedar text, because the text decides
 // which ServiceAccount token lets the Application act for which user. The
 // user's identifier differs from its ID, as it does when the provider sets
-// user_identifier_claim, so a line that matches the wrong one fails. The
-// digest is the SHA-256 of the text after the digest line.
+// user_identifier_claim, so a line that matches the wrong one fails.
 func TestUserPolicies(t *testing.T) {
 	t.Parallel()
 	const issuer = "https://oidc.example.com"
@@ -78,20 +75,14 @@ permit (
 		t.Fatalf("got %d policies, want %d", len(policies), len(want))
 	}
 	for i, policy := range policies {
-		sum := sha256.Sum256([]byte(want[i].cedar))
-		digest := hex.EncodeToString(sum[:])
-		wantCedar := `@sandbox_digest("` + digest + "\")\n" + want[i].cedar
 		if policy.Name != want[i].name {
 			t.Errorf("policy %d name = %q, want %q", i, policy.Name, want[i].name)
 		}
 		if policy.Description != want[i].description {
 			t.Errorf("policy %d description = %q, want %q", i, policy.Description, want[i].description)
 		}
-		if policy.Digest != digest {
-			t.Errorf("policy %d digest = %s, want %s", i, policy.Digest, digest)
-		}
-		if policy.Cedar != wantCedar {
-			t.Errorf("policy %d Cedar =\n%s\nwant\n%s", i, policy.Cedar, wantCedar)
+		if policy.Cedar != want[i].cedar {
+			t.Errorf("policy %d Cedar =\n%s\nwant\n%s", i, policy.Cedar, want[i].cedar)
 		}
 	}
 }
@@ -163,34 +154,26 @@ func TestPolicyWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries := []keycard.PolicySetManifestEntryParam{{PolicyID: "policy-k", PolicyVersionID: "version-k"}}
+	entries := []zonesetup.ApplyEntry{
+		{PolicyID: "policy-other", PolicyVersionID: "version-other"},
+		{PolicyID: "policy-k", CedarRaw: cedar},
+		{NewPolicy: &zonesetup.NewPolicy{Name: "Sandbox access: agents/user-1", Description: "d"}, CedarRaw: cedar},
+	}
+	apply := func(schema string, entries []zonesetup.ApplyEntry) func(context.Context, *zonesetup.Session) error {
+		return func(ctx context.Context, s *zonesetup.Session) error {
+			_, err := s.ApplyPolicySet(ctx, "set-k", etagK, schema, entries)
+			return err
+		}
+	}
 	cases := []struct {
-		name     string
-		path     string
-		response string
-		schemas  string
-		write    func(context.Context, *zonesetup.Session) error
-		wantBody string
-		wantErr  error
+		name        string
+		path        string
+		response    string
+		write       func(context.Context, *zonesetup.Session) error
+		wantBody    string
+		wantIfMatch string
+		wantErr     error
 	}{
-		{
-			name: "a policy version is validated against the default schema",
-			path: policiesPath + "/policy-k/versions", response: `{"id":"version-new"}`, schemas: defaultSchema,
-			write: func(ctx context.Context, s *zonesetup.Session) error {
-				_, err := s.CreatePolicyVersion(ctx, "policy-k", cedar)
-				return err
-			},
-			wantBody: `{"schema_version":"2026-02-24","cedar_raw":` + string(cedarJSON) + `}`,
-		},
-		{
-			name: "a zone without a default schema is refused before a write",
-			path: policiesPath + "/policy-k/versions", response: `{"id":"version-new"}`, schemas: noSchema,
-			write: func(ctx context.Context, s *zonesetup.Session) error {
-				_, err := s.CreatePolicyVersion(ctx, "policy-k", cedar)
-				return err
-			},
-			wantErr: zonesetup.ErrPolicySchemaNotFound,
-		},
 		{
 			name: "a policy set targets the zone", path: policySetsPath, response: `{"id":"set-new"}`,
 			write: func(ctx context.Context, s *zonesetup.Session) error {
@@ -200,22 +183,33 @@ func TestPolicyWrites(t *testing.T) {
 			wantBody: `{"name":"Kubernetes Sandbox","target_type":"zone"}`,
 		},
 		{
-			name: "a policy set version holds the manifest", schemas: defaultSchema,
-			path: policySetsPath + "/set-k/versions", response: `{"id":"set-version-new"}`,
-			write: func(ctx context.Context, s *zonesetup.Session) error {
-				_, err := s.CreatePolicySetVersion(ctx, "set-k", entries)
-				return err
-			},
-			wantBody: `{"schema_version":"2026-02-24",` +
-				`"manifest":{"entries":[{"policy_id":"policy-k","policy_version_id":"version-k"}]}}`,
+			name: "an apply activates the entries under the set's schema, guarded by the ETag", path: manifestPath,
+			response: `{"created":true,"policy_set_version":{"id":"set-version-l"},` +
+				`"binding":{"policy_set_version_id":"set-version-l"}}`,
+			write: apply("2026-03-16", entries),
+			wantBody: `{"schema_version":"2026-03-16","activate":true,"entries":[` +
+				`{"policy_id":"policy-other","policy_version_id":"version-other"},` +
+				`{"policy_id":"policy-k","cedar_raw":` + string(cedarJSON) + `},` +
+				`{"new_policy":{"name":"Sandbox access: agents/user-1","description":"d"},` +
+				`"cedar_raw":` + string(cedarJSON) + `}]}`,
+			wantIfMatch: etagK,
 		},
 		{
-			name: "activation binds the version", path: policySetsPath + "/set-k/versions/set-version-k",
-			response: `{"id":"set-version-k","active":true}`,
-			write: func(ctx context.Context, s *zonesetup.Session) error {
-				return s.ActivatePolicySetVersion(ctx, "set-k", "set-version-k")
-			},
-			wantBody: `{"active":true}`,
+			name: "an apply without a schema or entries lets the zone choose the schema", path: manifestPath,
+			response: `{"created":true,"policy_set_version":{"id":"set-version-l"},` +
+				`"binding":{"policy_set_version_id":"set-version-l"}}`,
+			write:       apply("", nil),
+			wantBody:    `{"activate":true,"entries":[]}`,
+			wantIfMatch: etagK,
+		},
+		{
+			name: "an apply response that binds another version is refused", path: manifestPath,
+			response: `{"created":true,"policy_set_version":{"id":"set-version-l"},` +
+				`"binding":{"policy_set_version_id":"set-version-k"}}`,
+			write:       apply("", nil),
+			wantBody:    `{"activate":true,"entries":[]}`,
+			wantIfMatch: etagK,
+			wantErr:     zonesetup.ErrAPI,
 		},
 		{
 			name: "an archive sends no body", path: policiesPath + "/policy-k",
@@ -232,22 +226,16 @@ func TestPolicyWrites(t *testing.T) {
 			},
 			wantErr: zonesetup.ErrAPI,
 		},
-		{
-			name: "an activation response for another version is refused",
-			path: policySetsPath + "/set-k/versions/set-version-k", response: `{"id":"set-version-j"}`,
-			write: func(ctx context.Context, s *zonesetup.Session) error {
-				return s.ActivatePolicySetVersion(ctx, "set-k", "set-version-k")
-			},
-			wantBody: `{"active":true}`, wantErr: zonesetup.ErrAPI,
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			fake := &fakeAPI{zones: []fakeItem{{zoneA, issuerA}}}
 			fake.handlers = map[string]http.HandlerFunc{
-				schemasPath: rawBody(tc.schemas),
 				tc.path: func(w http.ResponseWriter, r *http.Request) {
+					if got := r.Header.Get("If-Match"); got != tc.wantIfMatch {
+						t.Errorf("If-Match = %q, want %q", got, tc.wantIfMatch)
+					}
 					if body := readBody(w, r); len(body) > 0 {
 						fake.mu.Lock()
 						fake.posts = append(fake.posts, body)
@@ -265,53 +253,63 @@ func TestPolicyWrites(t *testing.T) {
 	}
 }
 
-// TestPolicyReads checks that each read refuses a malformed response, and
-// that a version's digest comes from the Cedar JSON the zone stores.
+// TestPolicyReads checks that each read refuses a malformed response. Only
+// the latest manifest has an ETag. ApplyPolicySet sends it as If-Match.
 func TestPolicyReads(t *testing.T) {
 	t.Parallel()
-	versions := func(items string) string { return `{"items":[` + items + `],"pagination":{"after_cursor":""}}` }
-	latestDigest := func(ctx context.Context, s *zonesetup.Session) (string, error) {
-		versionID, digest, err := s.LatestPolicyDigest(ctx, "policy-k")
-		return versionID + " " + digest, err
+	manifest := func(versionID string) func(context.Context, *zonesetup.Session) (string, error) {
+		return func(ctx context.Context, s *zonesetup.Session) (string, error) {
+			got, etag, err := s.PolicySetManifest(ctx, "set-k", versionID)
+			return fmt.Sprintf("%s %s %v %s", got.VersionID, got.SchemaVersion, got.Entries, etag), err
+		}
 	}
+	// noManifest is what the read closure prints for a refused manifest.
+	const noManifest = "  [] "
+	const versionK = `{"policy_set_id":"set-k","policy_set_version_id":"set-version-k","schema_version":"2026-03-16",` +
+		`"entries":[{"policy_id":"policy-k","policy_version_id":"version-k"}]}`
 	cases := []struct {
 		name     string
 		path     string
 		response string
+		etag     string
 		read     func(context.Context, *zonesetup.Session) (string, error)
 		want     string
 		wantErr  error
 	}{
 		{
-			name: "the newest version's digest is its policy's annotation", path: policiesPath + "/policy-k/versions",
-			response: versions(`{"id":"version-k","policy_id":"policy-k","cedar_json":{"staticPolicies":{` +
-				`"sandbox-impersonation/agents/user-1":{"annotations":{"id":"sandbox-impersonation/agents/user-1",` +
-				`"sandbox_digest":"abc"}}},"templates":{},"templateLinks":[]}}`),
-			read: latestDigest,
-			want: "version-k abc",
+			name: "the latest manifest has its schema and ETag", path: manifestPath, response: versionK, etag: etagK,
+			read: manifest(""),
+			want: "set-version-k 2026-03-16 [{policy-k version-k}] " + etagK,
 		},
 		{
-			name: "a version with two policies has no digest", path: policiesPath + "/policy-k/versions",
-			response: versions(`{"id":"version-k","policy_id":"policy-k","cedar_json":{"staticPolicies":{` +
-				`"a":{"annotations":{"sandbox_digest":"abc"}},"b":{"annotations":{}}}}}`),
-			read: latestDigest,
-			want: "version-k ",
+			name: "a set without a version has an empty latest manifest", path: manifestPath, etag: `"etag-empty"`,
+			response: `{"policy_set_id":"set-k","policy_set_version_id":null,"schema_version":null,"entries":[]}`,
+			read:     manifest(""),
+			want:     `  [] "etag-empty"`,
 		},
 		{
-			name: "a version of another policy is refused", path: policiesPath + "/policy-k/versions",
-			response: versions(`{"id":"version-j","policy_id":"policy-j"}`),
-			read:     latestDigest,
-			want:     " ",
-			wantErr:  zonesetup.ErrAPI,
-		},
-		{
-			name: "a manifest of another policy set is refused", path: policySetsPath + "/set-k/versions/set-version-k",
-			response: `{"id":"set-version-k","policy_set_id":"set-j","manifest":{"entries":[]}}`,
-			read: func(ctx context.Context, s *zonesetup.Session) (string, error) {
-				_, err := s.PolicySetManifest(ctx, "set-k", "set-version-k")
-				return "", err
-			},
+			name: "a latest manifest without an ETag is refused", path: manifestPath, response: versionK,
+			read:    manifest(""),
+			want:    noManifest,
 			wantErr: zonesetup.ErrAPI,
+		},
+		{
+			name: "a version's manifest has no ETag", path: manifestPath, response: versionK, etag: etagK,
+			read: manifest("set-version-k"),
+			want: "set-version-k 2026-03-16 [{policy-k version-k}] ",
+		},
+		{
+			name: "a manifest of another version is refused", path: manifestPath, response: versionK,
+			read:    manifest("set-version-j"),
+			want:    noManifest,
+			wantErr: zonesetup.ErrAPI,
+		},
+		{
+			name: "a manifest of another policy set is refused", path: manifestPath, etag: etagK,
+			response: `{"policy_set_id":"set-j","entries":[]}`,
+			read:     manifest(""),
+			want:     "  [] ",
+			wantErr:  zonesetup.ErrAPI,
 		},
 		{
 			name: "only zone-wide sets with an active binding are active", path: policySetsPath,
@@ -334,8 +332,8 @@ func TestPolicyReads(t *testing.T) {
 			t.Parallel()
 			fake := &fakeAPI{zones: []fakeItem{{zoneA, issuerA}}, handlers: map[string]http.HandlerFunc{
 				tc.path: func(w http.ResponseWriter, r *http.Request) {
-					if strings.HasSuffix(r.URL.Path, "/versions") && r.URL.Query().Get("format") != "json" {
-						t.Errorf("listed versions with format %q, want json", r.URL.Query().Get("format"))
+					if tc.etag != "" {
+						w.Header().Set("ETag", tc.etag)
 					}
 					rawBody(tc.response)(w, r)
 				},

@@ -14,7 +14,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -40,8 +39,6 @@ func main() {
 }
 
 const replaceActiveFlag = "replace-active-policy-set"
-
-var errPendingEntry = errors.New("a policy set entry has no policy or version id")
 
 func newCommand() *cli.Command {
 	return &cli.Command{
@@ -407,11 +404,10 @@ func ensureTokenCredential(
 	return credentialID, nil
 }
 
-// ensurePolicies publishes each user's policies and makes the active policy
-// set hold them. It removes from the set each policy of the namespace that
-// the values file does not name, then archives it, so a removed user loses
-// access. If the sandbox set is not active, it calls checkOtherActive before
-// it creates or publishes anything.
+// ensurePolicies makes the active policy set hold each user's policies. It
+// removes from the set each policy of the namespace that the values file does
+// not name, then archives it, so a removed user loses access. If the sandbox
+// set is not active, it calls checkOtherActive before it writes anything.
 func ensurePolicies(
 	ctx context.Context,
 	cmd *cli.Command,
@@ -435,21 +431,18 @@ func ensurePolicies(
 			return err
 		}
 	}
-	entries, err := ensureUserPolicies(ctx, cmd, session, values, access, owned)
-	if err != nil {
+	var policies []zonesetup.UserPolicy
+	for _, user := range access {
+		policyUser := keycard.User{ID: user.UserID, Identifier: user.UserIdentifier}
+		policies = append(policies, zonesetup.UserPolicies(values.Namespace, values.IssuerURL, policyUser)...)
+	}
+	if err = ensurePolicySet(ctx, cmd, session, set, values.PolicySet, policies, owned); err != nil {
 		return err
 	}
-	ownedIDs := map[string]bool{}
-	for _, policy := range owned {
-		ownedIDs[policy.ID] = true
-	}
-	if err = ensurePolicySet(ctx, cmd, session, set, values.PolicySet, entries, ownedIDs); err != nil {
-		return err
-	}
-	return archiveRemoved(ctx, cmd, session, owned, entries)
+	return archiveRemoved(ctx, cmd, session, owned, policies)
 }
 
-// archiveRemoved archives each owned policy that entries does not have.
+// archiveRemoved archives each owned policy that policies does not name.
 // owned maps a policy name to the policy. Call it only after ensurePolicySet,
 // so the active set does not hold a policy it archives.
 func archiveRemoved(
@@ -457,16 +450,12 @@ func archiveRemoved(
 	cmd *cli.Command,
 	session *zonesetup.Session,
 	owned map[string]keycard.Policy,
-	entries []keycard.PolicySetManifestEntryParam,
+	policies []zonesetup.UserPolicy,
 ) error {
-	kept := map[string]bool{}
-	for _, entry := range entries {
-		kept[entry.PolicyID] = true
-	}
 	for _, name := range slices.Sorted(maps.Keys(owned)) {
 		policyID := owned[name].ID
 		switch {
-		case kept[policyID]:
+		case slices.ContainsFunc(policies, func(policy zonesetup.UserPolicy) bool { return policy.Name == name }):
 		case cmd.Bool("dry-run"):
 			sayf(cmd, "would archive policy %s for %q", policyID, name)
 		default:
@@ -479,99 +468,28 @@ func archiveRemoved(
 	return nil
 }
 
-// ensureUserPolicies runs ensurePolicy for each policy of each user and
-// returns their manifest entries. owned maps a policy name to the policy the
-// zone already has.
-func ensureUserPolicies(
-	ctx context.Context,
-	cmd *cli.Command,
-	session *zonesetup.Session,
-	values *zonesetup.Values,
-	access []userAccess,
-	owned map[string]keycard.Policy,
-) ([]keycard.PolicySetManifestEntryParam, error) {
-	var entries []keycard.PolicySetManifestEntryParam
-	for _, user := range access {
-		policyUser := keycard.User{ID: user.UserID, Identifier: user.UserIdentifier}
-		for _, policy := range zonesetup.UserPolicies(values.Namespace, values.IssuerURL, policyUser) {
-			entry, err := ensurePolicy(ctx, cmd, session, owned[policy.Name], policy)
-			if err != nil {
-				return nil, err
-			}
-			entries = append(entries, entry)
-		}
-	}
-	return entries, nil
-}
-
-// ensurePolicy creates the policy when found has no ID, and publishes a
-// version when the latest one does not have the policy's digest.
-func ensurePolicy(
-	ctx context.Context,
-	cmd *cli.Command,
-	session *zonesetup.Session,
-	found keycard.Policy,
-	policy zonesetup.UserPolicy,
-) (keycard.PolicySetManifestEntryParam, error) {
-	switch {
-	case found.ID == "" && cmd.Bool("dry-run"):
-		sayf(cmd, "would create the policy %q", policy.Name)
-		return keycard.PolicySetManifestEntryParam{}, nil
-	case found.ID == "":
-		policyID, err := session.CreatePolicy(ctx, policy.Name, policy.Description)
-		if err != nil {
-			return keycard.PolicySetManifestEntryParam{}, fmt.Errorf("creating the policy %q: %w", policy.Name, err)
-		}
-		sayf(cmd, "created policy %s for %q", policyID, policy.Name)
-		return publishPolicyVersion(ctx, cmd, session, policyID, policy.Cedar)
-	}
-	versionID, digest, err := session.LatestPolicyDigest(ctx, found.ID)
-	switch {
-	case err != nil:
-		return keycard.PolicySetManifestEntryParam{}, fmt.Errorf("reading the policy %q: %w", policy.Name, err)
-	case versionID != "" && digest == policy.Digest:
-		sayf(cmd, "found policy %s version %s for %q", found.ID, versionID, policy.Name)
-		return keycard.PolicySetManifestEntryParam{PolicyID: found.ID, PolicyVersionID: versionID}, nil
-	case cmd.Bool("dry-run"):
-		sayf(cmd, "would publish a new version of policy %s for %q", found.ID, policy.Name)
-		return keycard.PolicySetManifestEntryParam{PolicyID: found.ID}, nil
-	}
-	return publishPolicyVersion(ctx, cmd, session, found.ID, policy.Cedar)
-}
-
-func publishPolicyVersion(
-	ctx context.Context,
-	cmd *cli.Command,
-	session *zonesetup.Session,
-	policyID, cedar string,
-) (keycard.PolicySetManifestEntryParam, error) {
-	versionID, err := session.CreatePolicyVersion(ctx, policyID, cedar)
-	if err != nil {
-		return keycard.PolicySetManifestEntryParam{}, fmt.Errorf("publishing a version of policy %s: %w", policyID, err)
-	}
-	sayf(cmd, "published policy %s version %s", policyID, versionID)
-	return keycard.PolicySetManifestEntryParam{PolicyID: policyID, PolicyVersionID: versionID}, nil
-}
-
-// ensurePolicySet activates a version of the policy set that holds entries
-// and no other owned policy. set has no ID when the set does not exist yet.
-// Outside a dry run, an entry without a policy or version ID fails the run
-// with errPendingEntry.
+// ensurePolicySet applies a version of the policy set that holds policies and
+// no other owned policy, and activates it. set has no ID when the set does not
+// exist yet. owned maps a policy name to the policy the zone already has.
+//
+// The apply starts from the active version's manifest, or the latest
+// version's when the set is not active, and uses that version's schema. The
+// zone validates each policy's Cedar against that schema. It reuses the
+// version of an unchanged policy and publishes a new version of a changed
+// one. NEVER publish a policy version separately. svc-pdp rejects a set
+// version that pins a policy version with a different schema.
 func ensurePolicySet(
 	ctx context.Context,
 	cmd *cli.Command,
 	session *zonesetup.Session,
 	set keycard.PolicySetWithBinding,
 	name string,
-	entries []keycard.PolicySetManifestEntryParam,
-	owned map[string]bool,
+	policies []zonesetup.UserPolicy,
+	owned map[string]keycard.Policy,
 ) error {
-	pending := slices.ContainsFunc(entries, pendingEntry)
 	switch {
-	case pending && !cmd.Bool("dry-run"):
-		return fmt.Errorf("%w: policy set %q", errPendingEntry, name)
-	case pending || set.ID == "" && cmd.Bool("dry-run"):
-		sayf(cmd, "would publish a version of policy set %q with %d policies and activate it", name, len(entries))
+	case set.ID == "" && cmd.Bool("dry-run"):
+		sayf(cmd, "would create the policy set %q with %d policies and activate it", name, len(policies))
 		return nil
 	case set.ID == "":
 		setID, err := session.CreatePolicySet(ctx, name)
@@ -581,12 +499,50 @@ func ensurePolicySet(
 		set = keycard.PolicySetWithBinding{ID: setID}
 		sayf(cmd, "created policy set %s for %q", setID, name)
 	}
-	return reconcilePolicySetVersion(ctx, cmd, session, set, entries, owned)
+	base, etag, err := baseManifest(ctx, session, set)
+	if err != nil {
+		return fmt.Errorf("reading the policy set %s: %w", set.ID, err)
+	}
+	entries := mergeManifest(base.Entries, policies, owned)
+	if cmd.Bool("dry-run") {
+		sayf(cmd, "would apply policy set %s with %d policies and activate it", set.ID, len(entries))
+		return nil
+	}
+	applied, err := session.ApplyPolicySet(ctx, set.ID, etag, base.SchemaVersion, entries)
+	if err != nil {
+		return fmt.Errorf("applying the policy set %s: %w", set.ID, err)
+	}
+	reportApply(cmd, set.ID, applied, len(entries))
+	return nil
 }
 
-// pendingEntry is an entry for a policy or version a dry run would create.
-func pendingEntry(entry keycard.PolicySetManifestEntryParam) bool {
-	return entry.PolicyID == "" || entry.PolicyVersionID == ""
+// reportApply logs each policy the apply created, changed or dropped, and the
+// version it activated.
+func reportApply(cmd *cli.Command, setID string, applied zonesetup.ApplyResult, policies int) {
+	for _, change := range applied.Changes {
+		if change.Action != "reused" {
+			sayf(cmd, "policy %s for %q: %s", change.PolicyID, change.Name, change.Action)
+		}
+	}
+	if applied.Created {
+		sayf(cmd, "published policy set %s version %s with %d policies", setID, applied.VersionID, policies)
+	}
+	sayf(cmd, "policy set %s version %s is active", setID, applied.VersionID)
+}
+
+// baseManifest returns the manifest of the set's active version, else of its
+// latest version, and the latest version's ETag.
+func baseManifest(
+	ctx context.Context,
+	session *zonesetup.Session,
+	set keycard.PolicySetWithBinding,
+) (zonesetup.Manifest, string, error) {
+	latest, etag, err := session.PolicySetManifest(ctx, set.ID, "")
+	if err != nil || set.ActiveVersionID == "" || set.ActiveVersionID == latest.VersionID {
+		return latest, etag, err //nolint:wrapcheck // ensurePolicySet wraps it.
+	}
+	active, _, err := session.PolicySetManifest(ctx, set.ID, set.ActiveVersionID)
+	return active, etag, err //nolint:wrapcheck // ensurePolicySet wraps it.
 }
 
 // checkOtherActive refuses to replace another active policy set unless
@@ -610,115 +566,56 @@ func checkOtherActive(ctx context.Context, cmd *cli.Command, session *zonesetup.
 	return nil
 }
 
-// reconcilePolicySetVersion starts from the active version's manifest, or the
-// latest version's when the set is not active. It activates an unchanged
-// manifest as it is, and publishes a changed one as a new version first.
-func reconcilePolicySetVersion(
-	ctx context.Context,
-	cmd *cli.Command,
-	session *zonesetup.Session,
-	set keycard.PolicySetWithBinding,
-	entries []keycard.PolicySetManifestEntryParam,
-	owned map[string]bool,
-) error {
-	baseID, base, err := baseManifest(ctx, session, set)
-	if err != nil {
-		return err
-	}
-	desired, changed := mergeManifest(base, entries, owned)
-	switch {
-	case !changed && baseID != "" && set.Active && set.ActiveVersionID == baseID:
-		sayf(cmd, "found policy set %s version %s active with every policy", set.ID, baseID)
-		return nil
-	case !changed && baseID != "":
-		return activatePolicySetVersion(ctx, cmd, session, set.ID, baseID)
-	case cmd.Bool("dry-run"):
-		sayf(cmd, "would publish a version of policy set %s with %d policies and activate it", set.ID, len(desired))
-		return nil
-	}
-	versionID, err := session.CreatePolicySetVersion(ctx, set.ID, desired)
-	if err != nil {
-		return fmt.Errorf("publishing a version of policy set %s: %w", set.ID, err)
-	}
-	sayf(cmd, "published policy set %s version %s with %d policies", set.ID, versionID, len(desired))
-	return activatePolicySetVersion(ctx, cmd, session, set.ID, versionID)
-}
-
-// baseManifest returns the id and entries of the set's active version, else
-// of its latest version, else none.
-func baseManifest(
-	ctx context.Context,
-	session *zonesetup.Session,
-	set keycard.PolicySetWithBinding,
-) (string, []keycard.PolicySetManifestEntry, error) {
-	baseID := set.ActiveVersionID
-	if baseID == "" {
-		baseID = set.LatestVersionID
-	}
-	if baseID == "" {
-		return "", nil, nil
-	}
-	base, err := session.PolicySetManifest(ctx, set.ID, baseID)
-	if err != nil {
-		return "", nil, fmt.Errorf("reading the policy set %s: %w", set.ID, err)
-	}
-	return baseID, base, nil
-}
-
-func activatePolicySetVersion(
-	ctx context.Context,
-	cmd *cli.Command,
-	session *zonesetup.Session,
-	setID, versionID string,
-) error {
-	if cmd.Bool("dry-run") {
-		sayf(cmd, "would activate policy set %s version %s", setID, versionID)
-		return nil
-	}
-	if err := session.ActivatePolicySetVersion(ctx, setID, versionID); err != nil {
-		return fmt.Errorf("activating policy set %s: %w", setID, err)
-	}
-	sayf(cmd, "activated policy set %s version %s", setID, versionID)
-	return nil
-}
-
-// mergeManifest points each policy already in base at its entry's version,
-// drops each owned policy that entries does not have, keeps every other
-// policy, and appends the entries base does not have. changed is false when
-// the result equals base.
+// mergeManifest returns the entries of an apply that starts from base. Each
+// owned policy that policies names gets its Cedar text. Any other owned policy
+// leaves the set. Every other entry keeps its pinned version. A policy that
+// base does not hold goes at the end. The apply creates it when owned does
+// not have it.
 func mergeManifest(
-	base []keycard.PolicySetManifestEntry,
-	entries []keycard.PolicySetManifestEntryParam,
-	owned map[string]bool,
-) ([]keycard.PolicySetManifestEntryParam, bool) {
-	want := make(map[string]string, len(entries))
-	for _, entry := range entries {
-		want[entry.PolicyID] = entry.PolicyVersionID
+	base []zonesetup.ManifestEntry,
+	policies []zonesetup.UserPolicy,
+	owned map[string]keycard.Policy,
+) []zonesetup.ApplyEntry {
+	ownedIDs := map[string]bool{}
+	for _, policy := range owned {
+		ownedIDs[policy.ID] = true
 	}
-	out := make([]keycard.PolicySetManifestEntryParam, 0, len(base)+len(entries))
-	kept := map[string]bool{}
-	changed := false
+	cedar := map[string]string{}
+	for _, policy := range policies {
+		if found, ok := owned[policy.Name]; ok {
+			cedar[found.ID] = policy.Cedar
+		}
+	}
+	out := make([]zonesetup.ApplyEntry, 0, len(base)+len(policies))
+	inBase := map[string]bool{}
 	for _, entry := range base {
-		versionID, wanted := want[entry.PolicyID]
+		text, wanted := cedar[entry.PolicyID]
 		switch {
 		case wanted:
-			changed = changed || versionID != entry.PolicyVersionID
-		case owned[entry.PolicyID]:
-			changed = true
-			continue
-		default:
-			versionID = entry.PolicyVersionID
-		}
-		kept[entry.PolicyID] = true
-		out = append(out, keycard.PolicySetManifestEntryParam{PolicyID: entry.PolicyID, PolicyVersionID: versionID})
-	}
-	for _, entry := range entries {
-		if !kept[entry.PolicyID] {
-			out = append(out, entry)
-			changed = true
+			out = append(out, zonesetup.ApplyEntry{PolicyID: entry.PolicyID, CedarRaw: text})
+			inBase[entry.PolicyID] = true
+		case !ownedIDs[entry.PolicyID]:
+			out = append(out, zonesetup.ApplyEntry{PolicyID: entry.PolicyID, PolicyVersionID: entry.PolicyVersionID})
 		}
 	}
-	return out, changed
+	for _, policy := range policies {
+		if found, ok := owned[policy.Name]; !ok || !inBase[found.ID] {
+			out = append(out, newEntry(policy, found))
+		}
+	}
+	return out
+}
+
+// newEntry returns the entry for a policy the set does not hold. found has
+// no ID when the zone does not have the policy. The apply then creates it.
+func newEntry(policy zonesetup.UserPolicy, found keycard.Policy) zonesetup.ApplyEntry {
+	if found.ID != "" {
+		return zonesetup.ApplyEntry{PolicyID: found.ID, CedarRaw: policy.Cedar}
+	}
+	return zonesetup.ApplyEntry{
+		NewPolicy: &zonesetup.NewPolicy{Name: policy.Name, Description: policy.Description},
+		CedarRaw:  policy.Cedar,
+	}
 }
 
 func sayf(cmd *cli.Command, format string, args ...any) {

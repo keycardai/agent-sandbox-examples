@@ -40,9 +40,6 @@ var (
 	// ErrPolicyAmbiguous is a policy name more than one unarchived policy in
 	// the zone has.
 	ErrPolicyAmbiguous = errors.New("policy ambiguous")
-	// ErrPolicySchemaNotFound is a zone without a default Cedar schema. The zone
-	// validates every new policy version and policy set version against it.
-	ErrPolicySchemaNotFound = errors.New("policy schema not found")
 	// ErrPolicySetActive is a zone whose active policy set is not the sandbox
 	// set.
 	ErrPolicySetActive = errors.New("another policy set is active")

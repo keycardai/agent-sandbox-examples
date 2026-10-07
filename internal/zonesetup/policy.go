@@ -2,21 +2,16 @@ package zonesetup
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 
 	"github.com/keycardai/keycard-go"
+	"github.com/keycardai/keycard-go/option"
 )
-
-// digestAnnotation names the Cedar annotation that holds a policy's digest.
-// zone-setup compares it to find an unchanged policy. The zone stores a
-// version as Cedar JSON, keeps its annotations, and returns its text
-// reformatted.
-const digestAnnotation = "sandbox_digest"
 
 const (
 	impersonationKind = "impersonation"
@@ -27,10 +22,8 @@ const (
 type UserPolicy struct {
 	Name        string
 	Description string
-	// Cedar starts with the `@id` and sandbox_digest annotations.
+	// Cedar starts with the `@id` annotation.
 	Cedar string
-	// Digest is the hex SHA-256 of Cedar without its sandbox_digest line.
-	Digest string
 }
 
 // UserPolicies returns the impersonation and access policies for one user of
@@ -105,17 +98,13 @@ func ImpersonationPolicy(namespace, issuer string, user keycard.User) UserPolicy
 }
 
 // newUserPolicy names a policy by its kind, namespace and user, and adds the
-// `@id` and sandbox_digest annotations to body. The zone keys the policy by
-// its `@id` in the Cedar JSON it stores.
+// `@id` annotation to body. The zone keys the policy by its `@id` in the Cedar
+// JSON it stores.
 func newUserPolicy(kind, namespace, userID, description, body string) UserPolicy {
-	text := fmt.Sprintf("@id(%q)\n%s", "sandbox-"+kind+"/"+namespace+"/"+userID, body)
-	sum := sha256.Sum256([]byte(text))
-	digest := hex.EncodeToString(sum[:])
 	return UserPolicy{
 		Name:        policyNamePrefix(kind, namespace) + userID,
 		Description: description,
-		Cedar:       fmt.Sprintf("@%s(%q)\n%s", digestAnnotation, digest, text),
-		Digest:      digest,
+		Cedar:       fmt.Sprintf("@id(%q)\n%s", "sandbox-"+kind+"/"+namespace+"/"+userID, body),
 	}
 }
 
@@ -149,21 +138,6 @@ func (s *Session) SandboxPolicies(ctx context.Context, namespace string) (map[st
 	return found, nil
 }
 
-// CreatePolicy creates a policy with no version and returns its id.
-func (s *Session) CreatePolicy(ctx context.Context, name, description string) (string, error) {
-	policy, err := s.zones.Policies.New(ctx, s.Zone.ID, keycard.ZonePolicyNewParams{
-		Name:        name,
-		Description: keycard.String(description),
-	})
-	if err != nil {
-		return "", fmt.Errorf("%w: create policy %q: %w", ErrAPI, name, requestError(err))
-	}
-	if policy == nil || policy.ID == "" {
-		return "", fmt.Errorf("%w: create policy %q: the response holds no policy id", ErrAPI, name)
-	}
-	return policy.ID, nil
-}
-
 // ArchivePolicy archives the policy. Every error wraps ErrAPI.
 func (s *Session) ArchivePolicy(ctx context.Context, policyID string) error {
 	policy, err := s.zones.Policies.Archive(ctx, policyID, keycard.ZonePolicyArchiveParams{ZoneID: s.Zone.ID})
@@ -175,76 +149,6 @@ func (s *Session) ArchivePolicy(ctx context.Context, policyID string) error {
 			ErrAPI, policyID)
 	}
 	return nil
-}
-
-// LatestPolicyDigest returns the id and sandbox_digest annotation of the
-// policy's newest version. The id is "" when the policy has no version. The
-// digest is "" when the version does not hold exactly one policy with that
-// annotation. Every error wraps ErrAPI.
-func (s *Session) LatestPolicyDigest(ctx context.Context, policyID string) (string, string, error) {
-	page, err := s.zones.Policies.Versions.List(ctx, policyID, keycard.ZonePolicyVersionListParams{
-		ZoneID: s.Zone.ID,
-		Limit:  keycard.Int(1),
-		Order:  keycard.ZonePolicyVersionListParamsOrderDesc,
-		Format: keycard.ZonePolicyVersionListParamsFormatJson,
-	})
-	if err != nil {
-		return "", "", fmt.Errorf("%w: list versions of policy %s: %w", ErrAPI, policyID, requestError(err))
-	}
-	if page == nil || !page.JSON.Items.Valid() {
-		return "", "", fmt.Errorf("%w: list versions of policy %s: %w", ErrAPI, policyID, errNoPage)
-	}
-	if len(page.Items) == 0 {
-		return "", "", nil
-	}
-	version := page.Items[0]
-	if version.ID == "" || version.PolicyID != policyID {
-		return "", "", fmt.Errorf("%w: a version listed for policy %s has no id or another policy_id",
-			ErrAPI, policyID)
-	}
-	return version.ID, policyDigest(version.JSON.CedarJson.Raw()), nil
-}
-
-// policyDigest returns the sandbox_digest annotation of the one static policy
-// in a version's Cedar JSON, or "".
-func policyDigest(cedarJSON string) string {
-	var set struct {
-		StaticPolicies map[string]struct {
-			Annotations map[string]*string `json:"annotations"`
-		} `json:"staticPolicies"`
-		TemplateLinks []json.RawMessage `json:"templateLinks"`
-	}
-	if json.Unmarshal([]byte(cedarJSON), &set) != nil || len(set.StaticPolicies) != 1 || len(set.TemplateLinks) > 0 {
-		return ""
-	}
-	for _, policy := range set.StaticPolicies {
-		if digest := policy.Annotations[digestAnnotation]; digest != nil {
-			return *digest
-		}
-	}
-	return ""
-}
-
-// CreatePolicyVersion publishes cedar as the policy's next version, validated
-// against the zone's default schema, and returns the version id. A version is
-// immutable, so a change to the text always publishes a new one.
-func (s *Session) CreatePolicyVersion(ctx context.Context, policyID, cedar string) (string, error) {
-	schema, err := s.defaultSchemaVersion(ctx)
-	if err != nil {
-		return "", err
-	}
-	version, err := s.zones.Policies.Versions.New(ctx, policyID, keycard.ZonePolicyVersionNewParams{
-		ZoneID:        s.Zone.ID,
-		SchemaVersion: schema,
-		CedarRaw:      keycard.String(cedar),
-	})
-	if err != nil {
-		return "", fmt.Errorf("%w: create a version of policy %s: %w", ErrAPI, policyID, requestError(err))
-	}
-	if version == nil || version.ID == "" {
-		return "", fmt.Errorf("%w: create a version of policy %s: the response holds no version id", ErrAPI, policyID)
-	}
-	return version.ID, nil
 }
 
 // FindPolicySet returns the zone's unarchived policy set named name. Its ID
@@ -307,100 +211,141 @@ func (s *Session) CreatePolicySet(ctx context.Context, name string) (string, err
 	return set.ID, nil
 }
 
-// PolicySetManifest returns the entries of one version of the policy set.
-// Every error wraps ErrAPI.
-func (s *Session) PolicySetManifest(
-	ctx context.Context,
-	setID, versionID string,
-) ([]keycard.PolicySetManifestEntry, error) {
-	version, err := s.zones.PolicySets.Versions.Get(ctx, versionID, keycard.ZonePolicySetVersionGetParams{
-		ZoneID: s.Zone.ID, PolicySetID: setID,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("%w: get policy set version %s: %w", ErrAPI, versionID, requestError(err))
-	}
-	if version == nil || version.ID != versionID || version.PolicySetID != setID ||
-		!version.Manifest.JSON.Entries.Valid() {
-		return nil, fmt.Errorf("%w: get policy set version %s: the response holds another version or no manifest",
-			ErrAPI, versionID)
-	}
-	return version.Manifest.Entries, nil
+// A Manifest is the content of one policy set version. Every entry has a
+// version validated against SchemaVersion.
+type Manifest struct {
+	PolicySetID   string          `json:"policy_set_id"`
+	VersionID     string          `json:"policy_set_version_id"`
+	SchemaVersion string          `json:"schema_version"`
+	Entries       []ManifestEntry `json:"entries"`
 }
 
-// CreatePolicySetVersion publishes a version of the policy set that holds
-// entries, validated against the zone's default schema, and returns the
-// version id. The version is not active until ActivatePolicySetVersion.
-func (s *Session) CreatePolicySetVersion(
-	ctx context.Context,
-	setID string,
-	entries []keycard.PolicySetManifestEntryParam,
-) (string, error) {
-	schema, err := s.defaultSchemaVersion(ctx)
-	if err != nil {
-		return "", err
+// A ManifestEntry pins one version of one policy.
+type ManifestEntry struct {
+	PolicyID        string `json:"policy_id"`
+	PolicyVersionID string `json:"policy_version_id"`
+}
+
+// An ApplyEntry is one policy in the content ApplyPolicySet sends.
+//
+//   - PolicyID and PolicyVersionID pin that version. Its schema must be the
+//     apply's schema.
+//   - PolicyID and CedarRaw keep the pinned version when its content and
+//     schema match, and publish a new version otherwise.
+//   - NewPolicy and CedarRaw create the policy and its first version.
+type ApplyEntry struct {
+	PolicyID        string     `json:"policy_id,omitempty"`
+	PolicyVersionID string     `json:"policy_version_id,omitempty"`
+	NewPolicy       *NewPolicy `json:"new_policy,omitempty"`
+	CedarRaw        string     `json:"cedar_raw,omitempty"`
+}
+
+// A NewPolicy names a policy that an ApplyEntry creates.
+type NewPolicy struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// An ApplyChange is what an apply did with one policy. Action is one of
+// created_policy, created_version, reused, repinned and dropped.
+type ApplyChange struct {
+	PolicyID string `json:"policy_id"`
+	Name     string `json:"name"`
+	Action   string `json:"action"`
+}
+
+// An ApplyResult is the policy set version an apply activated.
+type ApplyResult struct {
+	VersionID string
+	// Created is false when the content matched the latest version.
+	Created bool
+	Changes []ApplyChange
+}
+
+// PolicySetManifest returns the manifest of the policy set's version
+// versionID, or of its latest version when versionID is "". For the latest
+// version it also returns the ETag that ApplyPolicySet sends as If-Match. A
+// set with no version has an empty latest manifest. Every error wraps ErrAPI.
+func (s *Session) PolicySetManifest(ctx context.Context, setID, versionID string) (Manifest, string, error) {
+	path := s.policySetPath(setID) + "/manifest"
+	if versionID != "" {
+		path += "?" + url.Values{"version": {versionID}}.Encode()
 	}
-	version, err := s.zones.PolicySets.Versions.New(ctx, setID, keycard.ZonePolicySetVersionNewParams{
-		ZoneID:        s.Zone.ID,
-		SchemaVersion: schema,
-		Manifest:      keycard.PolicySetManifestParam{Entries: entries},
-	})
-	if err != nil {
-		return "", fmt.Errorf("%w: create a version of policy set %s: %w", ErrAPI, setID, requestError(err))
+	var manifest Manifest
+	var response *http.Response
+	if err := s.client().Get(ctx, path, nil, &manifest, option.WithResponseInto(&response)); err != nil {
+		return Manifest{}, "", fmt.Errorf("%w: get the manifest of policy set %s: %w", ErrAPI, setID, requestError(err))
 	}
-	if version == nil || version.ID == "" {
-		return "", fmt.Errorf("%w: create a version of policy set %s: the response holds no version id",
+	if manifest.PolicySetID != setID || manifest.Entries == nil {
+		return Manifest{}, "", fmt.Errorf("%w: get the manifest of policy set %s: "+
+			"the response holds another set or no entries", ErrAPI, setID)
+	}
+	if versionID != "" {
+		if manifest.VersionID != versionID {
+			return Manifest{}, "", fmt.Errorf("%w: get the manifest of policy set %s version %s: "+
+				"the response holds another version", ErrAPI, setID, versionID)
+		}
+		return manifest, "", nil
+	}
+	etag := response.Header.Get("ETag")
+	if etag == "" {
+		return Manifest{}, "", fmt.Errorf("%w: get the manifest of policy set %s: the response holds no ETag",
 			ErrAPI, setID)
 	}
-	return version.ID, nil
+	return manifest, etag, nil
 }
 
-// ActivatePolicySetVersion binds the version as the zone's active policy
-// set. A zone has one active zone-wide policy set, so this replaces the
-// binding of any other zone-wide set.
-func (s *Session) ActivatePolicySetVersion(ctx context.Context, setID, versionID string) error {
-	version, err := s.zones.PolicySets.Versions.Update(ctx, versionID, keycard.ZonePolicySetVersionUpdateParams{
-		ZoneID: s.Zone.ID, PolicySetID: setID, Active: true,
-	})
+// ApplyPolicySet replaces the content of the policy set with entries and
+// activates the resulting version in one transaction. The zone validates
+// every entry against schema. When schema is "", the zone uses the latest
+// version's schema if it still accepts writes, else its default schema. etag
+// is the latest manifest's ETag from PolicySetManifest. The zone returns HTTP
+// 412 when etag does not match the latest manifest. Every error wraps ErrAPI.
+func (s *Session) ApplyPolicySet(
+	ctx context.Context,
+	setID, etag, schema string,
+	entries []ApplyEntry,
+) (ApplyResult, error) {
+	if entries == nil {
+		entries = []ApplyEntry{}
+	}
+	body, err := json.Marshal(struct {
+		SchemaVersion string       `json:"schema_version,omitempty"`
+		Activate      bool         `json:"activate"`
+		Entries       []ApplyEntry `json:"entries"`
+	}{schema, true, entries})
 	if err != nil {
-		return fmt.Errorf("%w: activate policy set version %s: %w", ErrAPI, versionID, requestError(err))
+		return ApplyResult{}, fmt.Errorf("%w: apply policy set %s: %w", ErrAPI, setID, err)
 	}
-	if version == nil || version.ID != versionID {
-		return fmt.Errorf("%w: activate policy set version %s: the response holds another version or none",
-			ErrAPI, versionID)
+	var applied struct {
+		Created bool          `json:"created"`
+		Changes []ApplyChange `json:"changes"`
+		Version struct {
+			ID string `json:"id"`
+		} `json:"policy_set_version"`
+		Binding struct {
+			VersionID string `json:"policy_set_version_id"`
+		} `json:"binding"`
 	}
-	return nil
+	err = s.client().Put(ctx, s.policySetPath(setID)+"/manifest", body, &applied, option.WithHeader("If-Match", etag))
+	if err != nil {
+		return ApplyResult{}, fmt.Errorf("%w: apply policy set %s: %w", ErrAPI, setID, requestError(err))
+	}
+	if applied.Version.ID == "" || applied.Binding.VersionID != applied.Version.ID {
+		return ApplyResult{}, fmt.Errorf("%w: apply policy set %s: the response holds no version or does not bind it",
+			ErrAPI, setID)
+	}
+	return ApplyResult{VersionID: applied.Version.ID, Created: applied.Created, Changes: applied.Changes}, nil
 }
 
-// defaultSchemaVersion returns the zone's default Cedar schema version, which
-// new policy and policy set versions are validated against. Every error wraps
-// ErrAPI or ErrPolicySchemaNotFound.
-func (s *Session) defaultSchemaVersion(ctx context.Context) (string, error) {
-	if s.schemaVersion != "" {
-		return s.schemaVersion, nil
-	}
-	all, err := listAll("policy schemas", func(params pageParams) (listPage[keycard.SchemaVersionWithZoneInfo], error) {
-		page, err := s.zones.PolicySchemas.List(ctx, s.Zone.ID, keycard.ZonePolicySchemaListParams{
-			After: params.After, Limit: params.Limit, FilterDefault: keycard.Bool(true),
-		})
-		if err != nil || page == nil {
-			//nolint:wrapcheck // listAll passes it through requestError.
-			return listPage[keycard.SchemaVersionWithZoneInfo]{}, err
-		}
-		return listPage[keycard.SchemaVersionWithZoneInfo]{
-			items: page.Items, after: page.Pagination.AfterCursor,
-			complete: page.JSON.Items.Valid() && page.JSON.Pagination.Valid(),
-		}, nil
-	})
-	if err != nil {
-		return "", err
-	}
-	for _, schema := range all {
-		if schema.IsDefault && schema.Version != "" {
-			s.schemaVersion = schema.Version
-			return schema.Version, nil
-		}
-	}
-	return "", fmt.Errorf("%w: the zone has no default policy schema", ErrPolicySchemaNotFound)
+func (s *Session) policySetPath(setID string) string {
+	return "zones/" + url.PathEscape(s.Zone.ID) + "/policy-sets/" + url.PathEscape(setID)
+}
+
+// client returns a keycard.Client for the routes keycard-go has no method
+// for. It uses the session's base URL, token and HTTP client.
+func (s *Session) client() *keycard.Client {
+	return &keycard.Client{Options: s.zones.Options}
 }
 
 func (s *Session) listPolicies(ctx context.Context, names []string) ([]keycard.Policy, error) {
