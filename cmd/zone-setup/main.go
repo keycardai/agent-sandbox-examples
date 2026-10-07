@@ -99,10 +99,11 @@ func setup(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 	identifier := zonesetup.ApplicationIdentifier(values.Namespace)
-	applicationID, err := ensureApplication(ctx, cmd, session, identifier, values.Namespace)
+	application, err := ensureApplication(ctx, cmd, session, identifier, values.Namespace)
 	if err != nil {
 		return err
 	}
+	applicationID := application.ID
 	err = ensureResources(ctx, cmd, session, applicationID, values.Resources, secrets.Resource)
 	if err != nil {
 		return err
@@ -111,7 +112,7 @@ func setup(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if err = ensurePolicies(ctx, cmd, session, values, access); err != nil {
+	if err = ensurePolicies(ctx, cmd, session, values, application.Name, access); err != nil {
 		return err
 	}
 	if cmd.Bool("dry-run") {
@@ -162,38 +163,40 @@ func ensureProvider(
 	return providerID, nil
 }
 
+// ensureApplication returns the egress proxy Application. It has no ID in a
+// dry run that would create it.
 func ensureApplication(
 	ctx context.Context,
 	cmd *cli.Command,
 	session *zonesetup.Session,
 	identifier, namespace string,
-) (string, error) {
+) (keycard.Application, error) {
 	app, err := session.FindApplication(ctx, identifier)
 	switch {
 	case err != nil:
-		return "", fmt.Errorf("finding the application: %w", err)
+		return keycard.Application{}, fmt.Errorf("finding the application: %w", err)
 	case app.ID == "" && cmd.Bool("dry-run"):
 		sayf(cmd, "would create application %s", identifier)
-		return "", nil
+		return keycard.Application{Name: zonesetup.ApplicationName}, nil
 	case app.ID == "":
 		applicationID, err := session.CreateApplication(ctx, identifier, namespace)
 		if err != nil {
-			return "", fmt.Errorf("creating the application: %w", err)
+			return keycard.Application{}, fmt.Errorf("creating the application: %w", err)
 		}
 		sayf(cmd, "created application %s", applicationID)
-		return applicationID, nil
+		return keycard.Application{ID: applicationID, Name: zonesetup.ApplicationName}, nil
 	case app.Consent == keycard.ApplicationConsentImplicit:
 		sayf(cmd, "found application %s", app.ID)
-		return app.ID, nil
+		return app, nil
 	case cmd.Bool("dry-run"):
 		sayf(cmd, "would set consent to implicit on application %s", app.ID)
-		return app.ID, nil
+		return app, nil
 	}
 	if err := session.SetApplicationConsentImplicit(ctx, app.ID); err != nil {
-		return "", fmt.Errorf("setting consent on the application: %w", err)
+		return keycard.Application{}, fmt.Errorf("setting consent on the application: %w", err)
 	}
 	sayf(cmd, "set consent to implicit on application %s", app.ID)
-	return app.ID, nil
+	return app, nil
 }
 
 func ensureResources(
@@ -413,6 +416,7 @@ func ensurePolicies(
 	cmd *cli.Command,
 	session *zonesetup.Session,
 	values *zonesetup.Values,
+	applicationName string,
 	access []userAccess,
 ) error {
 	set, err := session.FindPolicySet(ctx, values.PolicySet)
@@ -433,8 +437,9 @@ func ensurePolicies(
 	}
 	var policies []zonesetup.UserPolicy
 	for _, user := range access {
-		policyUser := keycard.User{ID: user.UserID, Identifier: user.UserIdentifier}
-		policies = append(policies, zonesetup.UserPolicies(values.Namespace, values.IssuerURL, policyUser)...)
+		policyUser := keycard.User{ID: user.UserID, Identifier: user.UserIdentifier, Email: user.UserEmail}
+		policies = append(policies,
+			zonesetup.UserPolicies(values.Namespace, values.IssuerURL, applicationName, policyUser)...)
 	}
 	if err = ensurePolicySet(ctx, cmd, session, set, values.PolicySet, policies, owned); err != nil {
 		return err
@@ -470,7 +475,8 @@ func archiveRemoved(
 
 // ensurePolicySet applies a version of the policy set that holds policies and
 // no other owned policy, and activates it. set has no ID when the set does not
-// exist yet. owned maps a policy name to the policy the zone already has.
+// exist yet. owned maps a policy name to the policy the zone already has. When
+// no policy is left in the set, it adds the placeholder policy.
 //
 // The apply starts from the active version's manifest, or the latest
 // version's when the set is not active, and uses that version's schema. The
@@ -503,7 +509,10 @@ func ensurePolicySet(
 	if err != nil {
 		return fmt.Errorf("reading the policy set %s: %w", set.ID, err)
 	}
-	entries := mergeManifest(base.Entries, policies, owned)
+	entries, err := withPlaceholder(ctx, session, mergeManifest(base.Entries, policies, owned))
+	if err != nil {
+		return err
+	}
 	if cmd.Bool("dry-run") {
 		sayf(cmd, "would apply policy set %s with %d policies and activate it", set.ID, len(entries))
 		return nil
@@ -604,6 +613,25 @@ func mergeManifest(
 		}
 	}
 	return out
+}
+
+// withPlaceholder returns entries, or the placeholder policy's entry when
+// entries is empty. The apply creates the placeholder when the zone does not
+// have it.
+func withPlaceholder(
+	ctx context.Context,
+	session *zonesetup.Session,
+	entries []zonesetup.ApplyEntry,
+) ([]zonesetup.ApplyEntry, error) {
+	if len(entries) > 0 {
+		return entries, nil
+	}
+	placeholder := zonesetup.PlaceholderPolicy()
+	found, err := session.FindPolicy(ctx, placeholder.Name)
+	if err != nil {
+		return nil, fmt.Errorf("finding the policy %q: %w", placeholder.Name, err)
+	}
+	return []zonesetup.ApplyEntry{newEntry(placeholder, found)}, nil
 }
 
 // newEntry returns the entry for a policy the set does not hold. found has

@@ -27,15 +27,24 @@ type UserPolicy struct {
 }
 
 // UserPolicies returns the impersonation and access policies for one user of
-// the namespace's sandboxes. issuer is the cluster's OIDC issuer URL. user
-// needs its ID and Identifier.
+// the namespace's sandboxes. issuer is the cluster's OIDC issuer URL.
+// applicationName is the name of the namespace's egress proxy Application.
+// user needs its ID, Identifier and Email.
+//
+// The catalog's kubernetes-sandbox-user package in svc-catalog writes the same
+// policies. Keep the names, descriptions, `@id`s and Cedar text identical to
+// its templates, so the two tools share one pair of policies per user and
+// namespace.
 //
 // An exchange goes through two checks, and both must allow it. The subject
 // check asks whether the user may reach the resource, and AccessPolicy
 // answers it. The actor check asks whether the Application may impersonate
 // the user for that resource, and ImpersonationPolicy answers it.
-func UserPolicies(namespace, issuer string, user keycard.User) []UserPolicy {
-	return []UserPolicy{ImpersonationPolicy(namespace, issuer, user), AccessPolicy(namespace, issuer, user)}
+func UserPolicies(namespace, issuer, applicationName string, user keycard.User) []UserPolicy {
+	return []UserPolicy{
+		ImpersonationPolicy(namespace, issuer, applicationName, user),
+		AccessPolicy(namespace, issuer, applicationName, user),
+	}
 }
 
 // AccessPolicy is the Cedar policy that lets the user reach resources through
@@ -43,21 +52,19 @@ func UserPolicies(namespace, issuer string, user keycard.User) []UserPolicy {
 // impersonate false, and the actor's token claims in context. The policy
 // matches only when the actor token is the user's ServiceAccount token from
 // the cluster's issuer. ImpersonationPolicy limits the resources.
-func AccessPolicy(namespace, issuer string, user keycard.User) UserPolicy {
-	return newUserPolicy(accessKind, namespace, user.ID,
-		fmt.Sprintf("Lets user %s reach resources through the sandbox in namespace %s", user.ID, namespace),
+func AccessPolicy(namespace, issuer, applicationName string, user keycard.User) UserPolicy {
+	return newUserPolicy(accessKind, namespace, user,
+		fmt.Sprintf("Permits %s's sandbox to act on their behalf through %s", user.Email, applicationName),
 		fmt.Sprintf(`permit (
   principal is Keycard::User,
   action,
   resource
 ) when {
   principal.identifier == %q &&
-  context has actor_claims &&
-  context.actor_claims has issuer_claims &&
+  context has actor_claims && context.actor_claims has issuer_claims &&
   context.actor_claims.issuer_claims.contains({"key": "iss", "value": %q}) &&
   context.actor_claims.issuer_claims.contains({"key": "sub", "value": %q})
-};
-`, user.Identifier, issuer, ServiceAccountSubject(namespace, user.ID)))
+};`, user.Identifier, issuer, ServiceAccountSubject(namespace, user.ID)))
 }
 
 // ImpersonationPolicy is the Cedar policy that lets the namespace's egress
@@ -75,41 +82,66 @@ func AccessPolicy(namespace, issuer string, user keycard.User) UserPolicy {
 // publish with "unable to guarantee safety of access to optional attribute".
 // `identifier` and `dependencies` are required attributes of
 // Keycard::Application in the zone's default schema.
-func ImpersonationPolicy(namespace, issuer string, user keycard.User) UserPolicy {
-	application := ApplicationIdentifier(namespace)
-	return newUserPolicy(impersonationKind, namespace, user.ID,
-		fmt.Sprintf("Lets Application %s impersonate user %s for its dependencies", application, user.ID),
+func ImpersonationPolicy(namespace, issuer, applicationName string, user keycard.User) UserPolicy {
+	return newUserPolicy(impersonationKind, namespace, user,
+		fmt.Sprintf("Permits %s to act on behalf of %s on resources listed in its dependencies, "+
+			"for requests from their sandbox", applicationName, user.Email),
 		fmt.Sprintf(`permit (
   principal is Keycard::Application,
   action,
   resource
 ) when {
   principal.identifier == %q &&
-  principal.dependencies.contains(resource) &&
   context has impersonate && context.impersonate == true &&
-  context has subject &&
-  context.subject.identifier == %q &&
-  context has actor_claims &&
-  context.actor_claims has issuer_claims &&
+  context has subject && context.subject.identifier == %q &&
+  context has actor_claims && context.actor_claims has issuer_claims &&
   context.actor_claims.issuer_claims.contains({"key": "iss", "value": %q}) &&
-  context.actor_claims.issuer_claims.contains({"key": "sub", "value": %q})
-};
-`, application, user.Identifier, issuer, ServiceAccountSubject(namespace, user.ID)))
+  context.actor_claims.issuer_claims.contains({"key": "sub", "value": %q}) &&
+  principal.dependencies.contains(resource)
+};`, ApplicationIdentifier(namespace), user.Identifier, issuer, ServiceAccountSubject(namespace, user.ID)))
 }
 
-// newUserPolicy names a policy by its kind, namespace and user, and adds the
-// `@id` annotation to body. The zone keys the policy by its `@id` in the Cedar
-// JSON it stores.
-func newUserPolicy(kind, namespace, userID, description, body string) UserPolicy {
+// newUserPolicy names a policy by its kind, namespace and user's email, and
+// adds the `@id` annotation to body. The zone keys the policy by its `@id` in
+// the Cedar JSON it stores.
+func newUserPolicy(kind, namespace string, user keycard.User, description, body string) UserPolicy {
+	idPrefix := "sandbox"
+	if namespace != DefaultNamespace {
+		idPrefix += "-" + namespace
+	}
 	return UserPolicy{
-		Name:        policyNamePrefix(kind, namespace) + userID,
+		Name:        policyNamePrefix(kind, namespace) + user.Email,
 		Description: description,
-		Cedar:       fmt.Sprintf("@id(%q)\n%s", "sandbox-"+kind+"/"+namespace+"/"+userID, body),
+		Cedar:       fmt.Sprintf("@id(%q)\n%s", idPrefix+"-"+kind+"-"+user.ID, body),
 	}
 }
 
+// policyNamePrefix is the start of the name of every policy of kind in the
+// namespace. Names in DefaultNamespace do not include the namespace.
 func policyNamePrefix(kind, namespace string) string {
-	return "Sandbox " + kind + ": " + namespace + "/"
+	label := "Sandbox"
+	if namespace != DefaultNamespace {
+		label += " (" + namespace + ")"
+	}
+	return label + " " + kind + ": "
+}
+
+// PlaceholderPolicy is a policy that permits nothing. A policy set version
+// must hold at least one policy. zone-setup adds this policy to the sandbox
+// set when no other policy is left in it.
+func PlaceholderPolicy() UserPolicy {
+	return UserPolicy{
+		Name:        "Sandbox placeholder",
+		Description: "Permits nothing. Keeps the sandbox policy set valid when it holds no other policy",
+		Cedar: `@id("sandbox-placeholder")
+permit (
+  principal,
+  action,
+  resource
+) when {
+  false
+};`,
+	}
 }
 
 // SandboxPolicies returns the zone's unarchived policies that zone-setup
@@ -136,6 +168,31 @@ func (s *Session) SandboxPolicies(ctx context.Context, namespace string) (map[st
 		found[policy.Name] = policy
 	}
 	return found, nil
+}
+
+// FindPolicy returns the zone's unarchived policy named name. Its ID is ""
+// when no policy matches. Every error wraps ErrAPI or ErrPolicyAmbiguous.
+func (s *Session) FindPolicy(ctx context.Context, name string) (keycard.Policy, error) {
+	all, err := s.listPolicies(ctx, []string{name})
+	if err != nil {
+		return keycard.Policy{}, err
+	}
+	var found []keycard.Policy
+	for _, policy := range all {
+		if policy.Name == name && policy.ArchivedAt.IsZero() {
+			found = append(found, policy)
+		}
+	}
+	switch {
+	case len(found) > 1:
+		return keycard.Policy{}, fmt.Errorf("%w: %d policies are named %q", ErrPolicyAmbiguous, len(found), name)
+	case len(found) == 1 && found[0].ID == "":
+		return keycard.Policy{}, fmt.Errorf("%w: the policy %q has no id", ErrAPI, name)
+	case len(found) == 1:
+		return found[0], nil
+	default:
+		return keycard.Policy{}, nil
+	}
 }
 
 // ArchivePolicy archives the policy. Every error wraps ErrAPI.

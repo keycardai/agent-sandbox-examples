@@ -25,74 +25,128 @@ const (
 // TestUserPolicies compares the whole Cedar text, because the text decides
 // which ServiceAccount token lets the Application act for which user. The
 // user's identifier differs from its ID, as it does when the provider sets
-// user_identifier_claim, so a line that matches the wrong one fails.
+// user_identifier_claim, so a line that matches the wrong one fails. The
+// expected names, descriptions and text are the ones svc-catalog's
+// kubernetes-sandbox-user package renders. Only a namespace other than
+// DefaultNamespace goes into the names and `@id`s.
 func TestUserPolicies(t *testing.T) {
 	t.Parallel()
 	const issuer = "https://oidc.example.com"
-	user := keycard.User{ID: adaID, Identifier: adaIdentifier}
-	want := []struct{ name, description, cedar string }{
+	user := keycard.User{ID: adaID, Identifier: adaIdentifier, Email: "ada@example.com"}
+	type policy struct{ name, description, cedar string }
+	cases := []struct {
+		namespace string
+		want      []policy
+	}{
 		{
-			name:        "Sandbox impersonation: agents/user-1",
-			description: "Lets Application urn:keycard:sandbox-proxy:agents impersonate user user-1 for its dependencies",
-			cedar: `@id("sandbox-impersonation/agents/user-1")
+			namespace: "agents",
+			want: []policy{
+				{
+					name: "Sandbox impersonation: ada@example.com",
+					description: "Permits Keycard egress proxy to act on behalf of ada@example.com on resources " +
+						"listed in its dependencies, for requests from their sandbox",
+					cedar: `@id("sandbox-impersonation-user-1")
 permit (
   principal is Keycard::Application,
   action,
   resource
 ) when {
   principal.identifier == "urn:keycard:sandbox-proxy:agents" &&
-  principal.dependencies.contains(resource) &&
   context has impersonate && context.impersonate == true &&
-  context has subject &&
-  context.subject.identifier == "ada-identifier" &&
-  context has actor_claims &&
-  context.actor_claims has issuer_claims &&
+  context has subject && context.subject.identifier == "ada-identifier" &&
+  context has actor_claims && context.actor_claims has issuer_claims &&
   context.actor_claims.issuer_claims.contains({"key": "iss", "value": "https://oidc.example.com"}) &&
-  context.actor_claims.issuer_claims.contains({"key": "sub", "value": "system:serviceaccount:agents:user-1"})
-};
-`,
-		},
-		{
-			name:        "Sandbox access: agents/user-1",
-			description: "Lets user user-1 reach resources through the sandbox in namespace agents",
-			cedar: `@id("sandbox-access/agents/user-1")
+  context.actor_claims.issuer_claims.contains({"key": "sub", "value": "system:serviceaccount:agents:user-1"}) &&
+  principal.dependencies.contains(resource)
+};`,
+				},
+				{
+					name:        "Sandbox access: ada@example.com",
+					description: "Permits ada@example.com's sandbox to act on their behalf through Keycard egress proxy",
+					cedar: `@id("sandbox-access-user-1")
 permit (
   principal is Keycard::User,
   action,
   resource
 ) when {
   principal.identifier == "ada-identifier" &&
-  context has actor_claims &&
-  context.actor_claims has issuer_claims &&
+  context has actor_claims && context.actor_claims has issuer_claims &&
   context.actor_claims.issuer_claims.contains({"key": "iss", "value": "https://oidc.example.com"}) &&
   context.actor_claims.issuer_claims.contains({"key": "sub", "value": "system:serviceaccount:agents:user-1"})
-};
-`,
+};`,
+				},
+			},
+		},
+		{
+			namespace: "team-b",
+			want: []policy{
+				{
+					name: "Sandbox (team-b) impersonation: ada@example.com",
+					description: "Permits Keycard egress proxy to act on behalf of ada@example.com on resources " +
+						"listed in its dependencies, for requests from their sandbox",
+					cedar: `@id("sandbox-team-b-impersonation-user-1")
+permit (
+  principal is Keycard::Application,
+  action,
+  resource
+) when {
+  principal.identifier == "urn:keycard:sandbox-proxy:team-b" &&
+  context has impersonate && context.impersonate == true &&
+  context has subject && context.subject.identifier == "ada-identifier" &&
+  context has actor_claims && context.actor_claims has issuer_claims &&
+  context.actor_claims.issuer_claims.contains({"key": "iss", "value": "https://oidc.example.com"}) &&
+  context.actor_claims.issuer_claims.contains({"key": "sub", "value": "system:serviceaccount:team-b:user-1"}) &&
+  principal.dependencies.contains(resource)
+};`,
+				},
+				{
+					name:        "Sandbox (team-b) access: ada@example.com",
+					description: "Permits ada@example.com's sandbox to act on their behalf through Keycard egress proxy",
+					cedar: `@id("sandbox-team-b-access-user-1")
+permit (
+  principal is Keycard::User,
+  action,
+  resource
+) when {
+  principal.identifier == "ada-identifier" &&
+  context has actor_claims && context.actor_claims has issuer_claims &&
+  context.actor_claims.issuer_claims.contains({"key": "iss", "value": "https://oidc.example.com"}) &&
+  context.actor_claims.issuer_claims.contains({"key": "sub", "value": "system:serviceaccount:team-b:user-1"})
+};`,
+				},
+			},
 		},
 	}
-	policies := zonesetup.UserPolicies("agents", issuer, user)
-	if len(policies) != len(want) {
-		t.Fatalf("got %d policies, want %d", len(policies), len(want))
-	}
-	for i, policy := range policies {
-		if policy.Name != want[i].name {
-			t.Errorf("policy %d name = %q, want %q", i, policy.Name, want[i].name)
-		}
-		if policy.Description != want[i].description {
-			t.Errorf("policy %d description = %q, want %q", i, policy.Description, want[i].description)
-		}
-		if policy.Cedar != want[i].cedar {
-			t.Errorf("policy %d Cedar =\n%s\nwant\n%s", i, policy.Cedar, want[i].cedar)
-		}
+	for _, tc := range cases {
+		t.Run(tc.namespace, func(t *testing.T) {
+			t.Parallel()
+			policies := zonesetup.UserPolicies(tc.namespace, issuer, zonesetup.ApplicationName, user)
+			if len(policies) != len(tc.want) {
+				t.Fatalf("got %d policies, want %d", len(policies), len(tc.want))
+			}
+			for i, got := range policies {
+				want := tc.want[i]
+				if got.Name != want.name {
+					t.Errorf("policy %d name = %q, want %q", i, got.Name, want.name)
+				}
+				if got.Description != want.description {
+					t.Errorf("policy %d description = %q, want %q", i, got.Description, want.description)
+				}
+				if got.Cedar != want.cedar {
+					t.Errorf("policy %d Cedar =\n%s\nwant\n%s", i, got.Cedar, want.cedar)
+				}
+			}
+		})
 	}
 }
 
-// TestFindPolicy runs each listing through SandboxPolicies and FindPolicySet.
-// SandboxPolicies matches the namespace's name prefixes and FindPolicySet the
-// exact name. Both ignore archived matches and refuse two matches.
+// TestFindPolicy runs each listing through SandboxPolicies, FindPolicy and
+// FindPolicySet. SandboxPolicies matches the namespace's name prefixes, and
+// FindPolicy and FindPolicySet the exact name. All three ignore archived
+// matches and refuse two matches.
 func TestFindPolicy(t *testing.T) {
 	t.Parallel()
-	const name = "Sandbox impersonation: agents/user-1"
+	const name = "Sandbox impersonation: ada@example.com"
 	page := func(items string) http.HandlerFunc {
 		return rawBody(`{"items":[` + items + `],"pagination":{"after_cursor":""}}`)
 	}
@@ -105,23 +159,23 @@ func TestFindPolicy(t *testing.T) {
 	}{
 		{
 			name: "only the namespace's name matches",
-			items: `{"id":"p-2","name":"Sandbox impersonation: agents-2/user-1"},` +
-				`{"id":"p-1","name":"Sandbox impersonation: agents/user-1"}`,
+			items: `{"id":"p-2","name":"Sandbox (agents-2) impersonation: ada@example.com"},` +
+				`{"id":"p-1","name":"Sandbox impersonation: ada@example.com"}`,
 			wantID: "p-1",
 		},
 		{
 			name:  "an archived match is ignored",
-			items: `{"id":"p-old","name":"Sandbox impersonation: agents/user-1","archived_at":"2026-01-01T00:00:00Z"}`,
+			items: `{"id":"p-old","name":"Sandbox impersonation: ada@example.com","archived_at":"2026-01-01T00:00:00Z"}`,
 		},
 		{
 			name: "two unarchived matches are refused",
-			items: `{"id":"p-1","name":"Sandbox impersonation: agents/user-1"},` +
-				`{"id":"p-2","name":"Sandbox impersonation: agents/user-1"}`,
+			items: `{"id":"p-1","name":"Sandbox impersonation: ada@example.com"},` +
+				`{"id":"p-2","name":"Sandbox impersonation: ada@example.com"}`,
 			wantErr: zonesetup.ErrPolicyAmbiguous, wantSetErr: zonesetup.ErrPolicySetAmbiguous,
 		},
 		{
 			name:    "a match without an id is refused",
-			items:   `{"name":"Sandbox impersonation: agents/user-1"}`,
+			items:   `{"name":"Sandbox impersonation: ada@example.com"}`,
 			wantErr: zonesetup.ErrAPI, wantSetErr: zonesetup.ErrAPI,
 		},
 	}
@@ -136,6 +190,10 @@ func TestFindPolicy(t *testing.T) {
 			if !errors.Is(err, tc.wantErr) || policies[name].ID != tc.wantID || len(policies) > 1 {
 				t.Errorf("SandboxPolicies = %v, %v, want %q, %v", policies, err, tc.wantID, tc.wantErr)
 			}
+			policy, err := session.FindPolicy(t.Context(), name)
+			if !errors.Is(err, tc.wantErr) || policy.ID != tc.wantID {
+				t.Errorf("FindPolicy = %q, %v, want %q, %v", policy.ID, err, tc.wantID, tc.wantErr)
+			}
 			set, err := session.FindPolicySet(t.Context(), name)
 			if !errors.Is(err, tc.wantSetErr) || set.ID != tc.wantID {
 				t.Errorf("FindPolicySet = %q, %v, want %q, %v", set.ID, err, tc.wantID, tc.wantSetErr)
@@ -148,8 +206,8 @@ func TestFindPolicy(t *testing.T) {
 // fails when the response does not confirm it.
 func TestPolicyWrites(t *testing.T) {
 	t.Parallel()
-	cedar := zonesetup.ImpersonationPolicy("agents", "https://oidc.example.com",
-		keycard.User{ID: adaID, Identifier: adaID}).Cedar
+	cedar := zonesetup.ImpersonationPolicy("agents", "https://oidc.example.com", zonesetup.ApplicationName,
+		keycard.User{ID: adaID, Identifier: adaID, Email: "ada@example.com"}).Cedar
 	cedarJSON, err := json.Marshal(cedar)
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +215,7 @@ func TestPolicyWrites(t *testing.T) {
 	entries := []zonesetup.ApplyEntry{
 		{PolicyID: "policy-other", PolicyVersionID: "version-other"},
 		{PolicyID: "policy-k", CedarRaw: cedar},
-		{NewPolicy: &zonesetup.NewPolicy{Name: "Sandbox access: agents/user-1", Description: "d"}, CedarRaw: cedar},
+		{NewPolicy: &zonesetup.NewPolicy{Name: "Sandbox access: ada@example.com", Description: "d"}, CedarRaw: cedar},
 	}
 	apply := func(schema string, entries []zonesetup.ApplyEntry) func(context.Context, *zonesetup.Session) error {
 		return func(ctx context.Context, s *zonesetup.Session) error {
@@ -190,7 +248,7 @@ func TestPolicyWrites(t *testing.T) {
 			wantBody: `{"schema_version":"2026-03-16","activate":true,"entries":[` +
 				`{"policy_id":"policy-other","policy_version_id":"version-other"},` +
 				`{"policy_id":"policy-k","cedar_raw":` + string(cedarJSON) + `},` +
-				`{"new_policy":{"name":"Sandbox access: agents/user-1","description":"d"},` +
+				`{"new_policy":{"name":"Sandbox access: ada@example.com","description":"d"},` +
 				`"cedar_raw":` + string(cedarJSON) + `}]}`,
 			wantIfMatch: etagK,
 		},

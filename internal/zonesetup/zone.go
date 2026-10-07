@@ -156,12 +156,16 @@ func (s *Session) FindApplication(ctx context.Context, identifier string) (keyca
 	}
 }
 
+// ApplicationName is the name CreateApplication gives the egress proxy
+// Application.
+const ApplicationName = "Keycard egress proxy"
+
 // CreateApplication creates the egress proxy Application for the sandboxes in
 // namespace with implicit consent, and returns its id.
 func (s *Session) CreateApplication(ctx context.Context, identifier, namespace string) (string, error) {
 	app, err := s.zones.Applications.New(ctx, s.Zone.ID, keycard.ZoneApplicationNewParams{
 		Identifier: identifier,
-		Name:       "Keycard egress proxy",
+		Name:       ApplicationName,
 		Description: keycard.String(
 			"Egress proxy sidecar that mints credentials for sandboxes in namespace " + namespace,
 		),

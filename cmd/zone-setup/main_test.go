@@ -84,7 +84,7 @@ func (f *fakeZone) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		getManifestNewCall: `{"policy_set_id":"set-new","policy_set_version_id":null,"schema_version":null,"entries":[]}`,
 		applyNewCall: `{"created":true,"policy_set_version":{"id":"set-version-new"},` +
 			`"binding":{"policy_set_version_id":"set-version-new"},"changes":[` +
-			`{"policy_id":"policy-new","name":"Sandbox impersonation: agents/user-1","action":"created_policy"}]}`,
+			`{"policy_id":"policy-new","name":"Sandbox impersonation: ada@example.com","action":"created_policy"}]}`,
 	}[call]
 	if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/manifest") && query.Get("version") == "" {
 		w.Header().Set("ETag", latestETag)
@@ -341,13 +341,17 @@ func TestEnsurePolicies(t *testing.T) {
 		// userPolicies are the entries of the user's existing policies.
 		userPolicies = `{"policy_id":"policy-k","policy_version_id":"version-k"},` +
 			`{"policy_id":"access-k","policy_version_id":"access-version-k"}`
-		ownPolicies = `{"id":"policy-k","name":"Sandbox impersonation: agents/user-1"},` +
-			`{"id":"access-k","name":"Sandbox access: agents/user-1"}`
+		ownPolicies = `{"id":"policy-k","name":"Sandbox impersonation: ada@example.com"},` +
+			`{"id":"access-k","name":"Sandbox access: ada@example.com"}`
 	)
-	user := keycard.User{ID: adaID, Identifier: adaIdentifier}
-	access := []userAccess{{UserEmail: "ada@example.com", UserID: user.ID, UserIdentifier: user.Identifier}}
-	impersonation := zonesetup.ImpersonationPolicy(namespace, issuer, user)
-	accessPolicy := zonesetup.AccessPolicy(namespace, issuer, user)
+	user := keycard.User{ID: adaID, Identifier: adaIdentifier, Email: "ada@example.com"}
+	access := []userAccess{{UserEmail: user.Email, UserID: user.ID, UserIdentifier: user.Identifier}}
+	impersonation := zonesetup.ImpersonationPolicy(namespace, issuer, zonesetup.ApplicationName, user)
+	accessPolicy := zonesetup.AccessPolicy(namespace, issuer, zonesetup.ApplicationName, user)
+	placeholder := zonesetup.PlaceholderPolicy()
+	archived := func(policyID string) string {
+		return `{"id":"` + policyID + `","archived_at":"2026-10-06T00:00:00Z"}`
+	}
 	page := func(items string) string { return `{"items":[` + items + `],"pagination":{"after_cursor":""}}` }
 	manifest := func(versionID, schema, entries string) string {
 		return `{"policy_set_id":"set-k","policy_set_version_id":"` + versionID + `","schema_version":"` + schema +
@@ -379,19 +383,26 @@ func TestEnsurePolicies(t *testing.T) {
 	// one of another namespace, the user's policies, and the policies of a
 	// user the values file does not list.
 	pruned := with(map[string]string{
-		listPoliciesCall: page(ownPolicies + `,{"id":"policy-gone","name":"Sandbox impersonation: agents/user-2"},` +
-			`{"id":"access-gone","name":"Sandbox access: agents/user-2"},` +
-			`{"id":"policy-ns2","name":"Sandbox impersonation: agents-2/user-1"}`),
+		listPoliciesCall: page(ownPolicies + `,{"id":"policy-gone","name":"Sandbox impersonation: bob@example.com"},` +
+			`{"id":"access-gone","name":"Sandbox access: bob@example.com"},` +
+			`{"id":"policy-ns2","name":"Sandbox (agents-2) impersonation: ada@example.com"}`),
 		getManifestKCall: manifest("set-version-k", setSchema,
 			`{"policy_id":"policy-other","policy_version_id":"version-other"},`+
 				`{"policy_id":"policy-ns2","policy_version_id":"version-ns2"},`+userPolicies+`,`+
 				`{"policy_id":"policy-gone","policy_version_id":"version-gone"},`+
 				`{"policy_id":"access-gone","policy_version_id":"access-version-gone"}`),
-		archiveCall("policy-k"):    `{"id":"policy-k","archived_at":"2026-10-06T00:00:00Z"}`,
-		archiveCall("access-k"):    `{"id":"access-k","archived_at":"2026-10-06T00:00:00Z"}`,
-		archiveCall("policy-gone"): `{"id":"policy-gone","archived_at":"2026-10-06T00:00:00Z"}`,
-		archiveCall("access-gone"): `{"id":"access-gone","archived_at":"2026-10-06T00:00:00Z"}`,
+		archiveCall("policy-k"):    archived("policy-k"),
+		archiveCall("access-k"):    archived("access-k"),
+		archiveCall("policy-gone"): archived("policy-gone"),
+		archiveCall("access-gone"): archived("access-gone"),
 	})
+	// lastUser is an active set that holds only the user's policies.
+	lastUser := with(map[string]string{
+		getManifestKCall:        manifest("set-version-k", setSchema, userPolicies),
+		archiveCall("policy-k"): archived("policy-k"),
+		archiveCall("access-k"): archived("access-k"),
+	})
+	lastUserWrites := []string{applyKCall, archiveCall("access-k"), archiveCall("policy-k")}
 	otherActive := map[string]string{
 		listActiveSetsCall: page(`{"id":"set-other","name":"Production","active":true,"target_type":"zone"}`),
 	}
@@ -412,25 +423,15 @@ func TestEnsurePolicies(t *testing.T) {
 			CedarRaw:  accessPolicy.Cedar,
 		},
 	}
-	cases := []struct {
-		name       string
-		dryRun     bool
-		replace    bool
-		noUsers    bool
-		bodies     map[string]string
-		wantWrites []string
-		// wantApply is the body of the one apply, or nil when the run does not apply.
-		wantApply *applyBody
-		wantLog   []string
-		wantErr   error
-	}{
+	values := &zonesetup.Values{Namespace: namespace, IssuerURL: issuer, PolicySet: zonesetup.DefaultPolicySetName}
+	cases := []ensurePoliciesCase{
 		{
 			name:       "a fresh zone gets a new set that creates both policies and is active",
 			wantWrites: []string{postSetCall, applyNewCall},
 			wantApply:  &applyBody{Entries: freshEntries},
 			wantLog: []string{
 				`created policy set set-new for "Kubernetes Sandbox"`,
-				`policy policy-new for "Sandbox impersonation: agents/user-1": created_policy`,
+				`policy policy-new for "Sandbox impersonation: ada@example.com": created_policy`,
 				"published policy set set-new version set-version-new with 2 policies",
 				"policy set set-new version set-version-new is active",
 			},
@@ -477,8 +478,8 @@ func TestEnsurePolicies(t *testing.T) {
 				}, userEntries...),
 			},
 			wantLog: []string{
-				`archived policy access-gone for "Sandbox access: agents/user-2"`,
-				`archived policy policy-gone for "Sandbox impersonation: agents/user-2"`,
+				`archived policy access-gone for "Sandbox access: bob@example.com"`,
+				`archived policy policy-gone for "Sandbox impersonation: bob@example.com"`,
 			},
 		},
 		{
@@ -494,6 +495,30 @@ func TestEnsurePolicies(t *testing.T) {
 			},
 		},
 		{
+			name:       "removing the last user from a set of only the namespace's policies adds the placeholder",
+			noUsers:    true,
+			bodies:     lastUser,
+			wantWrites: lastUserWrites,
+			wantApply: &applyBody{
+				SchemaVersion: setSchema,
+				Entries: []zonesetup.ApplyEntry{{
+					NewPolicy: &zonesetup.NewPolicy{Name: placeholder.Name, Description: placeholder.Description},
+					CedarRaw:  placeholder.Cedar,
+				}},
+			},
+		},
+		{
+			name: "the placeholder the zone already has is reused", noUsers: true,
+			bodies: merged(lastUser, map[string]string{
+				listPoliciesCall: page(ownPolicies + `,{"id":"placeholder-k","name":"Sandbox placeholder"}`),
+			}),
+			wantWrites: lastUserWrites,
+			wantApply: &applyBody{
+				SchemaVersion: setSchema,
+				Entries:       []zonesetup.ApplyEntry{{PolicyID: "placeholder-k", CedarRaw: placeholder.Cedar}},
+			},
+		},
+		{
 			name:       "a failed apply archives nothing",
 			bodies:     merged(pruned, map[string]string{applyKCall: ""}),
 			wantWrites: []string{applyKCall},
@@ -503,8 +528,8 @@ func TestEnsurePolicies(t *testing.T) {
 			name: "a dry run reports the apply and the archives it would make", dryRun: true, bodies: pruned,
 			wantLog: []string{
 				"would apply policy set set-k with 4 policies and activate it",
-				`would archive policy access-gone for "Sandbox access: agents/user-2"`,
-				`would archive policy policy-gone for "Sandbox impersonation: agents/user-2"`,
+				`would archive policy access-gone for "Sandbox access: bob@example.com"`,
+				`would archive policy policy-gone for "Sandbox impersonation: bob@example.com"`,
 			},
 		},
 		{
@@ -530,37 +555,55 @@ func TestEnsurePolicies(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			fake := &fakeZone{bodies: tc.bodies}
-			session := connect(t, fake)
-			var stderr bytes.Buffer
-			cmd := newCommand()
-			cmd.ErrWriter = &stderr
-			cmd.Action = func(ctx context.Context, cmd *cli.Command) error {
-				values := &zonesetup.Values{
-					Namespace: namespace, IssuerURL: issuer, PolicySet: zonesetup.DefaultPolicySetName,
-				}
-				users := access
-				if tc.noUsers {
-					users = nil
-				}
-				return ensurePolicies(ctx, cmd, session, values, users)
-			}
-			args := []string{
-				cmd.Name, "--values=unused", "--dry-run=" + strconv.FormatBool(tc.dryRun),
-				"--" + replaceActiveFlag + "=" + strconv.FormatBool(tc.replace),
-			}
-			if err := cmd.Run(t.Context(), args); !errors.Is(err, tc.wantErr) {
-				t.Fatalf("Run: err = %v, want %v", err, tc.wantErr)
-			}
-			if !slices.Equal(fake.writes, tc.wantWrites) {
-				t.Errorf("writes = %q, want %q", fake.writes, tc.wantWrites)
-			}
-			if tc.wantApply != nil {
-				assertApply(t, fake, *tc.wantApply)
-			}
-			assertLogLines(t, stderr.String(), tc.wantLog)
+			runEnsurePolicies(t, tc, values, access)
 		})
 	}
+}
+
+// ensurePoliciesCase is one state of the zone for TestEnsurePolicies.
+type ensurePoliciesCase struct {
+	name       string
+	dryRun     bool
+	replace    bool
+	noUsers    bool
+	bodies     map[string]string
+	wantWrites []string
+	// wantApply is the body of the one apply, or nil when the run does not apply.
+	wantApply *applyBody
+	wantLog   []string
+	wantErr   error
+}
+
+// runEnsurePolicies runs ensurePolicies for access, or for no users when
+// tc.noUsers is set, against a fake zone that serves tc.bodies.
+func runEnsurePolicies(t *testing.T, tc ensurePoliciesCase, values *zonesetup.Values, access []userAccess) {
+	t.Helper()
+	fake := &fakeZone{bodies: tc.bodies}
+	session := connect(t, fake)
+	var stderr bytes.Buffer
+	cmd := newCommand()
+	cmd.ErrWriter = &stderr
+	cmd.Action = func(ctx context.Context, cmd *cli.Command) error {
+		users := access
+		if tc.noUsers {
+			users = nil
+		}
+		return ensurePolicies(ctx, cmd, session, values, zonesetup.ApplicationName, users)
+	}
+	args := []string{
+		cmd.Name, "--values=unused", "--dry-run=" + strconv.FormatBool(tc.dryRun),
+		"--" + replaceActiveFlag + "=" + strconv.FormatBool(tc.replace),
+	}
+	if err := cmd.Run(t.Context(), args); !errors.Is(err, tc.wantErr) {
+		t.Fatalf("Run: err = %v, want %v", err, tc.wantErr)
+	}
+	if !slices.Equal(fake.writes, tc.wantWrites) {
+		t.Errorf("writes = %q, want %q", fake.writes, tc.wantWrites)
+	}
+	if tc.wantApply != nil {
+		assertApply(t, fake, *tc.wantApply)
+	}
+	assertLogLines(t, stderr.String(), tc.wantLog)
 }
 
 // applyBody is the request body of a policy set apply.
