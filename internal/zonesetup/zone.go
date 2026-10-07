@@ -61,7 +61,7 @@ func Connect(ctx context.Context, values *Values, secrets *Secrets) (*Session, e
 }
 
 // FindProvider returns the id of the zone's provider whose OAuth issuer is
-// issuerURL, byte for byte, because svc-sts compares a token's iss to it
+// issuerURL, byte for byte, because the zone compares a token's iss to it
 // exactly. It returns "" when no provider matches. Every error wraps ErrAPI,
 // ErrProviderAmbiguous or ErrProviderMismatch.
 func (s *Session) FindProvider(ctx context.Context, issuerURL string) (string, error) {
@@ -91,7 +91,7 @@ func (s *Session) FindProvider(ctx context.Context, issuerURL string) (string, e
 	}
 }
 
-// CreateProvider creates an issuer-only provider for issuerURL. svc-sts
+// CreateProvider creates an issuer-only provider for issuerURL. The zone
 // discovers the JWKS from the issuer, so the provider holds no jwks_uri and no
 // client credential. When the create conflicts with a provider a concurrent
 // run made, it returns that provider's id.
@@ -156,12 +156,16 @@ func (s *Session) FindApplication(ctx context.Context, identifier string) (keyca
 	}
 }
 
+// ApplicationName is the name CreateApplication gives the egress proxy
+// Application.
+const ApplicationName = "Sandbox Egress Proxy"
+
 // CreateApplication creates the egress proxy Application for the sandboxes in
 // namespace with implicit consent, and returns its id.
 func (s *Session) CreateApplication(ctx context.Context, identifier, namespace string) (string, error) {
 	app, err := s.zones.Applications.New(ctx, s.Zone.ID, keycard.ZoneApplicationNewParams{
 		Identifier: identifier,
-		Name:       "Keycard egress proxy",
+		Name:       ApplicationName,
 		Description: keycard.String(
 			"Egress proxy sidecar that mints credentials for sandboxes in namespace " + namespace,
 		),
@@ -397,13 +401,13 @@ func ServiceAccountSubject(namespace, userID string) string {
 	return "system:serviceaccount:" + namespace + ":" + userID
 }
 
-// FindUser returns the id of the zone's user whose email is exactly email,
-// as svc-iam's email filter matches it. Every error wraps ErrAPI,
-// ErrUserAmbiguous or ErrUserNotFound.
-func (s *Session) FindUser(ctx context.Context, email string) (string, error) {
+// FindUser returns the zone's user whose email is exactly email, as the
+// management API's email filter matches it. The user has an ID and an Identifier. Every error
+// wraps ErrAPI, ErrUserAmbiguous or ErrUserNotFound.
+func (s *Session) FindUser(ctx context.Context, email string) (keycard.User, error) {
 	all, err := s.listUsers(ctx, email)
 	if err != nil {
-		return "", err
+		return keycard.User{}, err
 	}
 	var found []keycard.User
 	for _, user := range all {
@@ -413,19 +417,20 @@ func (s *Session) FindUser(ctx context.Context, email string) (string, error) {
 	}
 	switch {
 	case len(found) > 1:
-		return "", fmt.Errorf("%w: %d users have the email %s", ErrUserAmbiguous, len(found), email)
+		return keycard.User{}, fmt.Errorf("%w: %d users have the email %s", ErrUserAmbiguous, len(found), email)
 	case len(found) == 0:
-		return "", fmt.Errorf("%w: no user has the email %s. Create the user in the zone first", ErrUserNotFound, email)
-	case found[0].ID == "":
-		return "", fmt.Errorf("%w: the user %s has no id", ErrAPI, email)
+		return keycard.User{}, fmt.Errorf("%w: no user has the email %s. Create the user in the zone first",
+			ErrUserNotFound, email)
+	case found[0].ID == "" || found[0].Identifier == "":
+		return keycard.User{}, fmt.Errorf("%w: the user %s has no id or identifier", ErrAPI, email)
 	default:
-		return found[0].ID, nil
+		return found[0], nil
 	}
 }
 
 // FindTokenCredential returns the id of the application's token credential
 // that the provider verifies for subject, or "" when there is none. A bare
-// "*" subject, which svc-iam stores for a credential created without one,
+// "*" subject, which the zone stores for a credential created without one,
 // matches only a literal "*" and is ignored. Every error wraps ErrAPI or
 // ErrCredentialWildcard.
 func (s *Session) FindTokenCredential(ctx context.Context, applicationID, providerID, subject string) (string, error) {

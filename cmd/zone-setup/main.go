@@ -3,9 +3,11 @@
 // egress proxy Application with implicit consent, finds, creates or patches
 // each resource, stores each secret_env credential, and makes each resource a
 // dependency of the Application. For each user it binds the user's
-// ServiceAccount to the Application with a token credential. It prints the
-// k8s_sandbox and sandbox_user_access values as YAML. With --dry-run it changes
-// nothing and prints nothing on stdout.
+// ServiceAccount to the Application with a token credential, and publishes the
+// user's impersonation policy and access policy. It publishes one policy set
+// version with every policy and activates it. It prints the k8s_sandbox and
+// sandbox_user_access values as YAML. With --dry-run it changes nothing and
+// prints nothing on stdout.
 //
 //	zone-setup --values zone-setup.yaml > zone-setup.out.yaml
 package main
@@ -13,8 +15,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 
 	"github.com/keycardai/keycard-go"
@@ -34,14 +38,21 @@ func main() {
 	}
 }
 
+const replaceActiveFlag = "replace-active-policy-set"
+
 func newCommand() *cli.Command {
 	return &cli.Command{
 		Name:            "zone-setup",
-		Usage:           "find or create the zone's provider, application, resources and users' token credentials",
+		Usage:           "find or create the zone's provider, application, resources, users' access and policy set",
 		HideHelpCommand: true,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "values", Required: true, Usage: "the values file, YAML or JSON"},
 			&cli.BoolFlag{Name: "dry-run", Usage: "change nothing and print what would change"},
+			&cli.BoolFlag{
+				Name: replaceActiveFlag,
+				Usage: "activate the sandbox policy set even when another policy set is active. " +
+					"The other set's policies stop applying",
+			},
 		},
 		Action: setup,
 	}
@@ -63,6 +74,9 @@ type userAccess struct {
 	ServiceAccount string `json:"service_account"`
 	ClientID       string `json:"client_id"`
 	Namespace      string `json:"namespace"`
+	// UserIdentifier is the user's zone-scoped identifier, which the
+	// policies match. It is not part of the output.
+	UserIdentifier string `json:"-"`
 }
 
 func setup(ctx context.Context, cmd *cli.Command) error {
@@ -85,16 +99,20 @@ func setup(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 	identifier := zonesetup.ApplicationIdentifier(values.Namespace)
-	applicationID, err := ensureApplication(ctx, cmd, session, identifier, values.Namespace)
+	application, err := ensureApplication(ctx, cmd, session, identifier, values.Namespace)
 	if err != nil {
 		return err
 	}
+	applicationID := application.ID
 	err = ensureResources(ctx, cmd, session, applicationID, values.Resources, secrets.Resource)
 	if err != nil {
 		return err
 	}
 	access, err := ensureUserAccess(ctx, cmd, session, applicationID, providerID, values)
 	if err != nil {
+		return err
+	}
+	if err = ensurePolicies(ctx, cmd, session, values, application.Name, access); err != nil {
 		return err
 	}
 	if cmd.Bool("dry-run") {
@@ -145,38 +163,40 @@ func ensureProvider(
 	return providerID, nil
 }
 
+// ensureApplication returns the egress proxy Application. It has no ID in a
+// dry run that would create it.
 func ensureApplication(
 	ctx context.Context,
 	cmd *cli.Command,
 	session *zonesetup.Session,
 	identifier, namespace string,
-) (string, error) {
+) (keycard.Application, error) {
 	app, err := session.FindApplication(ctx, identifier)
 	switch {
 	case err != nil:
-		return "", fmt.Errorf("finding the application: %w", err)
+		return keycard.Application{}, fmt.Errorf("finding the application: %w", err)
 	case app.ID == "" && cmd.Bool("dry-run"):
 		sayf(cmd, "would create application %s", identifier)
-		return "", nil
+		return keycard.Application{Name: zonesetup.ApplicationName}, nil
 	case app.ID == "":
 		applicationID, err := session.CreateApplication(ctx, identifier, namespace)
 		if err != nil {
-			return "", fmt.Errorf("creating the application: %w", err)
+			return keycard.Application{}, fmt.Errorf("creating the application: %w", err)
 		}
 		sayf(cmd, "created application %s", applicationID)
-		return applicationID, nil
+		return keycard.Application{ID: applicationID, Name: zonesetup.ApplicationName}, nil
 	case app.Consent == keycard.ApplicationConsentImplicit:
 		sayf(cmd, "found application %s", app.ID)
-		return app.ID, nil
+		return app, nil
 	case cmd.Bool("dry-run"):
 		sayf(cmd, "would set consent to implicit on application %s", app.ID)
-		return app.ID, nil
+		return app, nil
 	}
 	if err := session.SetApplicationConsentImplicit(ctx, app.ID); err != nil {
-		return "", fmt.Errorf("setting consent on the application: %w", err)
+		return keycard.Application{}, fmt.Errorf("setting consent on the application: %w", err)
 	}
 	sayf(cmd, "set consent to implicit on application %s", app.ID)
-	return app.ID, nil
+	return app, nil
 }
 
 func ensureResources(
@@ -337,22 +357,23 @@ func ensureUserAccess(
 ) ([]userAccess, error) {
 	access := make([]userAccess, 0, len(values.Users))
 	for _, user := range values.Users {
-		userID, err := session.FindUser(ctx, user.Email)
+		found, err := session.FindUser(ctx, user.Email)
 		if err != nil {
 			return nil, fmt.Errorf("finding the user %s: %w", user.Email, err)
 		}
-		sayf(cmd, "found user %s for %s", userID, user.Email)
-		subject := zonesetup.ServiceAccountSubject(values.Namespace, userID)
+		sayf(cmd, "found user %s for %s", found.ID, user.Email)
+		subject := zonesetup.ServiceAccountSubject(values.Namespace, found.ID)
 		credentialID, err := ensureTokenCredential(ctx, cmd, session, applicationID, providerID, subject)
 		if err != nil {
 			return nil, err
 		}
 		access = append(access, userAccess{
 			UserEmail:      user.Email,
-			UserID:         userID,
+			UserID:         found.ID,
 			ServiceAccount: subject,
 			ClientID:       credentialID,
 			Namespace:      values.Namespace,
+			UserIdentifier: found.Identifier,
 		})
 	}
 	return access, nil
@@ -384,6 +405,302 @@ func ensureTokenCredential(
 	}
 	sayf(cmd, "created token credential %s for %s", credentialID, subject)
 	return credentialID, nil
+}
+
+// ensurePolicies makes the active policy set hold each user's policies. It
+// removes from the set each policy of the namespace that the values file does
+// not name, then archives it, so a removed user loses access. If the sandbox
+// set is not active, it calls checkOtherActive before it writes anything.
+func ensurePolicies(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	values *zonesetup.Values,
+	applicationName string,
+	access []userAccess,
+) error {
+	set, err := session.FindPolicySet(ctx, values.PolicySet)
+	if err != nil {
+		return fmt.Errorf("finding the policy set %q: %w", values.PolicySet, err)
+	}
+	owned, err := session.SandboxPolicies(ctx, values.Namespace)
+	if err != nil {
+		return fmt.Errorf("listing the sandbox policies: %w", err)
+	}
+	if len(access) == 0 && !set.Active {
+		return archiveRemoved(ctx, cmd, session, owned, nil)
+	}
+	if !set.Active {
+		if err = checkOtherActive(ctx, cmd, session, set.ID, values.PolicySet); err != nil {
+			return err
+		}
+	}
+	var policies []zonesetup.UserPolicy
+	for _, user := range access {
+		policyUser := keycard.User{ID: user.UserID, Identifier: user.UserIdentifier, Email: user.UserEmail}
+		policies = append(policies,
+			zonesetup.UserPolicies(values.Namespace, values.IssuerURL, applicationName, policyUser)...)
+	}
+	if err = ensurePolicySet(ctx, cmd, session, set, values.PolicySet, policies, owned); err != nil {
+		return err
+	}
+	return archiveRemoved(ctx, cmd, session, owned, policies)
+}
+
+// archiveRemoved archives each owned policy that policies does not name.
+// owned maps a policy name to the policy. Call it only after ensurePolicySet,
+// so the active set does not hold a policy it archives.
+func archiveRemoved(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	owned map[string]keycard.Policy,
+	policies []zonesetup.UserPolicy,
+) error {
+	for _, name := range slices.Sorted(maps.Keys(owned)) {
+		policyID := owned[name].ID
+		switch {
+		case slices.ContainsFunc(policies, func(policy zonesetup.UserPolicy) bool { return policy.Name == name }):
+		case cmd.Bool("dry-run"):
+			sayf(cmd, "would archive policy %s for %q", policyID, name)
+		default:
+			if err := session.ArchivePolicy(ctx, policyID); err != nil {
+				return fmt.Errorf("archiving the policy %q: %w", name, err)
+			}
+			sayf(cmd, "archived policy %s for %q", policyID, name)
+		}
+	}
+	return nil
+}
+
+// ensurePolicySet applies a version of the policy set that holds policies and
+// no other owned policy, and activates it. set has no ID when the set does not
+// exist yet. owned maps a policy name to the policy the zone already has. When
+// no policy is left in the set, it adds the placeholder policy.
+//
+// The apply starts from the active version's manifest, or the latest
+// version's when the set is not active, and uses that version's schema. The
+// zone validates each policy's Cedar against that schema. It reuses the
+// version of an unchanged policy and publishes a new version of a changed
+// one. NEVER publish a policy version separately. svc-pdp rejects a set
+// version that pins a policy version with a different schema.
+func ensurePolicySet(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	set keycard.PolicySetWithBinding,
+	name string,
+	policies []zonesetup.UserPolicy,
+	owned map[string]keycard.Policy,
+) error {
+	switch {
+	case set.ID == "" && cmd.Bool("dry-run"):
+		sayf(cmd, "would create the policy set %q with %d policies and activate it", name, len(policies))
+		return nil
+	case set.ID == "":
+		setID, err := session.CreatePolicySet(ctx, name)
+		if err != nil {
+			return fmt.Errorf("creating the policy set %q: %w", name, err)
+		}
+		set = keycard.PolicySetWithBinding{ID: setID}
+		sayf(cmd, "created policy set %s for %q", setID, name)
+	}
+	base, etag, err := baseManifest(ctx, session, set)
+	if err != nil {
+		return fmt.Errorf("reading the policy set %s: %w", set.ID, err)
+	}
+	entries, err := desiredEntries(ctx, cmd, session, base.Entries, policies, owned)
+	if err != nil {
+		return err
+	}
+	if cmd.Bool("dry-run") {
+		sayf(cmd, "would apply policy set %s with %d policies and activate it", set.ID, len(entries))
+		return nil
+	}
+	applied, err := session.ApplyPolicySet(ctx, set.ID, etag, base.SchemaVersion, entries)
+	if err != nil {
+		return fmt.Errorf("applying the policy set %s: %w", set.ID, err)
+	}
+	reportApply(cmd, set.ID, applied, len(entries))
+	return nil
+}
+
+// reportApply logs each policy the apply created, changed or dropped, and the
+// version it activated.
+func reportApply(cmd *cli.Command, setID string, applied zonesetup.ApplyResult, policies int) {
+	for _, change := range applied.Changes {
+		if change.Action != "reused" {
+			sayf(cmd, "policy %s for %q: %s", change.PolicyID, change.Name, change.Action)
+		}
+	}
+	if applied.Created {
+		sayf(cmd, "published policy set %s version %s with %d policies", setID, applied.VersionID, policies)
+	}
+	sayf(cmd, "policy set %s version %s is active", setID, applied.VersionID)
+}
+
+// baseManifest returns the manifest of the set's active version, else of its
+// latest version, and the latest version's ETag.
+func baseManifest(
+	ctx context.Context,
+	session *zonesetup.Session,
+	set keycard.PolicySetWithBinding,
+) (zonesetup.Manifest, string, error) {
+	latest, etag, err := session.PolicySetManifest(ctx, set.ID, "")
+	if err != nil || set.ActiveVersionID == "" || set.ActiveVersionID == latest.VersionID {
+		return latest, etag, err //nolint:wrapcheck // ensurePolicySet wraps it.
+	}
+	active, _, err := session.PolicySetManifest(ctx, set.ID, set.ActiveVersionID)
+	return active, etag, err //nolint:wrapcheck // ensurePolicySet wraps it.
+}
+
+// checkOtherActive refuses to replace another active policy set unless
+// --replace-active-policy-set is given. ownID is the sandbox set's id, or ""
+// when it does not exist yet.
+func checkOtherActive(ctx context.Context, cmd *cli.Command, session *zonesetup.Session, ownID, name string) error {
+	active, err := session.ActivePolicySets(ctx)
+	if err != nil {
+		return fmt.Errorf("listing the active policy sets: %w", err)
+	}
+	for _, other := range active {
+		switch {
+		case other.ID == ownID:
+		case cmd.Bool(replaceActiveFlag):
+			sayf(cmd, "policy set %q (%s) is active and will be replaced", other.Name, other.ID)
+		default:
+			return fmt.Errorf("%w: %q (%s). Activating %q would replace it. Re-run with --%s to do that",
+				zonesetup.ErrPolicySetActive, other.Name, other.ID, name, replaceActiveFlag)
+		}
+	}
+	return nil
+}
+
+// mergeManifest returns the entries of an apply that starts from base. Each
+// owned policy that policies names gets its Cedar text. Any other owned policy
+// leaves the set. Every other entry keeps its pinned version. A policy that
+// base does not hold goes at the end. The apply creates it when owned does
+// not have it.
+func mergeManifest(
+	base []zonesetup.ManifestEntry,
+	policies []zonesetup.UserPolicy,
+	owned map[string]keycard.Policy,
+) []zonesetup.ApplyEntry {
+	ownedIDs := map[string]bool{}
+	for _, policy := range owned {
+		ownedIDs[policy.ID] = true
+	}
+	cedar := map[string]string{}
+	for _, policy := range policies {
+		if found, ok := owned[policy.Name]; ok {
+			cedar[found.ID] = policy.Cedar
+		}
+	}
+	out := make([]zonesetup.ApplyEntry, 0, len(base)+len(policies))
+	inBase := map[string]bool{}
+	for _, entry := range base {
+		text, wanted := cedar[entry.PolicyID]
+		switch {
+		case wanted:
+			out = append(out, zonesetup.ApplyEntry{PolicyID: entry.PolicyID, CedarRaw: text})
+			inBase[entry.PolicyID] = true
+		case !ownedIDs[entry.PolicyID]:
+			out = append(out, zonesetup.ApplyEntry{PolicyID: entry.PolicyID, PolicyVersionID: entry.PolicyVersionID})
+		}
+	}
+	for _, policy := range policies {
+		if found, ok := owned[policy.Name]; !ok || !inBase[found.ID] {
+			out = append(out, newEntry(policy, found))
+		}
+	}
+	return out
+}
+
+// desiredEntries returns the entries of an apply that starts from base. It
+// drops each entry for a policy the zone has archived, merges policies into
+// the rest, and adds the placeholder policy when nothing is left.
+func desiredEntries(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	base []zonesetup.ManifestEntry,
+	policies []zonesetup.UserPolicy,
+	owned map[string]keycard.Policy,
+) ([]zonesetup.ApplyEntry, error) {
+	live, err := dropArchived(ctx, cmd, session, base, owned)
+	if err != nil {
+		return nil, err
+	}
+	return withPlaceholder(ctx, session, mergeManifest(live, policies, owned))
+}
+
+// dropArchived returns base without the entries whose policy the zone has
+// archived. svc-pdp refuses an apply that pins an archived policy. Dropping
+// the entry ends the policy's enforcement, which is what archiving it asked
+// for. owned policies are unarchived and are not looked up.
+func dropArchived(
+	ctx context.Context,
+	cmd *cli.Command,
+	session *zonesetup.Session,
+	base []zonesetup.ManifestEntry,
+	owned map[string]keycard.Policy,
+) ([]zonesetup.ManifestEntry, error) {
+	ownedIDs := map[string]bool{}
+	for _, policy := range owned {
+		ownedIDs[policy.ID] = true
+	}
+	var others []string
+	for _, entry := range base {
+		if !ownedIDs[entry.PolicyID] {
+			others = append(others, entry.PolicyID)
+		}
+	}
+	if len(others) == 0 {
+		return base, nil
+	}
+	live, err := session.LivePolicyIDs(ctx, others)
+	if err != nil {
+		return nil, fmt.Errorf("reading the policies the set pins: %w", err)
+	}
+	kept := make([]zonesetup.ManifestEntry, 0, len(base))
+	for _, entry := range base {
+		if ownedIDs[entry.PolicyID] || live[entry.PolicyID] {
+			kept = append(kept, entry)
+			continue
+		}
+		sayf(cmd, "dropping policy %s from the set: the zone has no unarchived policy with that id", entry.PolicyID)
+	}
+	return kept, nil
+}
+
+// withPlaceholder returns entries, or the placeholder policy's entry when
+// entries is empty. The apply creates the placeholder when the zone does not
+// have it.
+func withPlaceholder(
+	ctx context.Context,
+	session *zonesetup.Session,
+	entries []zonesetup.ApplyEntry,
+) ([]zonesetup.ApplyEntry, error) {
+	if len(entries) > 0 {
+		return entries, nil
+	}
+	placeholder := zonesetup.PlaceholderPolicy()
+	found, err := session.FindPolicy(ctx, placeholder.Name)
+	if err != nil {
+		return nil, fmt.Errorf("finding the policy %q: %w", placeholder.Name, err)
+	}
+	return []zonesetup.ApplyEntry{newEntry(placeholder, found)}, nil
+}
+
+// newEntry returns the entry for a policy the set does not hold. found has
+// no ID when the zone does not have the policy. The apply then creates it.
+func newEntry(policy zonesetup.UserPolicy, found keycard.Policy) zonesetup.ApplyEntry {
+	if found.ID != "" {
+		return zonesetup.ApplyEntry{PolicyID: found.ID, CedarRaw: policy.Cedar}
+	}
+	return zonesetup.ApplyEntry{
+		NewPolicy: &zonesetup.NewPolicy{Name: policy.Name, Description: policy.Description},
+		CedarRaw:  policy.Cedar,
+	}
 }
 
 func sayf(cmd *cli.Command, format string, args ...any) {

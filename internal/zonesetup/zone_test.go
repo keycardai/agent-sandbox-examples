@@ -311,13 +311,20 @@ func (f *fakeAPI) createSecret(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, secret.toJSON())
 }
 
+const (
+	adaID         = "user-1"
+	adaIdentifier = "ada-identifier"
+)
+
 type fakeUser struct {
-	id, email string
+	id, email, identifier string
 }
 
 func (u fakeUser) key() string { return u.id }
 
-func (u fakeUser) toJSON() map[string]any { return map[string]any{"id": u.id, "email": u.email} }
+func (u fakeUser) toJSON() map[string]any {
+	return map[string]any{"id": u.id, "email": u.email, "identifier": u.identifier}
+}
 
 type fakeCredential struct {
 	id, applicationID, typ, providerID, subject string
@@ -812,7 +819,7 @@ func TestApplication(t *testing.T) {
 		},
 		{
 			name: "none is created with implicit consent", apps: []fakeApp{other}, wantID: "application-new-1",
-			wantPost: `{"identifier":"urn:keycard:sandbox-proxy:agents","name":"Keycard egress proxy",` +
+			wantPost: `{"identifier":"urn:keycard:sandbox-proxy:agents","name":"Sandbox Egress Proxy",` +
 				`"description":"Egress proxy sidecar that mints credentials for sandboxes in namespace agents",` +
 				`"consent":"implicit"}`,
 		},
@@ -1059,8 +1066,8 @@ func TestUserAccess(t *testing.T) {
 		email     = "ada@example.com"
 		existingK = "credential-k"
 	)
-	ada := fakeUser{"user-1", email}
-	bob := fakeUser{"user-2", "bob@example.com"}
+	ada := fakeUser{adaID, email, adaIdentifier}
+	bob := fakeUser{"user-2", "bob@example.com", "bob-identifier"}
 	cases := []struct {
 		name        string
 		users       []fakeUser
@@ -1091,11 +1098,16 @@ func TestUserAccess(t *testing.T) {
 		},
 		{name: "a missing user is refused", users: []fakeUser{bob}, wantErr: zonesetup.ErrUserNotFound},
 		{
-			name: "an email that differs in case is not found", users: []fakeUser{{"user-1", "Ada@Example.com"}},
+			name: "a user without an identifier is refused", users: []fakeUser{{adaID, email, ""}},
+			wantErr: zonesetup.ErrAPI,
+		},
+		{
+			name:    "an email that differs in case is not found",
+			users:   []fakeUser{{adaID, "Ada@Example.com", adaIdentifier}},
 			wantErr: zonesetup.ErrUserNotFound,
 		},
 		{
-			name: "two users are refused", users: []fakeUser{ada, {"user-3", email}},
+			name: "two users are refused", users: []fakeUser{ada, {"user-3", email, "user-3"}},
 			wantErr: zonesetup.ErrUserAmbiguous,
 		},
 		{
@@ -1145,9 +1157,9 @@ func TestUserAccess(t *testing.T) {
 			}
 			session := connectZoneA(t, fake)
 			var credentialID string
-			userID, err := session.FindUser(t.Context(), email)
+			user, err := session.FindUser(t.Context(), email)
 			if err == nil {
-				subject := zonesetup.ServiceAccountSubject("agents", userID)
+				subject := zonesetup.ServiceAccountSubject("agents", user.ID)
 				credentialID, err = session.FindTokenCredential(t.Context(), appK, providerK, subject)
 				if err == nil && credentialID == "" {
 					credentialID, err = session.CreateTokenCredential(t.Context(), appK, providerK, subject)
