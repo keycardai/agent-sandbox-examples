@@ -22,6 +22,21 @@ const (
 		`"decision":{"verdict":"deny","reason":"exchange_denied","error":"access_denied"}}`
 )
 
+// zoneSetupOutput is the zone-setup output an earlier run wrote for the
+// sandbox of email.
+const zoneSetupOutput = `k8s_sandbox:
+  application_id: app-1
+  application_identifier: urn:keycard:sandbox:agents
+  namespace: agents
+  provider_id: provider-1
+sandbox_user_access:
+- user_email: ada@example.com
+  user_id: ` + userID + `
+  service_account: system:serviceaccount:agents:` + userID + `
+  client_id: client-1
+  namespace: agents
+`
+
 // fakeSandbox is what the fake tools answer for a running sandbox.
 type fakeSandbox struct {
 	allowed        string // the status pypi returns
@@ -175,7 +190,7 @@ func TestRunSettings(t *testing.T) {
 	valid := func() sandbox.Settings {
 		return sandbox.Settings{
 			sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer,
-			sandbox.KeyZoneURL: "https://zone.example.com", sandbox.KeyUserEmail: email,
+			sandbox.KeyZoneURL: zoneURL, sandbox.KeyUserEmail: email,
 		}
 	}
 	tests := []struct {
@@ -231,18 +246,6 @@ func TestRun(t *testing.T) {
 		importCall = "k3d KUBERC= image import --cluster asp " + images + "\n"
 		kube       = "kubectl KUBERC=off --context k3d-asp --namespace agents "
 	)
-	output := `k8s_sandbox:
-  application_id: app-1
-  application_identifier: urn:keycard:sandbox:agents
-  namespace: agents
-  provider_id: provider-1
-sandbox_user_access:
-- user_email: ada@example.com
-  user_id: ` + userID + `
-  service_account: system:serviceaccount:agents:` + userID + `
-  client_id: client-1
-  namespace: agents
-`
 	tests := []struct {
 		name      string
 		sandbox   fakeSandbox
@@ -268,7 +271,7 @@ sandbox_user_access:
 		{
 			name:    "whole flow",
 			sandbox: healthy(),
-			output:  output,
+			output:  zoneSetupOutput,
 			wantCalls: []string{
 				listCall + discoveryCall + mintCalls + inspects + importCall,
 				"install/install.sh KUBERC= --context k3d-asp --namespace agents --values ",
@@ -284,7 +287,7 @@ sandbox_user_access:
 			t.Parallel()
 			local, calls := newLocal(t, sandbox.Settings{
 				sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer,
-				sandbox.KeyZoneURL: "https://zone.example.com", sandbox.KeyUserEmail: email,
+				sandbox.KeyZoneURL: zoneURL, sandbox.KeyUserEmail: email,
 			}, tc.sandbox.script())
 			out := &bytes.Buffer{}
 			local.Out = out

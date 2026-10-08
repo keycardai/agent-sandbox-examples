@@ -52,7 +52,7 @@ var (
 // Empty cluster and issuerURL default to the settings, as Local.cluster and
 // Local.issuer describe.
 func (l *Local) Bootstrap(ctx context.Context, cluster, issuerURL string, dryRun bool) error {
-	cluster, err := l.cluster(cluster)
+	cluster, err := l.k3dName("bootstrap", cluster)
 	if err != nil {
 		return err
 	}
@@ -113,7 +113,7 @@ func (l *Local) Bootstrap(ctx context.Context, cluster, issuerURL string, dryRun
 //
 // An empty cluster defaults to the settings, as Local.cluster describes.
 func (l *Local) Down(ctx context.Context, cluster string, yes bool, answers io.Reader) error {
-	cluster, err := l.cluster(cluster)
+	cluster, err := l.k3dName("down", cluster)
 	if err != nil {
 		return err
 	}

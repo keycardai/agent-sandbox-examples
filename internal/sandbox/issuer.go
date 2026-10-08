@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -25,7 +26,7 @@ const (
 // Empty cluster and issuerURL default to the settings, as Local.cluster and
 // Local.issuer describe.
 func (l *Local) Mirror(ctx context.Context, cluster, issuerURL, listen string) error {
-	cluster, err := l.cluster(cluster)
+	cluster, err := l.k3dName("mirror", cluster)
 	if err != nil {
 		return err
 	}
@@ -51,6 +52,26 @@ func (l *Local) Mirror(ctx context.Context, cluster, issuerURL, listen string) e
 	return nil
 }
 
+// clusterIssuer returns flag when it is set. Otherwise it returns the issuer
+// in an existing cluster's discovery document, or Local.issuer for a k3d
+// cluster.
+func (l *Local) clusterIssuer(ctx context.Context, cluster, flag string) (string, error) {
+	if flag != "" || !l.Existing() {
+		return l.issuer(flag)
+	}
+	raw, err := l.kubectl(ctx, cluster, nil, "get", "--raw", "/.well-known/openid-configuration")
+	if err != nil {
+		return "", fmt.Errorf("%w: reading the cluster's discovery document: %w", ErrIssuer, err)
+	}
+	var doc struct {
+		Issuer string `json:"issuer"`
+	}
+	if err = json.Unmarshal(raw, &doc); err != nil || doc.Issuer == "" {
+		return "", fmt.Errorf("%w: the cluster's discovery document does not name an issuer", ErrIssuer)
+	}
+	return doc.Issuer, nil
+}
+
 // CheckIssuer mints a ServiceAccount token in the cluster and verifies it
 // against the issuer's https URL, as the Keycard zone does. It fails unless
 // the issuer's discovery document and JWKS are served at that URL. It trusts
@@ -63,8 +84,7 @@ func (l *Local) CheckIssuer(ctx context.Context, cluster, issuerURL string) erro
 	if err != nil {
 		return err
 	}
-	issuerURL, err = l.issuer(issuerURL)
-	if err != nil {
+	if issuerURL, err = l.clusterIssuer(ctx, cluster, issuerURL); err != nil {
 		return err
 	}
 	caFile, err := l.caFile()

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,9 +20,14 @@ import (
 	"github.com/keycardai/agent-sandbox-poc/internal/zonesetup"
 )
 
-// zoneTrustConfigMap is the ConfigMap that holds KEYCARD_LOCAL_CA_FILE for
-// the proxy.
-const zoneTrustConfigMap = "egress-zone-trust"
+const (
+	// zoneTrustConfigMap is the ConfigMap that holds KEYCARD_LOCAL_CA_FILE
+	// for the proxy.
+	zoneTrustConfigMap = "egress-zone-trust"
+	// defaultImageTag is the tag the charts default to.
+	defaultImageTag = "0.1.0"
+	imageRegistry   = "ghcr.io/keycardai/"
+)
 
 var (
 	// ErrImages means Docker does not have an image the sandbox runs.
@@ -78,6 +84,9 @@ type RunOptions struct {
 type runSettings struct {
 	cluster, issuerURL, zoneURL, email, caFile string
 	zoneOnHost                                 bool
+	// imageTag and clusterCIDRs are set for an existing cluster.
+	imageTag     string
+	clusterCIDRs []string
 }
 
 // Run runs the sandbox flow end to end: the k3d cluster and the three
@@ -93,20 +102,22 @@ type runSettings struct {
 // With KEYCARD_LOCAL_ZONE_ON_HOST=true, it dials the gateway of the
 // cluster's Docker network instead, for a zone that answers on the Docker
 // host.
+//
+// For an existing cluster, Run does not create the cluster or import
+// images. The cluster pulls the images from ghcr.io/keycardai with the tag
+// KEYCARD_LOCAL_IMAGE_TAG, and the issuer is the one in the cluster's
+// discovery document.
 func (l *Local) Run(ctx context.Context, opts RunOptions) error {
-	cfg, err := l.runSettings()
+	cfg, err := l.runSettings(ctx)
 	if err != nil {
 		return err
 	}
 	if err = os.MkdirAll(l.outDir(), dirMode); err != nil {
 		return fmt.Errorf("creating %s: %w", l.outDir(), err)
 	}
-	l.step("the k3d cluster " + cfg.cluster)
-	if err = l.Bootstrap(ctx, cfg.cluster, cfg.issuerURL, false); err != nil {
-		return err
-	}
-	l.step("the three images")
-	if err = l.importImages(ctx, cfg.cluster); err != nil {
+	if l.Existing() {
+		l.step("Using the existing cluster " + cfg.cluster + " with issuer " + cfg.issuerURL)
+	} else if err = l.k3dCluster(ctx, cfg); err != nil {
 		return err
 	}
 	out, err := l.zoneSetup(ctx, cfg, opts)
@@ -147,13 +158,27 @@ func (l *Local) deploy(ctx context.Context, cfg runSettings, out *zonesetup.Outp
 	)
 }
 
+// LocalValuesInput is what LocalValues writes into the values files.
+type LocalValuesInput struct {
+	// ZoneURL is the zone the proxy dials.
+	ZoneURL string
+	// Gateway, when set, is the Docker host's address in the cluster: the
+	// zone's host maps to it, the NetworkPolicy allows it on 443, and the
+	// proxy may dial it.
+	Gateway string
+	// CAPEM, when set, holds the roots the proxy trusts for the zone in
+	// addition to the system roots.
+	CAPEM []byte
+	// ImageTag, when set, points the pod at the images in ghcr.io/keycardai
+	// with this tag.
+	ImageTag string
+	// ClusterCIDRs, when set, are the cluster's pod and service ranges.
+	ClusterCIDRs []string
+}
+
 // LocalValues returns the values files for the install chart and the
-// sandbox chart that point a pod at the zone. A non-empty gateway is the
-// Docker host's address in the cluster: the zone's host maps to it, the
-// NetworkPolicy allows it on 443, and the proxy may dial it. A non-empty
-// caPEM is the roots the proxy trusts for the zone in addition to the system
-// roots.
-func LocalValues(zoneURL, gateway string, caPEM []byte) ([]byte, []byte, error) {
+// sandbox chart that point a pod at the zone.
+func LocalValues(input LocalValuesInput) ([]byte, []byte, error) {
 	type hostAlias struct {
 		IP        string   `json:"ip"`
 		Hostnames []string `json:"hostnames"`
@@ -163,29 +188,48 @@ func LocalValues(zoneURL, gateway string, caPEM []byte) ([]byte, []byte, error) 
 		Certificate string `json:"certificate,omitempty"`
 	}
 	type cidrs struct {
+		ClusterCIDRs       []string `json:"clusterCIDRs,omitempty"`
 		AllowCIDRs         []string `json:"allowCIDRs,omitempty"`
 		DenyListExceptions []string `json:"denyListExceptions,omitempty"`
+	}
+	type images struct {
+		Netsetup string `json:"netsetup"`
+		Proxy    string `json:"proxy"`
+		Agent    string `json:"agent"`
 	}
 	type values struct {
 		ZoneURL     string      `json:"zoneURL"`
 		ZoneTrust   *zoneTrust  `json:"zoneTrust,omitempty"`
 		HostAliases []hostAlias `json:"hostAliases,omitempty"`
+		Images      *images     `json:"images,omitempty"`
 		Network     *cidrs      `json:"network,omitempty"`
 		Policy      *cidrs      `json:"policy,omitempty"`
 	}
-	install, sandbox := values{ZoneURL: zoneURL}, values{ZoneURL: zoneURL}
-	if len(caPEM) > 0 {
-		install.ZoneTrust = &zoneTrust{ConfigMap: zoneTrustConfigMap, Certificate: string(caPEM)}
+	install, sandbox := values{ZoneURL: input.ZoneURL}, values{ZoneURL: input.ZoneURL}
+	install.Network, sandbox.Policy = &cidrs{ClusterCIDRs: input.ClusterCIDRs}, &cidrs{ClusterCIDRs: input.ClusterCIDRs}
+	if len(input.CAPEM) > 0 {
+		install.ZoneTrust = &zoneTrust{ConfigMap: zoneTrustConfigMap, Certificate: string(input.CAPEM)}
 		sandbox.ZoneTrust = &zoneTrust{ConfigMap: zoneTrustConfigMap}
 	}
-	if gateway != "" {
-		host := strings.TrimPrefix(zoneURL, "https://")
-		aliases := []hostAlias{{IP: gateway, Hostnames: []string{host}}}
+	if input.ImageTag != "" {
+		tagged := &images{
+			Netsetup: imageRegistry + "egress-netsetup:" + input.ImageTag,
+			Proxy:    imageRegistry + "egress-proxy:" + input.ImageTag,
+			Agent:    imageRegistry + "sandbox-base:" + input.ImageTag,
+		}
+		install.Images, sandbox.Images = tagged, tagged
+	}
+	if input.Gateway != "" {
+		host := strings.TrimPrefix(input.ZoneURL, "https://")
+		aliases := []hostAlias{{IP: input.Gateway, Hostnames: []string{host}}}
 		install.HostAliases, sandbox.HostAliases = aliases, aliases
-		install.Network = &cidrs{AllowCIDRs: []string{gateway + "/32"}}
+		install.Network.AllowCIDRs = []string{input.Gateway + "/32"}
 		// The gateway is in a private range, which is on the proxy's
 		// platform deny list. The exception lets the proxy dial the zone.
-		sandbox.Policy = &cidrs{DenyListExceptions: []string{gateway + "/32"}}
+		sandbox.Policy.DenyListExceptions = []string{input.Gateway + "/32"}
+	}
+	if len(input.ClusterCIDRs) == 0 && input.Gateway == "" {
+		install.Network, sandbox.Policy = nil, nil
 	}
 	installYAML, err := yaml.Marshal(install)
 	if err != nil {
@@ -198,13 +242,23 @@ func LocalValues(zoneURL, gateway string, caPEM []byte) ([]byte, []byte, error) 
 	return installYAML, sandboxYAML, nil
 }
 
-func (l *Local) runSettings() (runSettings, error) {
+// k3dCluster creates or checks the k3d cluster and imports the images.
+func (l *Local) k3dCluster(ctx context.Context, cfg runSettings) error {
+	l.step("Creating or checking the k3d cluster " + cfg.cluster)
+	if err := l.Bootstrap(ctx, cfg.cluster, cfg.issuerURL, false); err != nil {
+		return err
+	}
+	l.step("Importing the three images into the cluster")
+	return l.importImages(ctx, cfg.cluster)
+}
+
+func (l *Local) runSettings(ctx context.Context) (runSettings, error) {
 	var cfg runSettings
 	var err error
 	if cfg.cluster, err = l.cluster(""); err != nil {
 		return cfg, err
 	}
-	if cfg.issuerURL, err = l.issuer(""); err != nil {
+	if cfg.issuerURL, err = l.clusterIssuer(ctx, cfg.cluster, ""); err != nil {
 		return cfg, err
 	}
 	cfg.zoneURL, cfg.email = l.Settings[KeyZoneURL], l.Settings[KeyUserEmail]
@@ -218,7 +272,7 @@ func (l *Local) runSettings() (runSettings, error) {
 	}
 	switch onHost := l.Settings[KeyZoneOnHost]; onHost {
 	case "":
-	case "true":
+	case settingTrue:
 		cfg.zoneOnHost = true
 	default:
 		return cfg, fmt.Errorf("%w: %s must be true or empty (got %q)", ErrSettings, KeyZoneOnHost, onHost)
@@ -226,7 +280,47 @@ func (l *Local) runSettings() (runSettings, error) {
 	if cfg.caFile, err = l.caFile(); err != nil {
 		return cfg, err
 	}
+	if l.Existing() {
+		return l.existingSettings(cfg)
+	}
 	return cfg, nil
+}
+
+// existingSettings adds the image tag and the cluster's ranges for an
+// existing cluster. KEYCARD_LOCAL_ZONE_ON_HOST works only with k3d.
+func (l *Local) existingSettings(cfg runSettings) (runSettings, error) {
+	if cfg.zoneOnHost {
+		return cfg, fmt.Errorf("%w: %s is for a k3d cluster", ErrExisting, KeyZoneOnHost)
+	}
+	cfg.imageTag = cmp.Or(l.Settings[KeyImageTag], defaultImageTag)
+	var err error
+	if cfg.clusterCIDRs, err = ParseCIDRs(l.Settings[KeyClusterCIDRs]); err != nil {
+		return cfg, err
+	}
+	if len(cfg.clusterCIDRs) == 0 {
+		return cfg, fmt.Errorf("%w: %s is empty. Set it to the cluster's pod and service ranges",
+			ErrSettings, KeyClusterCIDRs)
+	}
+	return cfg, nil
+}
+
+// ParseCIDRs parses a comma-separated list of address ranges. Each one must
+// be a prefix such as 10.0.0.0/16.
+func ParseCIDRs(list string) ([]string, error) {
+	var out []string
+	for item := range strings.SplitSeq(list, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(item)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s: %q is not an address range such as 10.0.0.0/16",
+				ErrSettings, KeyClusterCIDRs, item)
+		}
+		out = append(out, prefix.Masked().String())
+	}
+	return out, nil
 }
 
 // importImages imports the three images into the cluster. It fails before
@@ -337,7 +431,9 @@ func (l *Local) writeLocalValues(ctx context.Context, cfg runSettings) error {
 			return fmt.Errorf("%w: %w", ErrCAFile, err)
 		}
 	}
-	install, sandbox, err := LocalValues(cfg.zoneURL, gateway, caPEM)
+	install, sandbox, err := LocalValues(LocalValuesInput{
+		ZoneURL: cfg.zoneURL, Gateway: gateway, CAPEM: caPEM, ImageTag: cfg.imageTag, ClusterCIDRs: cfg.clusterCIDRs,
+	})
 	if err != nil {
 		return err
 	}
@@ -373,7 +469,7 @@ func (l *Local) gateway(ctx context.Context, cluster string) (string, error) {
 
 // install runs install/install.sh with the local values.
 func (l *Local) install(ctx context.Context, cluster, namespace string) error {
-	cmd, err := l.Tool(ctx, "install/install.sh", "--context", "k3d-"+cluster, "--namespace", namespace,
+	cmd, err := l.Tool(ctx, "install/install.sh", "--context", l.kubeContext(cluster), "--namespace", namespace,
 		"--values", filepath.Join(l.Root, "local", "values", "install.yaml"),
 		"--values", filepath.Join(l.outDir(), "install.values.yaml"))
 	if err != nil {
