@@ -16,20 +16,40 @@ zone fetches `<issuer>/.well-known/openid-configuration` and compares its
 ## Before you start
 
 - Docker, and the tools in `mise.toml` (`mise install`).
-- A Keycard zone with an enrolled user. The steps do not create a zone.
+- The client ID and secret of a Keycard organization service account.
+- A user in the zone for the sandbox to act for. The management API can't
+  create users. Add one in the Keycard console, or have the person sign in
+  to the zone.
 - The three images, built in the egress-proxy repository and tagged
   `ghcr.io/keycardai/egress-netsetup:local`,
   `ghcr.io/keycardai/egress-proxy:local` and
   `ghcr.io/keycardai/sandbox-base:local`.
-- A zone-setup values file for the zone. Start from `zone-setup.example.yaml`.
-  `sandbox run` gives zone-setup the cluster's issuer, which replaces
-  `issuer_url` in the file.
 
 Then:
 
-    cp local/local.env.example local/local.env
-    $EDITOR local/local.env            # the zone URL and the user's email
     go run ./cmd/sandbox up
+
+The first time, `up` runs `sandbox init`. It asks for your service account,
+the zone (or creates one), the user, where the GitHub token comes from, an
+optional OpenRouter API key, and how the zone reaches the cluster's issuer.
+It writes `local/local.env` and `zone-setup.yaml`. Secrets you type go in
+`local/out/secrets/`, readable only by you. If
+`KEYCARD_MANAGEMENT_CLIENT_SECRET` is set, `init` uses it and doesn't ask for
+the secret. To write the files by hand, start from
+`local/local.env.example` and `zone-setup.example.yaml`.
+
+To change something, run `go run ./cmd/sandbox init` again. It shows your
+current settings and asks which part to change. Each question defaults to
+your current answer. A saved secret stays unless you answer n to "Keep the
+saved ...?". The change takes effect on the next `sandbox up` or
+`sandbox run`. zone-setup does not delete what it created in Keycard for
+your old answers.
+
+The demo calls GitHub, so it needs a GitHub token. With a GitHub provider in
+the zone, each user signs in to GitHub and their sandbox acts as them. With
+a personal access token, every user's sandbox acts as the token's owner.
+If you add an OpenRouter API key, `sandbox check` also has the agent fetch
+the key's details from OpenRouter. This call does not run a model.
 
 `up` runs the steps in order. The tunnel and the mirror run in the
 background and log to `local/out/tunnel.log` and `local/out/mirror.log`.
@@ -114,17 +134,20 @@ after you recreate the cluster.
 
 ## Extra trusted roots
 
-Set `KEYCARD_LOCAL_CA_FILE` when no public CA signed the zone's or the
-issuer's certificate. It is an absolute path to a PEM file of the roots that
-did. `sandbox check-issuer` trusts them, and `sandbox run` gives them to the
-proxy through `zoneTrust`. Both add these roots to the system roots. When it
-is empty, they trust only the system roots.
+Set `KEYCARD_LOCAL_CA_FILE` when no public CA signed the certificate of the
+management API, the zone or the issuer. Set it to the absolute path of a
+PEM file with the roots that signed them. `sandbox init` trusts these roots
+for the management API, `sandbox check-issuer` for the issuer, and the proxy
+for the zone, through the chart's `zoneTrust` value. Each trusts them in
+addition to the system roots. `sandbox init` asks for this file only when
+the management API URL is not `https://api.keycard.ai`.
 
 ## The steps
 
 | Step | What it does |
 |---|---|
-| `sandbox up` | every step below, in order, in one process |
+| `sandbox init` | asks for the zone, the user and the credentials, and writes `local/local.env` and `zone-setup.yaml` |
+| `sandbox up` | `sandbox init` when its files are missing, then every step below, in order, in one process |
 | `sandbox tunnel` | publishes the mirror at the issuer's https URL through a Cloudflare tunnel |
 | `sandbox bootstrap` | creates the cluster with the issuer, or checks that an existing one has it |
 | `sandbox mirror` | reads the cluster's discovery document and JWKS and serves them |
