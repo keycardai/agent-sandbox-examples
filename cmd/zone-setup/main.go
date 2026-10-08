@@ -38,7 +38,10 @@ func main() {
 	}
 }
 
-const replaceActiveFlag = "replace-active-policy-set"
+const (
+	replaceActiveFlag = "replace-active-policy-set"
+	issuerURLFlag     = "issuer-url"
+)
 
 func newCommand() *cli.Command {
 	return &cli.Command{
@@ -47,6 +50,10 @@ func newCommand() *cli.Command {
 		HideHelpCommand: true,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "values", Required: true, Usage: "the values file, YAML or JSON"},
+			&cli.StringFlag{
+				Name:  issuerURLFlag,
+				Usage: "the cluster's OIDC issuer. It replaces issuer_url in the values file",
+			},
 			&cli.BoolFlag{Name: "dry-run", Usage: "change nothing and print what would change"},
 			&cli.BoolFlag{
 				Name: replaceActiveFlag,
@@ -81,7 +88,7 @@ type userAccess struct {
 
 func setup(ctx context.Context, cmd *cli.Command) error {
 	path := cmd.String("values")
-	values, err := readValues(path)
+	values, err := readValues(path, cmd.String(issuerURLFlag))
 	if err != nil {
 		return err
 	}
@@ -707,7 +714,9 @@ func sayf(cmd *cli.Command, format string, args ...any) {
 	_, _ = fmt.Fprintf(cmd.ErrWriter, format+"\n", args...)
 }
 
-func readValues(path string) (*zonesetup.Values, error) {
+// readValues parses the values file. A non-empty issuer replaces its
+// issuer_url.
+func readValues(path, issuer string) (*zonesetup.Values, error) {
 	file, err := os.Open(path) //nolint:gosec // G304: the path is the values file the operator named.
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", zonesetup.ErrValues, err)
@@ -716,6 +725,11 @@ func readValues(path string) (*zonesetup.Values, error) {
 	values, err := zonesetup.ParseValues(file)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if issuer != "" {
+		if err = values.SetIssuerURL("--"+issuerURLFlag, issuer); err != nil {
+			return nil, fmt.Errorf("replacing issuer_url: %w", err)
+		}
 	}
 	return values, nil
 }

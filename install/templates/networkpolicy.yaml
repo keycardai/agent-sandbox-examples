@@ -25,8 +25,6 @@ spec:
     # captured in-pod only so the proxy can refuse it with
     # cleartext_not_forwarded. List another port here only if the proxy dials
     # upstreams on it.
-    # TODO(ACC-1094): the local lane needs an egress exception for its host
-    # gateway: single addresses, TCP 443 only, never covering 169.254.169.254.
     # TODO(ACC-1096): on EKS the cluster's public API endpoint is a public
     # address on 443, so it stays reachable.
     - to:
@@ -63,6 +61,23 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+    {{- with .Values.network.allowCIDRs }}
+    - to:
+        {{- range . }}
+        {{- $v6 := contains ":" . }}
+        {{- if not (or (and (not $v6) (hasSuffix "/32" .)) (and $v6 (hasSuffix "/128" .))) }}
+        {{- fail (printf "network.allowCIDRs entry %q must be a single address, a /32 for IPv4 or a /128 for IPv6" .) }}
+        {{- end }}
+        {{- if regexMatch "(^|:)169\\.254\\." . }}
+        {{- fail (printf "network.allowCIDRs entry %q is in 169.254.0.0/16, which holds the cloud metadata address" .) }}
+        {{- end }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
     # k3s and EKS both label CoreDNS k8s-app: kube-dns.
     - to:
         - namespaceSelector:

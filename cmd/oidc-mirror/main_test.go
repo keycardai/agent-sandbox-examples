@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	testIssuer    = "https://sandbox-oidc.localdev.keycard.sh"
+	testIssuer    = "https://oidc.example.com"
 	testDiscovery = `{"issuer":"` + testIssuer + `","jwks_uri":"` + testIssuer + `/openid/v1/jwks"}`
 	testJWKS      = `{"keys":[{"kty":"RSA","kid":"k","n":"AQAB","e":"AQAB"}]}`
 )
@@ -38,7 +38,7 @@ func TestLoadRefuses(t *testing.T) {
 		name, issuer, discovery, jwks string
 		want                          error
 	}{
-		{"http issuer", "http://sandbox-oidc.localdev.keycard.sh", testDiscovery, testJWKS, errInsecure},
+		{"http issuer", "http://oidc.example.com", testDiscovery, testJWKS, errInsecure},
 		{"missing discovery", testIssuer, "", testJWKS, errFile},
 		{"oversized jwks", testIssuer, testDiscovery, strings.Repeat(" ", maxBody+1), errFile},
 		{"discovery is an array", testIssuer, "[]", testJWKS, errDiscovery},

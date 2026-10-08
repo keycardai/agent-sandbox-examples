@@ -11,7 +11,8 @@ The once-per-cluster Helm chart for Keycard agent sandboxes. It installs:
 - the sandbox-admin Role in that namespace, and a RoleBinding to
   `rbac.subjects` when that list is not empty
 - a NetworkPolicy on every pod in the namespace that denies ingress and allows
-  egress only to TCP 443 on public addresses and to the cluster DNS
+  egress only to TCP 443 on public addresses, to TCP 443 on each address in
+  `network.allowCIDRs`, and to the cluster DNS
 
 `values.yaml` documents every key. `values.example.yaml` is a starting point.
 
@@ -30,6 +31,20 @@ It also stops unless the namespace enforces `privileged` after the install.
 The controller manifest in `agent-sandbox/` is the upstream release asset.
 `agent-sandbox/refresh.sh` downloads it and checks it against the digest GitHub
 publishes.
+
+## A zone that is not on the internet
+
+Three values let the proxy reach a zone on a private address behind a private
+CA. All three are empty by default.
+
+- `zoneTrust` holds the root certificate. The chart renders it as a ConfigMap
+  and mounts it only on the proxy container.
+- `hostAliases` maps the zone's host name to the private address.
+- `network.allowCIDRs` allows that address on TCP 443. Each entry is a single
+  address, and none can be in 169.254.0.0/16.
+
+Give the sandbox chart the same `zoneTrust` and `hostAliases`. `docs/local.md`
+shows them filled in.
 
 ## The sandbox-admin Role is effectively node admin
 
