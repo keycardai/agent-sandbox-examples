@@ -75,7 +75,7 @@ require_cluster "$cluster"
 	die "KEYCARD_LOCAL_ZONE_ON_HOST must be true or empty (got '$zone_on_host')"
 ca=$(ca_file)
 require_tools docker
-use_pinned_tools go jq k3d kubectl yq
+use_pinned_tools go k3d kubectl yq
 export KUBERC=off
 context=k3d-$cluster
 kube() { kubectl --context "$context" "$@"; }
@@ -86,7 +86,7 @@ env_args=()
 [[ -z $env_file ]] || env_args=(--env "$env_file")
 
 step "the k3d cluster $cluster"
-"$here/bootstrap.sh" --cluster "$cluster" --issuer "$issuer" ${env_args[@]+"${env_args[@]}"}
+go -C "$repo" run ./cmd/sandbox ${env_args[@]+"${env_args[@]}"} bootstrap --cluster "$cluster" --issuer "$issuer"
 
 step "the three images"
 missing=0
