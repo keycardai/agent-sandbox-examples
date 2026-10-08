@@ -1,8 +1,7 @@
-package main
+package zonesetup
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -17,9 +16,6 @@ import (
 	"testing"
 
 	"github.com/keycardai/keycard-go"
-	"github.com/urfave/cli/v3"
-
-	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
 const (
@@ -123,8 +119,8 @@ func archived(policyID string) string {
 }
 
 // pin is a manifest entry that pins one version of a policy.
-func pin(policyID, versionID string) zonesetup.ApplyEntry {
-	return zonesetup.ApplyEntry{PolicyID: policyID, PolicyVersionID: versionID}
+func pin(policyID, versionID string) ApplyEntry {
+	return ApplyEntry{PolicyID: policyID, PolicyVersionID: versionID}
 }
 
 // merged returns base with more's entries added or replaced.
@@ -181,8 +177,8 @@ func TestEnsureUserAccess(t *testing.T) {
 		namespace = "agents"
 		subject   = "system:serviceaccount:agents:user-1"
 	)
-	values := &zonesetup.Values{Namespace: namespace, Users: []zonesetup.UserValues{{Email: email}}}
-	pending := []userAccess{{
+	values := &Values{Namespace: namespace, Users: []UserValues{{Email: email}}}
+	pending := []UserAccess{{
 		UserEmail: email, UserID: adaID, ServiceAccount: subject, Namespace: namespace,
 		UserIdentifier: adaIdentifier,
 	}}
@@ -190,13 +186,13 @@ func TestEnsureUserAccess(t *testing.T) {
 		name          string
 		dryRun        bool
 		applicationID string
-		wantAccess    []userAccess
+		wantAccess    []UserAccess
 		wantWrites    []string
 		wantLog       string
 	}{
 		{
 			name: "a run creates the missing credential", applicationID: applicationK,
-			wantAccess: []userAccess{{
+			wantAccess: []UserAccess{{
 				UserEmail: email, UserID: adaID, ServiceAccount: subject,
 				ClientID: "credential-new", Namespace: namespace, UserIdentifier: adaIdentifier,
 			}},
@@ -219,20 +215,10 @@ func TestEnsureUserAccess(t *testing.T) {
 			fake := &fakeZone{}
 			session := connect(t, fake)
 			var stderr bytes.Buffer
-			cmd := newCommand()
-			cmd.ErrWriter = &stderr
-			var access []userAccess
-			cmd.Action = func(ctx context.Context, cmd *cli.Command) error {
-				var err error
-				access, err = ensureUserAccess(ctx, cmd, session, tc.applicationID, "provider-k", values)
-				return err
-			}
-			args := []string{"zone-setup", "--values", "unused"}
-			if tc.dryRun {
-				args = append(args, "--dry-run")
-			}
-			if err := cmd.Run(t.Context(), args); err != nil {
-				t.Fatalf("Run: %v", err)
+			opts := &Options{DryRun: tc.dryRun, Log: &stderr}
+			access, err := ensureUserAccess(t.Context(), opts, session, tc.applicationID, "provider-k", values)
+			if err != nil {
+				t.Fatalf("ensureUserAccess: %v", err)
 			}
 			if !slices.Equal(access, tc.wantAccess) {
 				t.Errorf("access = %+v, want %+v", access, tc.wantAccess)
@@ -250,15 +236,15 @@ func TestEnsureUserAccess(t *testing.T) {
 	}
 }
 
-func connect(t *testing.T, fake *fakeZone) *zonesetup.Session {
+func connect(t *testing.T, fake *fakeZone) *Session {
 	t.Helper()
 	server := httptest.NewServer(fake)
 	t.Cleanup(server.Close)
-	session, err := zonesetup.Connect(t.Context(), &zonesetup.Values{
+	session, err := Connect(t.Context(), &Values{
 		ManagementAPIURL:         server.URL,
 		ZoneID:                   "zone-a",
-		ManagementServiceAccount: zonesetup.ManagementServiceAccountValues{ClientID: "sa-1"},
-	}, &zonesetup.Secrets{ManagementClientSecret: "sa-secret"})
+		ManagementServiceAccount: ManagementServiceAccountValues{ClientID: "sa-1"},
+	}, &Secrets{ManagementClientSecret: "sa-secret"})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -267,7 +253,7 @@ func connect(t *testing.T, fake *fakeZone) *zonesetup.Session {
 
 func TestEnsureResources(t *testing.T) {
 	t.Parallel()
-	resources := []zonesetup.ResourceValues{
+	resources := []ResourceValues{
 		{Identifier: "https://api.github.com", Name: "GitHub", CredentialProvider: "github"},
 		{Identifier: "https://api.example.com", Name: "Example", SecretEnv: "EXAMPLE_TOKEN"},
 	}
@@ -341,24 +327,17 @@ func TestEnsureResources(t *testing.T) {
 			t.Parallel()
 			fake := &fakeZone{bodies: tc.bodies}
 			session := connect(t, fake)
-			var stdout, stderr bytes.Buffer
-			cmd := newCommand()
-			cmd.Writer, cmd.ErrWriter = &stdout, &stderr
-			cmd.Action = func(ctx context.Context, cmd *cli.Command) error {
-				tokens := map[string]string{"EXAMPLE_TOKEN": resourceToken}
-				return ensureResources(ctx, cmd, session, tc.applicationID, resources, tokens)
-			}
-			args := []string{"zone-setup", "--values", "unused"}
-			if tc.dryRun {
-				args = append(args, "--dry-run")
-			}
-			if err := cmd.Run(t.Context(), args); (err != nil) != tc.wantErr {
-				t.Fatalf("Run: err = %v, want an error: %t", err, tc.wantErr)
+			var stderr bytes.Buffer
+			opts := &Options{DryRun: tc.dryRun, Log: &stderr}
+			tokens := map[string]string{"EXAMPLE_TOKEN": resourceToken}
+			err := ensureResources(t.Context(), opts, session, tc.applicationID, resources, tokens)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ensureResources: err = %v, want an error: %t", err, tc.wantErr)
 			}
 			if !slices.Equal(fake.writes, tc.wantWrites) {
 				t.Errorf("writes = %q, want %q", fake.writes, tc.wantWrites)
 			}
-			if got := stderr.String(); got != tc.wantLog || strings.Contains(got+stdout.String(), resourceToken) {
+			if got := stderr.String(); got != tc.wantLog || strings.Contains(got, resourceToken) {
 				t.Errorf("stderr = %q, want %q", got, tc.wantLog)
 			}
 			listedDependencies := slices.ContainsFunc(fake.reads, func(call string) bool {
@@ -403,10 +382,10 @@ func TestEnsurePolicies(t *testing.T) {
 		otherPolicies = `{"id":"policy-other","name":"Production"},{"id":"policy-old","name":"Production v1"}`
 	)
 	user := keycard.User{ID: adaID, Identifier: adaIdentifier, Email: "ada@example.com"}
-	access := []userAccess{{UserEmail: user.Email, UserID: user.ID, UserIdentifier: user.Identifier}}
-	impersonation := zonesetup.ImpersonationPolicy(namespace, issuer, zonesetup.ApplicationName, user)
-	accessPolicy := zonesetup.AccessPolicy(namespace, issuer, zonesetup.ApplicationName, user)
-	placeholder := zonesetup.PlaceholderPolicy()
+	access := []UserAccess{{UserEmail: user.Email, UserID: user.ID, UserIdentifier: user.Identifier}}
+	impersonation := ImpersonationPolicy(namespace, issuer, ApplicationName, user)
+	accessPolicy := AccessPolicy(namespace, issuer, ApplicationName, user)
+	placeholder := PlaceholderPolicy()
 	existing := map[string]string{
 		listPoliciesCall: page(ownPolicies + "," + otherPolicies),
 		listSetsCall:     page(activeK),
@@ -448,21 +427,21 @@ func TestEnsurePolicies(t *testing.T) {
 	otherActive := map[string]string{
 		listActiveSetsCall: page(`{"id":"set-other","name":"Production","active":true,"target_type":"zone"}`),
 	}
-	userEntries := []zonesetup.ApplyEntry{
+	userEntries := []ApplyEntry{
 		{PolicyID: "policy-k", CedarRaw: impersonation.Cedar},
 		{PolicyID: "access-k", CedarRaw: accessPolicy.Cedar},
 	}
-	freshEntries := []zonesetup.ApplyEntry{
+	freshEntries := []ApplyEntry{
 		{
-			NewPolicy: &zonesetup.NewPolicy{Name: impersonation.Name, Description: impersonation.Description},
+			NewPolicy: &NewPolicy{Name: impersonation.Name, Description: impersonation.Description},
 			CedarRaw:  impersonation.Cedar,
 		},
 		{
-			NewPolicy: &zonesetup.NewPolicy{Name: accessPolicy.Name, Description: accessPolicy.Description},
+			NewPolicy: &NewPolicy{Name: accessPolicy.Name, Description: accessPolicy.Description},
 			CedarRaw:  accessPolicy.Cedar,
 		},
 	}
-	values := &zonesetup.Values{Namespace: namespace, IssuerURL: issuer, PolicySet: zonesetup.DefaultPolicySetName}
+	values := &Values{Namespace: namespace, IssuerURL: issuer, PolicySet: DefaultPolicySetName}
 	cases := []ensurePoliciesCase{
 		{
 			name:       "a fresh zone gets a new set that creates both policies and is active",
@@ -489,7 +468,7 @@ func TestEnsurePolicies(t *testing.T) {
 			wantWrites: []string{applyKCall},
 			wantApply: &applyBody{
 				SchemaVersion: setSchema,
-				Entries:       append([]zonesetup.ApplyEntry{pin("policy-other", "version-other")}, userEntries...),
+				Entries:       append([]ApplyEntry{pin("policy-other", "version-other")}, userEntries...),
 			},
 			wantLog: []string{"policy set set-k version set-version-l is active"},
 		},
@@ -503,7 +482,7 @@ func TestEnsurePolicies(t *testing.T) {
 			wantWrites: []string{applyKCall},
 			wantApply: &applyBody{
 				SchemaVersion: setSchema,
-				Entries:       append([]zonesetup.ApplyEntry{pin("policy-old", "version-old")}, userEntries...),
+				Entries:       append([]ApplyEntry{pin("policy-old", "version-old")}, userEntries...),
 			},
 		},
 		{
@@ -516,7 +495,7 @@ func TestEnsurePolicies(t *testing.T) {
 			wantWrites: []string{applyKCall},
 			wantApply: &applyBody{
 				SchemaVersion: setSchema,
-				Entries:       append([]zonesetup.ApplyEntry{pin("policy-other", "version-other")}, userEntries...),
+				Entries:       append([]ApplyEntry{pin("policy-other", "version-other")}, userEntries...),
 			},
 			wantLog: []string{"dropping policy policy-archived from the set: the zone has no unarchived policy with that id"},
 		},
@@ -528,7 +507,7 @@ func TestEnsurePolicies(t *testing.T) {
 			wantWrites: []string{applyKCall},
 			wantApply: &applyBody{
 				SchemaVersion: setSchema,
-				Entries: []zonesetup.ApplyEntry{
+				Entries: []ApplyEntry{
 					pin("policy-other", "version-other"),
 					{PolicyID: "access-k", CedarRaw: accessPolicy.Cedar},
 					freshEntries[0],
@@ -541,7 +520,7 @@ func TestEnsurePolicies(t *testing.T) {
 			wantWrites: []string{applyKCall, archiveCall("access-gone"), archiveCall("policy-gone")},
 			wantApply: &applyBody{
 				SchemaVersion: setSchema,
-				Entries: append([]zonesetup.ApplyEntry{
+				Entries: append([]ApplyEntry{
 					pin("policy-other", "version-other"), pin("policy-ns2", "version-ns2"),
 				}, userEntries...),
 			},
@@ -559,7 +538,7 @@ func TestEnsurePolicies(t *testing.T) {
 			},
 			wantApply: &applyBody{
 				SchemaVersion: setSchema,
-				Entries:       []zonesetup.ApplyEntry{pin("policy-other", "version-other"), pin("policy-ns2", "version-ns2")},
+				Entries:       []ApplyEntry{pin("policy-other", "version-other"), pin("policy-ns2", "version-ns2")},
 			},
 		},
 		{
@@ -569,8 +548,8 @@ func TestEnsurePolicies(t *testing.T) {
 			wantWrites: lastUserWrites,
 			wantApply: &applyBody{
 				SchemaVersion: setSchema,
-				Entries: []zonesetup.ApplyEntry{{
-					NewPolicy: &zonesetup.NewPolicy{Name: placeholder.Name, Description: placeholder.Description},
+				Entries: []ApplyEntry{{
+					NewPolicy: &NewPolicy{Name: placeholder.Name, Description: placeholder.Description},
 					CedarRaw:  placeholder.Cedar,
 				}},
 			},
@@ -583,14 +562,14 @@ func TestEnsurePolicies(t *testing.T) {
 			wantWrites: lastUserWrites,
 			wantApply: &applyBody{
 				SchemaVersion: setSchema,
-				Entries:       []zonesetup.ApplyEntry{{PolicyID: "placeholder-k", CedarRaw: placeholder.Cedar}},
+				Entries:       []ApplyEntry{{PolicyID: "placeholder-k", CedarRaw: placeholder.Cedar}},
 			},
 		},
 		{
 			name:       "a failed apply archives nothing",
 			bodies:     merged(pruned, map[string]string{applyKCall: ""}),
 			wantWrites: []string{applyKCall},
-			wantErr:    zonesetup.ErrAPI,
+			wantErr:    ErrAPI,
 		},
 		{
 			name: "a dry run reports the apply and the archives it would make", dryRun: true, bodies: pruned,
@@ -603,11 +582,11 @@ func TestEnsurePolicies(t *testing.T) {
 		{
 			name:    "another active set is refused before any write",
 			bodies:  otherActive,
-			wantErr: zonesetup.ErrPolicySetActive,
+			wantErr: ErrPolicySetActive,
 		},
 		{
 			name: "a dry run reports the same refusal", dryRun: true, bodies: otherActive,
-			wantErr: zonesetup.ErrPolicySetActive,
+			wantErr: ErrPolicySetActive,
 		},
 		{
 			name: "the flag replaces another active set", replace: true, bodies: otherActive,
@@ -644,26 +623,18 @@ type ensurePoliciesCase struct {
 
 // runEnsurePolicies runs ensurePolicies for access, or for no users when
 // tc.noUsers is set, against a fake zone that serves tc.bodies.
-func runEnsurePolicies(t *testing.T, tc ensurePoliciesCase, values *zonesetup.Values, access []userAccess) {
+func runEnsurePolicies(t *testing.T, tc ensurePoliciesCase, values *Values, access []UserAccess) {
 	t.Helper()
 	fake := &fakeZone{bodies: tc.bodies}
 	session := connect(t, fake)
 	var stderr bytes.Buffer
-	cmd := newCommand()
-	cmd.ErrWriter = &stderr
-	cmd.Action = func(ctx context.Context, cmd *cli.Command) error {
-		users := access
-		if tc.noUsers {
-			users = nil
-		}
-		return ensurePolicies(ctx, cmd, session, values, zonesetup.ApplicationName, users)
+	users := access
+	if tc.noUsers {
+		users = nil
 	}
-	args := []string{
-		cmd.Name, "--values=unused", "--dry-run=" + strconv.FormatBool(tc.dryRun),
-		"--" + replaceActiveFlag + "=" + strconv.FormatBool(tc.replace),
-	}
-	if err := cmd.Run(t.Context(), args); !errors.Is(err, tc.wantErr) {
-		t.Fatalf("Run: err = %v, want %v", err, tc.wantErr)
+	opts := &Options{DryRun: tc.dryRun, ReplaceActive: tc.replace, Log: &stderr}
+	if err := ensurePolicies(t.Context(), opts, session, values, ApplicationName, users); !errors.Is(err, tc.wantErr) {
+		t.Fatalf("ensurePolicies: err = %v, want %v", err, tc.wantErr)
 	}
 	if !slices.Equal(fake.writes, tc.wantWrites) {
 		t.Errorf("writes = %q, want %q", fake.writes, tc.wantWrites)
@@ -676,9 +647,9 @@ func runEnsurePolicies(t *testing.T, tc ensurePoliciesCase, values *zonesetup.Va
 
 // applyBody is the request body of a policy set apply.
 type applyBody struct {
-	SchemaVersion string                 `json:"schema_version"`
-	Activate      bool                   `json:"activate"`
-	Entries       []zonesetup.ApplyEntry `json:"entries"`
+	SchemaVersion string       `json:"schema_version"`
+	Activate      bool         `json:"activate"`
+	Entries       []ApplyEntry `json:"entries"`
 }
 
 // assertLogLines requires each line to appear in the log as a whole line.
