@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"net/mail"
 	"net/url"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -142,8 +143,8 @@ type UserValues struct {
 	Email string `yaml:"email"`
 }
 
-// ResourceValues is one destination. Exactly one of CredentialProvider and
-// SecretEnv is set.
+// ResourceValues is one destination. Exactly one of CredentialProvider,
+// SecretEnv and SecretFile is set.
 type ResourceValues struct {
 	// Identifier must equal the canonical url the proxy sends as the
 	// exchange's `resource` parameter. The zone matches it exactly.
@@ -157,12 +158,30 @@ type ResourceValues struct {
 	// SecretEnv names the environment variable holding a static token for
 	// this resource.
 	SecretEnv string `yaml:"secret_env"`
+	// SecretFile names a file holding a static token for this resource.
+	// LoadSecrets trims the whitespace around the token.
+	SecretFile string `yaml:"secret_file"`
+}
+
+// Static reports whether the resource's credential is a static token the
+// zone's vault holds.
+func (r ResourceValues) Static() bool {
+	return r.SecretEnv != "" || r.SecretFile != ""
+}
+
+// SecretName returns the name of the resource's static token in the zone's
+// vault: SecretEnv, or the base name of SecretFile.
+func (r ResourceValues) SecretName() string {
+	if r.SecretEnv != "" {
+		return r.SecretEnv
+	}
+	return filepath.Base(r.SecretFile)
 }
 
 // Secrets holds every credential value the values file names.
 type Secrets struct {
 	ManagementClientSecret string
-	// Resource maps a SecretEnv name to its value.
+	// Resource maps a static resource's identifier to its token.
 	Resource map[string]string
 }
 
@@ -170,6 +189,12 @@ type Secrets struct {
 // defaults. The file holds exactly one document. Unknown keys, duplicate keys and keys that differ from a field
 // name only in case are errors. Every error wraps ErrValues.
 func ParseValues(reader io.Reader) (*Values, error) {
+	return parseValues(reader, "", "")
+}
+
+// parseValues is ParseValues with the issuerURL and source that
+// ReadValuesFile takes.
+func parseValues(reader io.Reader, issuerURL, source string) (*Values, error) {
 	raw, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, fmt.Errorf("%w: cannot read it", ErrValues)
@@ -185,6 +210,12 @@ func ParseValues(reader io.Reader) (*Values, error) {
 	decoder.KnownFields(true)
 	if err = decoder.Decode(&values); err != nil && !errors.Is(err, io.EOF) {
 		return nil, parseError(err)
+	}
+	if issuerURL != "" {
+		if err = checkIssuer(source, issuerURL); err != nil {
+			return nil, err
+		}
+		values.IssuerURL = issuerURL
 	}
 	steps := []func() error{
 		values.checkConnection,
@@ -383,16 +414,6 @@ func atLine(lineRE *regexp.Regexp, msg string) string {
 	return ""
 }
 
-// SetIssuerURL replaces IssuerURL with issuer, after the checks ParseValues
-// applies to issuer_url. key names the source of issuer in an error.
-func (v *Values) SetIssuerURL(key, issuer string) error {
-	if err := checkIssuer(key, issuer); err != nil {
-		return err
-	}
-	v.IssuerURL = issuer
-	return nil
-}
-
 func (v *Values) checkConnection() error {
 	if err := checkURL("management_api_url", v.ManagementAPIURL); err != nil {
 		return err
@@ -466,8 +487,15 @@ func (v *Values) checkResources() error {
 		if resource.Name == "" {
 			resource.Name = resource.Identifier
 		}
-		if (resource.CredentialProvider == "") == (resource.SecretEnv == "") {
-			return fmt.Errorf("%w: resources[%d]: set exactly one of credential_provider and secret_env", ErrValues, i)
+		set := 0
+		for _, source := range []string{resource.CredentialProvider, resource.SecretEnv, resource.SecretFile} {
+			if source != "" {
+				set++
+			}
+		}
+		if set != 1 {
+			return fmt.Errorf("%w: resources[%d]: set exactly one of credential_provider, secret_env and secret_file",
+				ErrValues, i)
 		}
 		if resource.SecretEnv != "" && !envNameRE.MatchString(resource.SecretEnv) {
 			return fmt.Errorf("%w: resources[%d].secret_env is not an environment variable name", ErrValues, i)
@@ -527,15 +555,23 @@ func LoadSecrets(
 	resources := map[string]string{}
 	var missing []string
 	for i, resource := range values.Resources {
-		if resource.SecretEnv == "" {
-			continue
+		switch {
+		case resource.SecretEnv != "":
+			value, ok := lookupEnv(resource.SecretEnv)
+			if !ok || value == "" {
+				missing = append(missing, fmt.Sprintf("%s (for resources[%d])", resource.SecretEnv, i))
+				continue
+			}
+			resources[resource.Identifier] = value
+		case resource.SecretFile != "":
+			raw, err := readFile(resource.SecretFile)
+			value := strings.TrimSpace(string(raw))
+			if err != nil || value == "" {
+				missing = append(missing, fmt.Sprintf("resources[%d].secret_file", i))
+				continue
+			}
+			resources[resource.Identifier] = value
 		}
-		value, ok := lookupEnv(resource.SecretEnv)
-		if !ok || value == "" {
-			missing = append(missing, fmt.Sprintf("%s (for resources[%d])", resource.SecretEnv, i))
-			continue
-		}
-		resources[resource.SecretEnv] = value
 	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("%w: unset: %s", ErrMissingSecret, strings.Join(missing, ", "))

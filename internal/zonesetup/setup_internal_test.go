@@ -329,7 +329,7 @@ func TestEnsureResources(t *testing.T) {
 			session := connect(t, fake)
 			var stderr bytes.Buffer
 			opts := &Options{DryRun: tc.dryRun, Log: &stderr}
-			tokens := map[string]string{"EXAMPLE_TOKEN": resourceToken}
+			tokens := map[string]string{"https://api.example.com": resourceToken}
 			err := ensureResources(t.Context(), opts, session, tc.applicationID, resources, tokens)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("ensureResources: err = %v, want an error: %t", err, tc.wantErr)
