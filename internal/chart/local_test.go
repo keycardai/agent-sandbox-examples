@@ -214,3 +214,39 @@ func TestInstallRefusesZoneValues(t *testing.T) {
 		})
 	}
 }
+
+// TestExistingClusterValues renders both charts with the values `sandbox
+// run` writes for an existing cluster. The two pods must match, every
+// container must run a ghcr.io/keycardai image with the given tag, and the
+// proxy's document must list the cluster's ranges.
+func TestExistingClusterValues(t *testing.T) {
+	t.Parallel()
+	ranges := []string{"10.0.0.0/16", "172.20.0.0/16"}
+	install, sandboxYAML, err := sandbox.LocalValues(sandbox.LocalValuesInput{
+		ZoneURL: localZoneURL, ImageTag: "0.2.0", ClusterCIDRs: ranges,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := filepath.Abs("../../install")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installObjects := renderChart(t, dir, release, localValues(t, "install.yaml"), writeValues(t, string(install)))
+	sandboxObjects := renderChart(t, sandboxDir(t), sandboxUserID,
+		sandboxValues(t, localValues(t, "sandbox.yaml"), writeValues(t, string(sandboxYAML)))...)
+	assertPodsMatch(t, installObjects, sandboxObjects)
+
+	var tmpl sandboxTemplate
+	decode(t, installObjects, "SandboxTemplate/"+release, &tmpl)
+	spec := tmpl.Spec.PodTemplate.Spec
+	for _, container := range append(spec.InitContainers, spec.Containers...) {
+		if !strings.HasPrefix(container.Image, "ghcr.io/keycardai/") || !strings.HasSuffix(container.Image, ":0.2.0") {
+			t.Errorf("container %s image = %q, want ghcr.io/keycardai/...:0.2.0", container.Name, container.Image)
+		}
+	}
+	proxy := parseDocument(t, configDocument(t, sandboxObjects))
+	if !reflect.DeepEqual(proxy.Policy.ClusterCIDRs, ranges) {
+		t.Errorf("cluster_cidrs = %v, want %v", proxy.Policy.ClusterCIDRs, ranges)
+	}
+}

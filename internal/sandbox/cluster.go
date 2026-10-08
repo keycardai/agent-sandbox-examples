@@ -65,7 +65,7 @@ func (l *Local) Bootstrap(ctx context.Context, cluster, issuerURL string, dryRun
 // bootstrap is Bootstrap without the advice to delete the cluster. up uses
 // it, because up asks to delete the cluster itself.
 func (l *Local) bootstrap(ctx context.Context, cluster, issuerURL string, dryRun bool) error {
-	cluster, err := l.cluster(cluster)
+	cluster, err := l.k3dName("bootstrap", cluster)
 	if err != nil {
 		return err
 	}
@@ -126,7 +126,7 @@ func (l *Local) bootstrap(ctx context.Context, cluster, issuerURL string, dryRun
 //
 // An empty cluster comes from the settings.
 func (l *Local) Down(ctx context.Context, cluster string, yes bool) error {
-	cluster, err := l.cluster(cluster)
+	cluster, err := l.k3dName("down", cluster)
 	if err != nil {
 		return err
 	}

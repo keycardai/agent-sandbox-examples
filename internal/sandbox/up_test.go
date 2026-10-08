@@ -3,14 +3,12 @@ package sandbox_test
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -298,9 +296,7 @@ func tlsIssuer(t *testing.T) (string, string) {
 	mux.HandleFunc("/openid/v1/jwks", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `{"keys":[]}`)
 	})
-	caFile := filepath.Join(t.TempDir(), "ca.pem")
-	writeFile(t, caFile, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})))
-	return server.URL, caFile
+	return server.URL, trustFile(t, server)
 }
 
 // freeAddr returns a loopback address with a port nothing listens on.

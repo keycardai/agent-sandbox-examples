@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/pem"
 	"errors"
 	"io"
 	"io/fs"
 	"maps"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +31,10 @@ const (
 	namedTunnel = "asp-tunnel"
 	// email is the user the tests' sandbox acts for.
 	email = "ada@example.com"
+	// zoneURL is the zone the tests' sandbox dials.
+	zoneURL = "https://zone.example.com"
+	// goodSecret is the service account secret the fake management API takes.
+	goodSecret = "good"
 )
 
 // record is the start of every fake tool. It appends the tool's name, the
@@ -149,6 +155,7 @@ func TestLoadSettings(t *testing.T) {
 				sandbox.KeyCluster: "keycard-sandbox-local", sandbox.KeyIssuer: "", sandbox.KeyTunnel: "",
 				sandbox.KeyZoneURL: "", sandbox.KeyZoneOnHost: "", sandbox.KeyZoneSetupValues: "zone-setup.yaml",
 				sandbox.KeyUserEmail: "", sandbox.KeyGitHubLogin: "", sandbox.KeyCAFile: "",
+				sandbox.KeyKubeContext: "", sandbox.KeyImageTag: "", sandbox.KeyClusterCIDRs: "",
 			},
 		},
 	}
@@ -384,6 +391,15 @@ func checkIssuerFile(t *testing.T, path, want string) {
 	case want != "" && string(raw) != want:
 		t.Fatalf("issuer file = %q, %v, want %q", raw, err, want)
 	}
+}
+
+// trustFile writes a PEM file that trusts server's certificate, and returns
+// its path.
+func trustFile(t *testing.T, server *httptest.Server) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	writeFile(t, path, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})))
+	return path
 }
 
 func writeFile(t *testing.T, path, body string) {

@@ -1,5 +1,5 @@
 // Package sandbox sets up the sandbox demo against a Keycard zone, on a local
-// k3d cluster. Each step is one subcommand of cmd/sandbox.
+// k3d cluster or an existing one. Each step is one subcommand of cmd/sandbox.
 package sandbox
 
 import (
@@ -32,8 +32,13 @@ const (
 	KeyUserEmail        = "KEYCARD_LOCAL_USER_EMAIL"
 	KeyGitHubLogin      = "KEYCARD_LOCAL_GITHUB_LOGIN"
 	KeyCAFile           = "KEYCARD_LOCAL_CA_FILE"
+	KeyKubeContext      = "KEYCARD_LOCAL_KUBE_CONTEXT"
+	KeyImageTag         = "KEYCARD_LOCAL_IMAGE_TAG"
+	KeyClusterCIDRs     = "KEYCARD_LOCAL_CLUSTER_CIDRS"
 	maxClusterNameBytes = 32
-	pemMarker           = "-----BEGIN CERTIFICATE-----"
+	// settingTrue is the value of a setting that is on.
+	settingTrue = "true"
+	pemMarker   = "-----BEGIN CERTIFICATE-----"
 	// dirMode and fileMode are the modes of what the steps write under
 	// local/out.
 	dirMode  = 0o750
@@ -57,6 +62,9 @@ var (
 	// tunnel's issuer file that exists or cannot be written, or a cloudflared
 	// that stopped.
 	ErrTunnel = errors.New("tunnel refused")
+	// ErrExisting is a k3d-only step run with settings that name an existing
+	// cluster.
+	ErrExisting = errors.New("not for an existing cluster")
 )
 
 // clusterName is k3d's RFC 1123 label, narrowed to lowercase.
@@ -66,6 +74,7 @@ func settingKeys() []string {
 	return []string{
 		KeyCluster, KeyIssuer, KeyTunnel, KeyZoneURL, KeyZoneOnHost,
 		KeyZoneSetupValues, KeyUserEmail, KeyGitHubLogin, KeyCAFile,
+		KeyKubeContext, KeyImageTag, KeyClusterCIDRs,
 	}
 }
 
@@ -145,10 +154,20 @@ func (l *Local) QuickIssuerFile() string {
 	return filepath.Join(l.Root, "local", "out", "issuer")
 }
 
-// cluster returns flag, or KEYCARD_LOCAL_CLUSTER when flag is empty. The
-// name must be lowercase letters, digits and dashes, at most 32 bytes, as
-// k3d requires.
+// Existing reports whether KEYCARD_LOCAL_KUBE_CONTEXT is set. When it is,
+// the steps use that existing cluster instead of a k3d cluster.
+func (l *Local) Existing() bool {
+	return l.Settings[KeyKubeContext] != ""
+}
+
+// cluster returns flag, or the setting when flag is empty. For an existing
+// cluster, the name is a kubeconfig context from KEYCARD_LOCAL_KUBE_CONTEXT.
+// Otherwise it is a k3d cluster from KEYCARD_LOCAL_CLUSTER: at most 32
+// lowercase letters, digits and dashes, as k3d requires.
 func (l *Local) cluster(flag string) (string, error) {
+	if l.Existing() {
+		return cmp.Or(flag, l.Settings[KeyKubeContext]), nil
+	}
 	name := cmp.Or(flag, l.Settings[KeyCluster])
 	if name == "" {
 		return "", fmt.Errorf("%w: no cluster name. Set %s or pass --cluster", ErrCluster, KeyCluster)
@@ -201,11 +220,39 @@ func (l *Local) caFile() (string, error) {
 	return file, nil
 }
 
-// kubectl runs kubectl in the cluster's k3d context with stdin and returns
-// its standard output. It sets KUBERC=off, so a kuberc default for --server,
+// kubeContext returns the kubeconfig context of cluster. For an existing
+// cluster it is cluster. For a k3d cluster it is k3d-<cluster>.
+func (l *Local) kubeContext(cluster string) string {
+	if l.Existing() {
+		return cluster
+	}
+	return "k3d-" + cluster
+}
+
+// k3dName returns Local.cluster(flag), or ErrExisting when the settings name
+// an existing cluster.
+func (l *Local) k3dName(step, flag string) (string, error) {
+	if err := l.requireK3d(step); err != nil {
+		return "", err
+	}
+	return l.cluster(flag)
+}
+
+// requireK3d returns ErrExisting, naming step, when the settings name an
+// existing cluster.
+func (l *Local) requireK3d(step string) error {
+	if l.Existing() {
+		return fmt.Errorf("%w: %s is for a k3d cluster that sandbox creates, and %s names an existing cluster",
+			ErrExisting, step, KeyKubeContext)
+	}
+	return nil
+}
+
+// kubectl runs kubectl in the cluster's context with stdin and returns its
+// standard output. It sets KUBERC=off, so a kuberc default for --server,
 // --cluster, --user or --token cannot override the context.
 func (l *Local) kubectl(ctx context.Context, cluster string, stdin []byte, args ...string) ([]byte, error) {
-	cmd, err := l.Tool(ctx, "kubectl", slices.Concat([]string{"--context", "k3d-" + cluster}, args)...)
+	cmd, err := l.Tool(ctx, "kubectl", slices.Concat([]string{"--context", l.kubeContext(cluster)}, args)...)
 	if err != nil {
 		return nil, err
 	}

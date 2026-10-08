@@ -36,7 +36,19 @@ func stale(line string) string {
 	return strings.ReplaceAll(line, "@NOW@", "2020-01-01T00:00:00Z")
 }
 
-// fakeSandbox sets what the fake tools return for a running sandbox.
+// devTag is the tag of images built in the egress-proxy repository.
+const devTag = "local"
+
+// pinnedImages returns the images the charts pin.
+func pinnedImages() []string {
+	return []string{
+		"ghcr.io/keycardai/egress-netsetup:v0.2.1@sha256:cff8c7a98ebfadfb514ccc0840cfb7a67994711f7e7c405d309613e4611b5b33",
+		"ghcr.io/keycardai/egress-proxy:v0.2.1@sha256:79684cf9b059d8e2f1719b108a05251bb47ef3bebb39759fd1811ec36b9ff7d2",
+		"ghcr.io/keycardai/sandbox-base:v0.2.1@sha256:555ef77f07de9e186e594aa3b0aa4805cfe7149ace065ca97d40fbc0e02c1cce",
+	}
+}
+
+// fakeSandbox is what the fake tools answer for a running sandbox.
 type fakeSandbox struct {
 	allowed      string // the status pypi returns
 	githubStatus string
@@ -262,7 +274,7 @@ func TestRunSettings(t *testing.T) {
 	valid := func() sandbox.Settings {
 		return sandbox.Settings{
 			sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer,
-			sandbox.KeyZoneURL: "https://zone.example.com", sandbox.KeyUserEmail: email,
+			sandbox.KeyZoneURL: zoneURL, sandbox.KeyUserEmail: email,
 		}
 	}
 	tests := []struct {
@@ -380,22 +392,26 @@ func TestCheckTargetFor(t *testing.T) {
 // TestRun runs the whole flow against fake tools and the zone-setup output
 // of an earlier run. The pinned helm renders the repository's sandbox chart.
 // A run that fails must make exactly the calls in wantCalls, so each row
-// shows the step Run stops at. A whole run must make each call in wantCalls.
+// shows the step Run stops at. A whole run must make each call in wantCalls
+// and none in notCalls. Without KEYCARD_LOCAL_IMAGE_TAG, the pod runs the
+// images the charts pin and Run does not import images. With it, Run imports
+// the images at that tag.
 func TestRun(t *testing.T) {
 	t.Parallel()
 	const (
-		images = "ghcr.io/keycardai/egress-netsetup:local ghcr.io/keycardai/egress-proxy:local" +
-			" ghcr.io/keycardai/sandbox-base:local"
 		dockerCall = "docker KUBERC= version --format {{.Server.Version}}\n"
 		inspects   = "docker KUBERC= image inspect ghcr.io/keycardai/egress-netsetup:local\n" +
 			"docker KUBERC= image inspect ghcr.io/keycardai/egress-proxy:local\n" +
 			"docker KUBERC= image inspect ghcr.io/keycardai/sandbox-base:local\n"
-		importCall = "k3d KUBERC= image import --cluster asp " + images + "\n"
-		kube       = "kubectl KUBERC=off --context k3d-asp --namespace agents "
-		imported   = dockerCall + listCall + discoveryCall + mintCalls + inspects + importCall
+		importCall = "k3d KUBERC= image import --cluster asp ghcr.io/keycardai/egress-netsetup:local" +
+			" ghcr.io/keycardai/egress-proxy:local ghcr.io/keycardai/sandbox-base:local\n"
+		kube         = "kubectl KUBERC=off --context k3d-asp --namespace agents "
+		bootstrapped = dockerCall + listCall + discoveryCall + mintCalls
+		imported     = bootstrapped + inspects + importCall
 	)
 	tests := []struct {
 		name    string
+		tag     string
 		sandbox fakeSandbox
 		// noDocker makes docker a path that does not exist.
 		noDocker  bool
@@ -403,6 +419,9 @@ func TestRun(t *testing.T) {
 		want      []error
 		wantText  string
 		wantCalls []string
+		notCalls  []string
+		// wantImages are the images the applied pod runs.
+		wantImages []string
 	}{
 		{
 			name:     "docker missing",
@@ -413,6 +432,7 @@ func TestRun(t *testing.T) {
 		},
 		{
 			name:      "image missing",
+			tag:       devTag,
 			sandbox:   with(func(f *fakeSandbox) { f.missingImage = "ghcr.io/keycardai/egress-proxy:local" }),
 			want:      []error{sandbox.ErrImages},
 			wantText:  "ghcr.io/keycardai/egress-proxy:local. Build them in the egress-proxy repository",
@@ -420,6 +440,7 @@ func TestRun(t *testing.T) {
 		},
 		{
 			name:      "no zone-setup output",
+			tag:       devTag,
 			sandbox:   healthy(),
 			want:      []error{sandbox.ErrZoneSetup},
 			wantText:  "zone-setup.yaml is missing or empty. Run without --skip-zone-setup",
@@ -431,7 +452,7 @@ func TestRun(t *testing.T) {
 			output:    strings.ReplaceAll(zoneSetupOutput, "  provider_id: provider-1\n", ""),
 			want:      []error{sandbox.ErrZoneSetup},
 			wantText:  "zone-setup.yaml has no k8s_sandbox.provider_id. Run without --skip-zone-setup",
-			wantCalls: []string{imported},
+			wantCalls: []string{bootstrapped},
 		},
 		{
 			name:      "zone-setup output without a client id",
@@ -439,19 +460,32 @@ func TestRun(t *testing.T) {
 			output:    strings.ReplaceAll(zoneSetupOutput, "  client_id: client-1\n", ""),
 			want:      []error{sandbox.ErrZoneSetup},
 			wantText:  "zone-setup.yaml has no sandbox_user_access[0].client_id. Run without --skip-zone-setup",
-			wantCalls: []string{imported},
+			wantCalls: []string{bootstrapped},
 		},
 		{
 			name:    "whole flow",
 			sandbox: healthy(),
 			output:  zoneSetupOutput,
 			wantCalls: []string{
-				imported,
+				bootstrapped,
 				"helm KUBERC=off upgrade --install keycard-sandbox ",
 				"kubectl KUBERC=off --context k3d-asp apply --namespace agents -f -\n" +
 					kube + "wait --for=create pod/" + userID + " --timeout=120s\n" +
 					kube + "wait --for=condition=Ready pod/" + userID + " --timeout=300s\n" +
 					kube + "exec " + userID + " -c agent -- curl",
+			},
+			notCalls:   []string{"docker KUBERC= image", "image import"},
+			wantImages: pinnedImages(),
+		},
+		{
+			name:      "images at a tag",
+			tag:       devTag,
+			sandbox:   healthy(),
+			output:    zoneSetupOutput,
+			wantCalls: []string{imported},
+			wantImages: []string{
+				"ghcr.io/keycardai/egress-netsetup:local", "ghcr.io/keycardai/egress-proxy:local",
+				"ghcr.io/keycardai/sandbox-base:local",
 			},
 		},
 	}
@@ -460,17 +494,10 @@ func TestRun(t *testing.T) {
 			t.Parallel()
 			local, calls := newLocal(t, sandbox.Settings{
 				sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer,
-				sandbox.KeyZoneURL: "https://zone.example.com", sandbox.KeyUserEmail: email,
+				sandbox.KeyZoneURL: zoneURL, sandbox.KeyUserEmail: email, sandbox.KeyImageTag: tc.tag,
 			}, tc.sandbox.script())
 			if tc.noDocker {
-				tool, missing := local.Tool, filepath.Join(t.TempDir(), "docker")
-				local.Tool = func(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
-					if name == "docker" {
-						//nolint:gosec // G204: the path is the test's own missing file.
-						return exec.CommandContext(ctx, missing, args...), nil
-					}
-					return tool(ctx, name, args...)
-				}
+				removeDocker(t, local)
 			}
 			out := &bytes.Buffer{}
 			local.Out = out
@@ -492,17 +519,50 @@ func TestRun(t *testing.T) {
 					t.Fatalf("calls lack %q\n%s", want, got)
 				}
 			}
+			for _, absent := range tc.notCalls {
+				if strings.Contains(got, absent) {
+					t.Errorf("calls have %q\n%s", absent, got)
+				}
+			}
 			checkRunWrote(t, local.Root, out.String())
+			checkImages(t, local.Root, tc.wantImages)
 		})
 	}
 }
 
-// checkRunWrote checks that the output reports what a whole run imported and
-// wrote, and that those files exist under root.
+// removeDocker makes local run docker from a path that does not exist.
+func removeDocker(t *testing.T, local *sandbox.Local) {
+	t.Helper()
+	tool, missing := local.Tool, filepath.Join(t.TempDir(), "docker")
+	local.Tool = func(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
+		if name == "docker" {
+			//nolint:gosec // G204: the path is the test's own missing file.
+			return exec.CommandContext(ctx, missing, args...), nil
+		}
+		return tool(ctx, name, args...)
+	}
+}
+
+// checkImages checks that the applied sandbox pod runs images.
+func checkImages(t *testing.T, root string, images []string) {
+	t.Helper()
+	path := filepath.Join(root, "local", "out", "sandbox.yaml")
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: the path is the test's own file.
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, image := range images {
+		if !strings.Contains(string(raw), "image: "+image+"\n") {
+			t.Errorf("local/out/sandbox.yaml lacks the image %q", image)
+		}
+	}
+}
+
+// checkRunWrote checks that the output reports what a whole run wrote, and
+// that those files exist under root.
 func checkRunWrote(t *testing.T, root, out string) {
 	t.Helper()
 	for _, line := range []string{
-		"Imported 3 images into the k3d cluster asp.\n",
 		"Wrote local/out/install.values.yaml and local/out/sandbox.values.yaml.\n",
 		"Wrote the applied manifests to local/out/sandbox.yaml.\n",
 	} {

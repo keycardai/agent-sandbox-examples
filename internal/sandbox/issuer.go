@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"strings"
@@ -27,6 +28,9 @@ const (
 // Empty cluster and issuerURL default to the settings, as Local.cluster and
 // Local.issuer describe.
 func (l *Local) Mirror(ctx context.Context, cluster, issuerURL, listen string) error {
+	if err := l.requireK3d("mirror"); err != nil {
+		return err
+	}
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listen)
 	if err != nil {
 		return fmt.Errorf("mirror: %w", err)
@@ -38,7 +42,7 @@ func (l *Local) Mirror(ctx context.Context, cluster, issuerURL, listen string) e
 // them on listener until ctx ends. It closes listener.
 func (l *Local) mirror(ctx context.Context, cluster, issuerURL string, listener net.Listener) error {
 	defer func() { _ = listener.Close() }()
-	cluster, err := l.cluster(cluster)
+	cluster, err := l.k3dName("mirror", cluster)
 	if err != nil {
 		return err
 	}
@@ -64,6 +68,26 @@ func (l *Local) mirror(ctx context.Context, cluster, issuerURL string, listener 
 	return nil
 }
 
+// clusterIssuer returns flag when it is set. Otherwise it returns the issuer
+// in an existing cluster's discovery document, or Local.issuer for a k3d
+// cluster.
+func (l *Local) clusterIssuer(ctx context.Context, cluster, flag string) (string, error) {
+	if flag != "" || !l.Existing() {
+		return l.issuer(flag)
+	}
+	raw, err := l.kubectl(ctx, cluster, nil, "get", "--raw", "/.well-known/openid-configuration")
+	if err != nil {
+		return "", fmt.Errorf("%w: reading the cluster's discovery document: %w", ErrIssuer, err)
+	}
+	var doc struct {
+		Issuer string `json:"issuer"`
+	}
+	if err = json.Unmarshal(raw, &doc); err != nil || doc.Issuer == "" {
+		return "", fmt.Errorf("%w: the cluster's discovery document does not name an issuer", ErrIssuer)
+	}
+	return doc.Issuer, nil
+}
+
 // CheckIssuer mints a ServiceAccount token in the cluster and verifies it
 // against the issuer's https URL, as the Keycard zone does. It trusts the
 // system roots, and the roots in KEYCARD_LOCAL_CA_FILE when that is set.
@@ -75,8 +99,7 @@ func (l *Local) CheckIssuer(ctx context.Context, cluster, issuerURL string) erro
 	if err != nil {
 		return err
 	}
-	issuerURL, err = l.issuer(issuerURL)
-	if err != nil {
+	if issuerURL, err = l.clusterIssuer(ctx, cluster, issuerURL); err != nil {
 		return err
 	}
 	caFile, err := l.caFile()
