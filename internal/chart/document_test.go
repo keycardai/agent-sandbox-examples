@@ -60,7 +60,6 @@ type endpoint struct {
 
 type credential struct {
 	Placement placement `json:"placement"`
-	Env       string    `json:"env"`
 }
 
 type placement struct {
@@ -83,10 +82,7 @@ const (
 	defaultPort     = 443
 )
 
-var (
-	envNameRE   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-	hostLabelRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
-)
+var hostLabelRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
 // parseDocument decodes a rendered document. It fails on a key the proxy
 // does not read.
@@ -220,7 +216,7 @@ func (e endpoint) problems(i int) []string {
 	}
 	found = append(found, e.resourceProblems(i)...)
 	if e.Credential != nil {
-		found = append(found, e.Credential.problems(i)...)
+		found = append(found, e.Credential.Placement.problems(i)...)
 	}
 	return found
 }
@@ -262,14 +258,6 @@ func (e endpoint) hostProblems(i int) []string {
 		return []string{fmt.Sprintf("endpoints[%d]: host %q ends in an all-digit label", i, host)}
 	}
 	return nil
-}
-
-func (c credential) problems(i int) []string {
-	var found []string
-	if !envNameRE.MatchString(c.Env) {
-		found = append(found, fmt.Sprintf("endpoints[%d]: credential.env %q is not a variable name", i, c.Env))
-	}
-	return append(found, c.Placement.problems(i)...)
 }
 
 // problems checks that the placement has the fields its kind needs and does
@@ -340,7 +328,6 @@ endpoints:
     resource: https://api.github.com/
     credential:
       placement: {kind: header, name: Authorization, template: "Bearer {credential}"}
-      env: GITHUB_TOKEN
 `
 
 // TestDocumentMirrorRefuses checks that the copy of the proxy's rules
@@ -415,11 +402,6 @@ func TestDocumentMirrorRefuses(t *testing.T) {
 			"placement kind the proxy does not write",
 			strings.Replace(validDocument, "kind: header", "kind: cookie", 1),
 			"must be header, query or basic",
-		},
-		{
-			"env is not a variable name",
-			strings.Replace(validDocument, "env: GITHUB_TOKEN", "env: 1TOKEN", 1),
-			"is not a variable name",
 		},
 		{
 			"repeated host and prefix",

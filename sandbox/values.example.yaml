@@ -22,19 +22,16 @@ endpoints:
     resource: https://api.github.com/
     credential:
       placement: {kind: header, name: Authorization, template: "Bearer {credential}"}
-      env: GITHUB_TOKEN
   # git over HTTPS. It uses the same resource as the API host.
   - host: github.com
     resource: https://api.github.com/
     credential:
       placement: {kind: basic, user: x-access-token}
-      env: GITHUB_TOKEN
   - host: openrouter.ai
     path_prefix: /api/v1/
     resource: https://openrouter.ai/api/v1
     credential:
       placement: {kind: header, name: Authorization, template: "Bearer {credential}"}
-      env: OPENROUTER_API_KEY
   # Allowed without a credential. The proxy forwards the request and does not
   # call the zone.
   - host: pypi.org
