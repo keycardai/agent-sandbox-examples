@@ -19,7 +19,9 @@ proxy:
   # proxy refuses to start otherwise.
   uid: 1337
   # The ConfigMap that holds the proxy's configuration document, and the path
-  # the proxy reads it from. Only the proxy mounts it.
+  # the proxy reads it from. Only the proxy mounts it, because it holds the
+  # identity section. The sandbox chart does not read configMap. It makes one
+  # ConfigMap per sandbox.
   configMap: egress-proxy-config
   configPath: /etc/egress/config.yaml
   # The directory of the proxy's ServiceAccount token. Set
@@ -47,6 +49,12 @@ netsetup:
 agent:
   # The agent's uid. Rendering fails if it equals proxy.uid.
   uid: 1000
+  # The ConfigMap with the configuration document minus the identity section,
+  # and the path the agent reads it from. The base image entrypoint exports
+  # one placeholder variable for each endpoint with a credential. The sandbox
+  # chart does not read configMap. It makes one ConfigMap per sandbox.
+  configMap: egress-agent-config
+  configPath: /etc/egress/config.yaml
 
 rbac:
   # Who is bound to the sandbox-admin Role. Empty renders the Role and no

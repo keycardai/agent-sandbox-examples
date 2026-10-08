@@ -1,0 +1,9 @@
+Sandbox {{ .Release.Name }} is in namespace {{ .Release.Namespace }}, running
+as {{ include "keycard-sandbox-user.userID" . }} for {{ .Values.userEmail }}.
+
+    kubectl -n {{ .Release.Namespace }} get sandbox {{ .Release.Name }}
+    kubectl -n {{ .Release.Namespace }} logs {{ .Release.Name }} -c egress-proxy
+    kubectl -n {{ .Release.Namespace }} exec -it {{ .Release.Name }} -c agent -- sh
+
+The proxy reads its configuration once at start-up. An edit to the ConfigMap
+takes effect only when the sandbox is recreated.

@@ -1,0 +1,4 @@
+# Files next to the chart that are not part of it.
+README.md
+values.example.yaml
+.DS_Store

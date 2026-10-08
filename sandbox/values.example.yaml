@@ -1,0 +1,38 @@
+# Example values for new-sandbox. Copy this file, set the zone URL and the
+# endpoints, and pass it with --values. new-sandbox sets the identity keys
+# from its flags. This file holds only the settings an admin chooses.
+
+# The zone URL. Use the same value as the install chart's zoneURL.
+zoneURL: https://acme.keycard.cloud
+
+policy:
+  # An EKS cluster on the VPC CNI in a 10.0.0.0/16 VPC, with services in
+  # 172.20.0.0/16. Pods take VPC addresses. Without a service range set, EKS
+  # uses 10.100.0.0/16 or 172.20.0.0/16. k3s uses 10.42.0.0/16 for pods and
+  # 10.43.0.0/16 for services.
+  clusterCIDRs:
+    - 10.0.0.0/16
+    - 172.20.0.0/16
+  denyListExceptions: []
+
+# The demo endpoints. Each `resource` is a resource identifier in
+# zone-setup.example.yaml, which zone-setup creates in the zone.
+endpoints:
+  - host: api.github.com
+    resource: https://api.github.com/
+    credential:
+      placement: {kind: header, name: Authorization, template: "Bearer {credential}"}
+  # git over HTTPS. It uses the same resource as the API host.
+  - host: github.com
+    resource: https://api.github.com/
+    credential:
+      placement: {kind: basic, user: x-access-token}
+  - host: openrouter.ai
+    path_prefix: /api/v1/
+    resource: https://openrouter.ai/api/v1
+    credential:
+      placement: {kind: header, name: Authorization, template: "Bearer {credential}"}
+  # Allowed without a credential. The proxy forwards the request and does not
+  # call the zone.
+  - host: pypi.org
+  - host: files.pythonhosted.org
