@@ -135,8 +135,8 @@ func TestSandboxIdentity(t *testing.T) {
 }
 
 // TestSandboxRefuses checks that rendering fails without a zone URL, a client
-// id or a user id, and with a serviceAccount other than the subject the chart
-// binds.
+// id, a user id or a uid, with a serviceAccount other than the subject the
+// chart binds, and with the agent at the proxy's uid.
 func TestSandboxRefuses(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -152,6 +152,9 @@ func TestSandboxRefuses(t *testing.T) {
 			"serviceAccount: system:serviceaccount:other:" + sandboxUserID,
 			"this sandbox binds",
 		},
+		{"agent uid is the proxy uid", "agent:\n  uid: 1337", "agent.uid must differ from proxy.uid"},
+		{"no agent uid", "agent:\n  uid: null", "agent.uid is required"},
+		{"no proxy uid", "proxy:\n  uid: null", "proxy.uid is required"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
