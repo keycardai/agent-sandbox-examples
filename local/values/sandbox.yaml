@@ -1,4 +1,4 @@
-# Sandbox chart values for the local k3d cluster. run.sh passes
+# Sandbox chart values for the local k3d cluster. `sandbox run` passes
 # sandbox/values.example.yaml for the endpoints, then this file, then
 # local/out/sandbox.values.yaml with zoneURL, hostAliases, and zoneTrust when
 # KEYCARD_LOCAL_CA_FILE is set. Every pod key here must hold the value

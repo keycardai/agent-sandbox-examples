@@ -11,43 +11,17 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/chart"
+	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 )
 
-// local/run.sh renders both charts with the files under local/values and one
-// more file per chart that it writes from the running cluster and local.env.
-// localInstall and localSandbox copy the keys run.sh writes with
-// KEYCARD_LOCAL_ZONE_ON_HOST=true.
-// localInstallTrust and localSandboxTrust copy what it adds when
-// KEYCARD_LOCAL_CA_FILE is set. Update them when run.sh changes.
+// `sandbox run` renders both charts with the files under local/values and
+// one more file per chart that sandbox.LocalValues returns. The tests render
+// them for a zone on the Docker host, without and with a CA file.
 const (
 	localGateway  = "192.168.97.1"
 	localZoneHost = "acme.example.com"
 	localZoneURL  = "https://" + localZoneHost
 	localRootCA   = "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----"
-	localInstall  = `zoneURL: ` + localZoneURL + `
-hostAliases:
-  - ip: ` + localGateway + `
-    hostnames: [` + localZoneHost + `]
-network:
-  allowCIDRs: ["` + localGateway + `/32"]
-`
-	localInstallTrust = `zoneTrust:
-  configMap: egress-zone-trust
-  certificate: |
-    -----BEGIN CERTIFICATE-----
-    ZmFrZQ==
-    -----END CERTIFICATE-----
-`
-	localSandbox = `zoneURL: ` + localZoneURL + `
-hostAliases:
-  - ip: ` + localGateway + `
-    hostnames: [` + localZoneHost + `]
-policy:
-  denyListExceptions: ["` + localGateway + `/32"]
-`
-	localSandboxTrust = `zoneTrust:
-  configMap: egress-zone-trust
-`
 )
 
 type caCase struct {
@@ -55,7 +29,7 @@ type caCase struct {
 	withCA bool
 }
 
-// caCases returns the two shapes of run.sh's output, without and with
+// caCases returns the two shapes of the local values, without and with
 // KEYCARD_LOCAL_CA_FILE.
 func caCases() []caCase {
 	return []caCase{{"no CA file", false}, {"CA file", true}}
@@ -70,14 +44,21 @@ func localValues(t *testing.T, name string) string {
 	return path
 }
 
-// runValues writes the file run.sh writes for one chart. It appends trust
-// when withCA is set.
-func runValues(t *testing.T, base, trust string, withCA bool) string {
+// runValues writes the install and sandbox values files that `sandbox run`
+// writes, with the root CA when withCA is set.
+func runValues(t *testing.T, withCA bool) (string, string) {
 	t.Helper()
+	var caPEM []byte
 	if withCA {
-		base += trust
+		caPEM = []byte(localRootCA + "\n")
 	}
-	return writeValues(t, base)
+	install, sandboxYAML, err := sandbox.LocalValues(sandbox.LocalValuesInput{
+		ZoneURL: localZoneURL, Gateway: localGateway, CAPEM: caPEM,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return writeValues(t, string(install)), writeValues(t, string(sandboxYAML))
 }
 
 func renderLocalInstall(t *testing.T, withCA bool) map[string][]byte {
@@ -86,14 +67,14 @@ func renderLocalInstall(t *testing.T, withCA bool) map[string][]byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return renderChart(t, dir, release, localValues(t, "install.yaml"),
-		runValues(t, localInstall, localInstallTrust, withCA))
+	install, _ := runValues(t, withCA)
+	return renderChart(t, dir, release, localValues(t, "install.yaml"), install)
 }
 
 func renderLocalSandbox(t *testing.T, withCA bool) map[string][]byte {
 	t.Helper()
-	values := sandboxValues(t, localValues(t, "sandbox.yaml"),
-		runValues(t, localSandbox, localSandboxTrust, withCA))
+	_, local := runValues(t, withCA)
+	values := sandboxValues(t, localValues(t, "sandbox.yaml"), local)
 	return renderChart(t, sandboxDir(t), sandboxUserID, values...)
 }
 
@@ -112,7 +93,7 @@ func TestLocalPodMatchesInstall(t *testing.T) {
 // TestLocalReachesZone checks what a pod needs to reach a zone on the Docker
 // host: the zone's name mapped to the gateway, and a NetworkPolicy rule that
 // allows the gateway on 443. The extra roots are rendered, and mounted only
-// on the proxy, only when run.sh has a CA file.
+// on the proxy, only with a CA file.
 func TestLocalReachesZone(t *testing.T) {
 	t.Parallel()
 	for _, tc := range caCases() {
@@ -177,7 +158,7 @@ func assertZoneTrust(t *testing.T, objects map[string][]byte, spec corev1.PodSpe
 }
 
 // TestLocalDocument checks that the document allows the gateway, and that it
-// trusts the mounted roots only when run.sh has a CA file.
+// trusts the mounted roots only with a CA file.
 func TestLocalDocument(t *testing.T) {
 	t.Parallel()
 	for _, tc := range caCases() {
@@ -224,9 +205,8 @@ func TestInstallRefusesZoneValues(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			values := []string{
-				localValues(t, "install.yaml"), writeValues(t, localInstall), writeValues(t, tc.values+"\n"),
-			}
+			install, _ := runValues(t, false)
+			values := []string{localValues(t, "install.yaml"), install, writeValues(t, tc.values+"\n")}
 			_, err := chart.Render(t.Context(), dir, release, "agents", values...)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want one naming %q", err, tc.want)

@@ -7,7 +7,13 @@
 //	go run ./cmd/sandbox bootstrap
 //	go run ./cmd/sandbox mirror        # in another terminal
 //	go run ./cmd/sandbox check-issuer
+//	go run ./cmd/sandbox run
 //	go run ./cmd/sandbox down
+//
+// `install` installs the controller and the chart into any cluster. It does
+// not read local.env.
+//
+//	go run ./cmd/sandbox install --context NAME --values FILE
 package main
 
 import (
@@ -19,8 +25,10 @@ import (
 
 	"github.com/urfave/cli/v3"
 
+	"github.com/keycardai/agent-sandbox-examples/internal/install"
 	"github.com/keycardai/agent-sandbox-examples/internal/pinned"
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
+	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
 const defaultListen = "127.0.0.1:8480"
@@ -40,6 +48,8 @@ func newCommand() *cli.Command {
 		Name:            "sandbox",
 		Usage:           "run an AI agent in a Kubernetes sandbox behind the Keycard egress proxy",
 		HideHelpCommand: true,
+		// A values file path may hold a comma.
+		DisableSliceFlagSeparator: true,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "env", Usage: "settings file (default local/local.env)"},
 		},
@@ -48,7 +58,10 @@ func newCommand() *cli.Command {
 			bootstrapCommand(),
 			mirrorCommand(),
 			checkIssuerCommand(),
+			runCommand(),
+			checkCommand(),
 			downCommand(),
+			installCommand(),
 		},
 	}
 }
@@ -100,6 +113,51 @@ func checkIssuerCommand() *cli.Command {
 	}
 }
 
+func runCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "run",
+		Usage: "set up the cluster and Keycard, install the sandbox and the egress proxy, and run the checks",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:  "skip-zone-setup",
+				Usage: "reuse the Keycard setup of the last run, in local/out/zone-setup.yaml",
+			},
+			&cli.BoolFlag{
+				Name:  zonesetup.ReplaceActiveFlag,
+				Usage: "make the sandbox policy set active, replacing the zone's active policy set",
+			},
+		},
+		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
+			return local.Run(ctx, sandbox.RunOptions{
+				SkipZoneSetup: cmd.Bool("skip-zone-setup"),
+				ReplaceActive: cmd.Bool(zonesetup.ReplaceActiveFlag),
+			})
+		}),
+	}
+}
+
+func checkCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "check",
+		Usage: "run the checks again against the running sandbox",
+		Flags: []cli.Flag{
+			clusterFlag(),
+			&cli.StringFlag{Name: "namespace", Usage: "sandbox namespace (default from the last run)"},
+			&cli.StringFlag{Name: "pod", Usage: "sandbox pod (default the user's id)"},
+			&cli.StringFlag{Name: "user-id", Usage: "the user's Keycard id (default from the last run)"},
+		},
+		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
+			target, err := local.CheckTargetFor(
+				cmd.String("cluster"), cmd.String("namespace"), cmd.String("pod"), cmd.String("user-id"),
+			)
+			if err != nil {
+				return fmt.Errorf("finding the sandbox: %w", err)
+			}
+			return local.Check(ctx, target)
+		}),
+	}
+}
+
 func downCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "down",
@@ -111,6 +169,40 @@ func downCommand() *cli.Command {
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
 			return local.Down(ctx, cmd.String("cluster"), cmd.Bool("yes"), cmd.Reader)
 		}),
+	}
+}
+
+func installCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "install",
+		Usage: "install the agent-sandbox controller, then the keycard-sandbox chart, into a cluster",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "context", Required: true, Usage: "the kube context to install into"},
+			&cli.StringSliceFlag{
+				Name:     "values",
+				Required: true,
+				Usage:    "the chart's values file. Start from install/values.example.yaml. Repeat it; a later file wins",
+			},
+			&cli.StringFlag{Name: "namespace", Value: "agents", Usage: "the sandbox namespace"},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			root, err := pinned.Root()
+			if err != nil {
+				return fmt.Errorf("finding the repository: %w", err)
+			}
+			installer := &install.Install{
+				Root:      root,
+				Context:   cmd.String("context"),
+				Namespace: cmd.String("namespace"),
+				Values:    cmd.StringSlice("values"),
+				Tool:      sandbox.Tool,
+				Out:       cmd.Writer,
+			}
+			if err = installer.Run(ctx); err != nil {
+				return fmt.Errorf("installing into %s: %w", installer.Namespace, err)
+			}
+			return nil
+		},
 	}
 }
 
@@ -154,5 +246,5 @@ func newLocal(cmd *cli.Command) (*sandbox.Local, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading the settings: %w", err)
 	}
-	return &sandbox.Local{Root: root, Settings: settings, Tool: pinned.Command, Out: cmd.Writer}, nil
+	return &sandbox.Local{Root: root, Settings: settings, Tool: sandbox.Tool, Out: cmd.Writer}, nil
 }
