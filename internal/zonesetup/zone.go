@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/keycardai/keycard-go"
-	"github.com/keycardai/keycard-go/option"
 	"github.com/keycardai/keycard-go/packages/param"
 )
 
@@ -37,27 +36,21 @@ type Session struct {
 // to the zone. Every error wraps ErrAuth, ErrAPI, ErrZoneNotFound,
 // ErrZoneAmbiguous or ErrZoneMismatch.
 func Connect(ctx context.Context, values *Values, secrets *Secrets) (*Session, error) {
-	httpClient := &http.Client{Timeout: requestTimeout, CheckRedirect: refuseRedirect}
-	token, err := serviceAccountToken(ctx, httpClient, values, secrets.ManagementClientSecret)
+	org, err := Login(ctx, values.ManagementAPIURL, values.ManagementServiceAccount.ClientID,
+		secrets.ManagementClientSecret)
 	if err != nil {
 		return nil, err
 	}
-	// NewZoneService reads no KEYCARD_API_* variable, unlike keycard.NewClient.
-	session := &Session{zones: keycard.NewZoneService(
-		option.WithBaseURL(values.ManagementAPIURL),
-		option.WithHTTPClient(httpClient),
-		option.WithAPIKey(token),
-		option.WithMaxRetries(0),
-	)}
+	var zone *keycard.Zone
 	if values.ZoneID != "" {
-		session.Zone, err = zoneByID(ctx, &session.zones, values)
+		zone, err = zoneByID(ctx, &org.zones, values)
 	} else {
-		session.Zone, err = zoneByURL(ctx, &session.zones, values.ZoneURL)
+		zone, err = zoneByURL(ctx, &org.zones, values.ZoneURL)
 	}
 	if err != nil {
 		return nil, err
 	}
-	return session, nil
+	return org.Session(zone), nil
 }
 
 // FindProvider returns the id of the zone's provider whose OAuth issuer is
@@ -199,7 +192,7 @@ func (s *Session) SetApplicationConsentImplicit(ctx context.Context, application
 
 // ResourceProvider returns the id of the provider that serves the resource's
 // credential: the provider whose identifier is credential_provider, or the
-// zone's keycard-vault provider for a secret_env. Every error wraps ErrAPI,
+// zone's keycard-vault provider for a static token. Every error wraps ErrAPI,
 // ErrProviderAmbiguous or ErrProviderNotFound.
 func (s *Session) ResourceProvider(ctx context.Context, resource ResourceValues) (string, error) {
 	if resource.CredentialProvider == "" {
@@ -662,10 +655,9 @@ var (
 func serviceAccountToken(
 	ctx context.Context,
 	httpClient *http.Client,
-	values *Values,
-	secret string,
+	managementAPIURL, clientID, secret string,
 ) (string, error) {
-	base, err := url.Parse(values.ManagementAPIURL)
+	base, err := url.Parse(managementAPIURL)
 	if err != nil {
 		return "", fmt.Errorf("%w: management_api_url: %w", ErrAuth, err)
 	}
@@ -676,7 +668,7 @@ func serviceAccountToken(
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", ErrAuth, err)
 	}
-	req.SetBasicAuth(values.ManagementServiceAccount.ClientID, secret)
+	req.SetBasicAuth(clientID, secret)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	res, err := httpClient.Do(req)
@@ -687,7 +679,7 @@ func serviceAccountToken(
 	if res.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("%w: the token endpoint returned HTTP %d for client %s. "+
 			"The client must be an organization service account",
-			ErrAuth, res.StatusCode, values.ManagementServiceAccount.ClientID)
+			ErrAuth, res.StatusCode, clientID)
 	}
 	return tokenFromResponse(res.Body)
 }

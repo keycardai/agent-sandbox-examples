@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,6 +13,10 @@ import (
 )
 
 const openRouterKey = "OPENROUTER_API_KEY"
+
+// exactlyOneSource is the error text for a resource with zero or more than
+// one credential source.
+const exactlyOneSource = "resources[0]: set exactly one"
 
 const minimal = `
 management_api_url: https://api.keycard.ai
@@ -209,12 +214,17 @@ func TestParseValues(t *testing.T) {
 		{
 			name:      "a resource with both credential sources",
 			doc:       minimal + "resources: [{identifier: r, secret_env: K, credential_provider: p}]\n",
-			wantField: "resources[0]: set exactly one",
+			wantField: exactlyOneSource,
+		},
+		{
+			name:      "a resource with an env and a file",
+			doc:       minimal + "resources: [{identifier: r, secret_env: K, secret_file: /k}]\n",
+			wantField: exactlyOneSource,
 		},
 		{
 			name:      "a resource with no credential source",
 			doc:       minimal + "resources: [{identifier: r}]\n",
-			wantField: "resources[0]: set exactly one",
+			wantField: exactlyOneSource,
 		},
 		{
 			name:      "an anchor and an alias",
@@ -303,35 +313,42 @@ func TestParseValues(t *testing.T) {
 	}
 }
 
-// TestSetIssuerURL checks that an override replaces issuer_url only when it
-// passes the checks issuer_url gets, and that a refusal names the override.
-func TestSetIssuerURL(t *testing.T) {
+// TestReadValuesFileIssuer checks that a valid issuer from the caller
+// replaces issuer_url, also when the file leaves it out. An invalid one fails
+// with an error that names the caller's source.
+func TestReadValuesFileIssuer(t *testing.T) {
 	t.Parallel()
 	const (
 		fromFile = "https://oidc.eks.us-west-2.amazonaws.com/id/EXAMPLE"
 		tunnel   = "https://issued-nutrition-adding-decor.trycloudflare.com"
 	)
+	withoutIssuer := strings.Replace(minimal, "issuer_url: "+fromFile+"\n", "", 1)
 	tests := []struct {
-		name, issuer, want, wantErr string
+		name, doc, issuer, want, wantErr string
 	}{
-		{"https issuer", tunnel, tunnel, ""},
-		{"http issuer", "http://oidc.example.com", fromFile, "--issuer-url must use https"},
-		{"query", tunnel + "?a=b", fromFile, "--issuer-url must not have a query or a fragment"},
-		{"empty", "", fromFile, "--issuer-url is required"},
+		{"https issuer", minimal, tunnel, tunnel, ""},
+		{"no issuer from the caller", minimal, "", fromFile, ""},
+		{"http issuer", minimal, "http://oidc.example.com", "", "--issuer-url must use https"},
+		{"query", minimal, tunnel + "?a=b", "", "--issuer-url must not have a query or a fragment"},
+		{"file without issuer_url", withoutIssuer, tunnel, tunnel, ""},
+		{"neither", withoutIssuer, "", "", "issuer_url is required"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			values, err := zonesetup.ParseValues(strings.NewReader(minimal))
-			if err != nil {
+			path := filepath.Join(t.TempDir(), "zone-setup.yaml")
+			if err := os.WriteFile(path, []byte(tc.doc), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			err = values.SetIssuerURL("--issuer-url", tc.issuer)
-			switch {
-			case tc.wantErr == "" && err != nil:
-				t.Fatalf("SetIssuerURL = %v, want nil", err)
-			case tc.wantErr != "" && (!errors.Is(err, zonesetup.ErrValues) || !strings.Contains(err.Error(), tc.wantErr)):
-				t.Fatalf("SetIssuerURL = %v, want ErrValues with %q", err, tc.wantErr)
+			values, err := zonesetup.ReadValuesFile(path, tc.issuer, "--issuer-url")
+			if tc.wantErr != "" {
+				if !errors.Is(err, zonesetup.ErrValues) || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("ReadValuesFile = %v, want ErrValues with %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
 			}
 			if values.IssuerURL != tc.want {
 				t.Errorf("IssuerURL = %q, want %q", values.IssuerURL, tc.want)
@@ -465,29 +482,42 @@ func TestLoadSecrets(t *testing.T) {
 resources:
   - identifier: https://openrouter.ai/api/v1
     secret_env: OPENROUTER_API_KEY
+  - identifier: https://api.example.com
+    secret_file: /secrets/example
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
-	noFile := func(string) ([]byte, error) { return nil, os.ErrNotExist }
+	files := map[string]string{"/secrets/example": " example-key\n"}
+	readFile := func(path string) ([]byte, error) {
+		if body, ok := files[path]; ok {
+			return []byte(body), nil
+		}
+		return nil, os.ErrNotExist
+	}
 	env := map[string]string{zonesetup.DefaultManagementSecretEnv: "sa-secret", openRouterKey: "or-key"}
 	lookup := func(k string) (string, bool) { v, ok := env[k]; return v, ok }
 
-	got, err := zonesetup.LoadSecrets(values, lookup, noFile)
+	got, err := zonesetup.LoadSecrets(values, lookup, readFile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := &zonesetup.Secrets{
 		ManagementClientSecret: "sa-secret",
-		Resource:               map[string]string{openRouterKey: "or-key"},
+		Resource: map[string]string{
+			"https://openrouter.ai/api/v1": "or-key",
+			"https://api.example.com":      "example-key",
+		},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("secrets = %+v, want %+v", got, want)
 	}
 
 	delete(env, openRouterKey)
-	_, err = zonesetup.LoadSecrets(values, lookup, noFile)
-	if !errors.Is(err, zonesetup.ErrMissingSecret) || !strings.Contains(err.Error(), openRouterKey) {
-		t.Fatalf("error = %v, want ErrMissingSecret naming OPENROUTER_API_KEY", err)
+	delete(files, "/secrets/example")
+	_, err = zonesetup.LoadSecrets(values, lookup, readFile)
+	if !errors.Is(err, zonesetup.ErrMissingSecret) ||
+		!strings.Contains(err.Error(), openRouterKey) || !strings.Contains(err.Error(), "resources[1].secret_file") {
+		t.Fatalf("error = %v, want ErrMissingSecret naming OPENROUTER_API_KEY and resources[1].secret_file", err)
 	}
 }

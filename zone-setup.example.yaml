@@ -24,7 +24,8 @@ management_service_account:
   # client_secret_file: /run/secrets/keycard-management-client-secret
 
 # The cluster's OIDC issuer, kept exactly as written. Copy it from the
-# cluster, including any trailing slash.
+# cluster, including any trailing slash. `zone-setup --issuer-url` and
+# `sandbox run` replace it. With them, the file may leave it out.
 #
 #   EKS   https://oidc.eks.<region>.amazonaws.com/id/<id>
 #   AKS   https://<region>.oic.prod-aks.azure.com/<tenant>/<id>/
@@ -48,9 +49,11 @@ users:
 # https://api.github.com/ with a trailing slash does not match. name
 # defaults to the identifier.
 #
-# Exactly one of credential_provider and secret_env is set per resource:
+# Set exactly one of credential_provider, secret_env and secret_file per
+# resource:
 #   credential_provider  the identifier of an existing provider in the zone
 #   secret_env           the environment variable holding a static token
+#   secret_file          the file holding a static token
 resources:
   - identifier: https://api.github.com
     name: GitHub
