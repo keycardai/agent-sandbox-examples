@@ -39,12 +39,16 @@ sandbox_user_access:
 
 // fakeSandbox is what the fake tools answer for a running sandbox.
 type fakeSandbox struct {
-	allowed        string // the status pypi returns
-	githubStatus   string
-	githubBody     string
-	deniedExit     int    // curl's exit code for example.com
-	logs           string // the proxy's log
-	serviceAccount string
+	allowed      string // the status pypi returns
+	githubStatus string
+	githubBody   string
+	// openRouterStatus and openRouterBody are what OpenRouter's key
+	// endpoint returns.
+	openRouterStatus string
+	openRouterBody   string
+	deniedExit       int    // curl's exit code for example.com
+	logs             string // the proxy's log
+	serviceAccount   string
 	// tlsFailOnce fails the first pypi fetch the way curl does while the
 	// agent does not trust the proxy yet.
 	tlsFailOnce bool
@@ -56,6 +60,7 @@ type fakeSandbox struct {
 func healthy() fakeSandbox {
 	return fakeSandbox{
 		allowed: "200", githubStatus: "200", githubBody: `{"login":"octocat"}`, deniedExit: 6,
+		openRouterStatus: "200", openRouterBody: `{"data":{"label":"sk-or-v1-abc...xyz"}}`,
 		logs: deniedLine, serviceAccount: userID,
 	}
 }
@@ -72,6 +77,7 @@ case "$FAKE_TOOL $*" in
 "docker image inspect %[1]s") exit 1 ;;
 *"exec %[2]s -c agent -- curl"*"https://pypi.org/simple/") %[3]s
 	printf '\n__sandbox_status__:%[4]s' ;;
+*"exec %[2]s -c agent -- sh -c"*"openrouter.ai"*) printf '%%s\n__sandbox_status__:%%s' '%[10]s' '%[11]s' ;;
 *"exec %[2]s -c agent -- sh -c"*) printf '%%s\n__sandbox_status__:%%s' '%[5]s' '%[6]s' ;;
 *"exec %[2]s -c agent -- curl"*"https://example.com/")
 	[[ %[7]d == 0 ]] && printf '\n__sandbox_status__:200'
@@ -80,21 +86,25 @@ case "$FAKE_TOOL $*" in
 *"get pod %[2]s -o jsonpath={.spec.serviceAccountName}") printf '%%s' '%[9]s' ;;
 *" apply "*) echo "applied" ;;
 esac
-`, f.missingImage, userID, tlsFail, f.allowed, f.githubBody, f.githubStatus, f.deniedExit, f.logs, f.serviceAccount)
+`, f.missingImage, userID, tlsFail, f.allowed, f.githubBody, f.githubStatus, f.deniedExit, f.logs, f.serviceAccount,
+		f.openRouterBody, f.openRouterStatus)
 }
 
-// TestCheck runs the four checks against a fake sandbox. Every failure is
-// counted, and its line says what the check saw.
+// TestCheck runs the checks against a fake sandbox. Every failure is
+// counted, and its line says what the check saw. The OpenRouter check runs
+// only when the zone-setup values file has an OpenRouter resource.
 func TestCheck(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		sandbox  fakeSandbox
-		login    string
-		want     []error
-		wantText string
-		wantOut  []string
+		name       string
+		sandbox    fakeSandbox
+		login      string
+		openRouter bool
+		want       []error
+		wantText   string
+		wantOut    []string
+		notOut     []string
 	}{
 		{
 			name:    "every check passes",
@@ -107,6 +117,28 @@ func TestCheck(t *testing.T) {
 				"  PASS  the pod runs as the ServiceAccount " + userID + "\n",
 				"MANUAL  Open the zone's event log.",
 				checkOK,
+			},
+			notOut: []string{"openrouter"},
+		},
+		{
+			name:       "OpenRouter key",
+			sandbox:    healthy(),
+			openRouter: true,
+			wantOut: []string{
+				`  PASS  credentialed: https://openrouter.ai/api/v1/key returned the API key "sk-or-v1-abc...xyz"` + "\n",
+				checkOK,
+			},
+		},
+		{
+			name: "OpenRouter key refused",
+			sandbox: with(func(f *fakeSandbox) {
+				f.openRouterStatus, f.openRouterBody, f.logs = "502", "", deniedLine+"\n"+refusedLine
+			}),
+			openRouter: true,
+			want:       []error{sandbox.ErrCheck},
+			wantText:   "1 of 5",
+			wantOut: []string{
+				"  FAIL  credentialed: https://openrouter.ai/api/v1/key returned 502 (proxy: exchange_denied: access_denied)\n",
 			},
 		},
 		{
@@ -168,6 +200,10 @@ func TestCheck(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			local, _ := newLocal(t, sandbox.Settings{sandbox.KeyGitHubLogin: tc.login}, tc.sandbox.script())
+			if tc.openRouter {
+				writeFile(t, filepath.Join(local.Root, "zone-setup.yaml"),
+					"resources:\n  - identifier: https://openrouter.ai/api/v1\n    secret_file: /k\n")
+			}
 			out := &bytes.Buffer{}
 			local.Out = out
 			err := local.Check(t.Context(), sandbox.CheckTarget{
@@ -177,6 +213,11 @@ func TestCheck(t *testing.T) {
 			for _, want := range tc.wantOut {
 				if !strings.Contains(out.String(), want) {
 					t.Errorf("output lacks %q\n%s", want, out)
+				}
+			}
+			for _, absent := range tc.notOut {
+				if strings.Contains(out.String(), absent) {
+					t.Errorf("output has %q\n%s", absent, out)
 				}
 			}
 		})

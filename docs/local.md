@@ -49,6 +49,8 @@ your old answers.
 The demo calls GitHub, so it needs a GitHub token. With a GitHub provider in
 the zone, each user signs in to GitHub and their sandbox acts as them. With
 a personal access token, every user's sandbox acts as the token's owner.
+With an OpenRouter API key, `sandbox check` also has the agent fetch the
+key's details from OpenRouter, which runs no model.
 
 `up` runs the steps in order. The tunnel and the mirror run in the
 background and log to `local/out/tunnel.log` and `local/out/mirror.log`.

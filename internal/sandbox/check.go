@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/keycardai/agent-sandbox-poc/internal/zonesetup"
 )
 
 const (
@@ -21,6 +23,8 @@ const (
 	// githubUserURL is the endpoint the proxy injects the user's GitHub
 	// credential into.
 	githubUserURL = "https://api.github.com/user"
+	// openRouterKeyURL returns the details of the caller's OpenRouter key.
+	openRouterKeyURL = "https://openrouter.ai/api/v1/key"
 	// deniedHost is a host that no endpoint in sandbox/values.example.yaml
 	// names.
 	deniedHost = "example.com"
@@ -65,20 +69,25 @@ type proxyRecord struct {
 //
 // The automated checks are: an allowed destination with no credential
 // returns 200; the credentialed GitHub endpoint returns an account, the one
-// in KEYCARD_LOCAL_GITHUB_LOGIN when that is set; the proxy blocks a
-// destination no endpoint names and logs why; and the pod runs as the
-// ServiceAccount the credential is bound to.
+// in KEYCARD_LOCAL_GITHUB_LOGIN when that is set; OpenRouter returns the API
+// key's details, when the zone-setup values file has an OpenRouter
+// resource; the proxy blocks a destination no endpoint names and logs why;
+// and the pod runs as the ServiceAccount the credential is bound to.
 func (l *Local) Check(ctx context.Context, target CheckTarget) error {
-	failures := 0
+	checks, failures := 0, 0
 	report := func(passed bool, line string) {
 		mark := "PASS"
 		if !passed {
 			mark, failures = "FAIL", failures+1
 		}
+		checks++
 		_, _ = fmt.Fprintf(l.Out, "  %s  %s\n", mark, line)
 	}
 	report(l.checkAllowed(ctx, target))
 	report(l.checkCredentialed(ctx, target))
+	if l.configured(openRouterAPI) {
+		report(l.checkOpenRouter(ctx, target))
+	}
 	report(l.checkDenied(ctx, target))
 	report(l.checkServiceAccount(ctx, target))
 	_, _ = fmt.Fprintf(l.Out, `
@@ -92,7 +101,7 @@ func (l *Local) Check(ctx context.Context, target CheckTarget) error {
           request.
 `, target.UserID, target.Namespace)
 	if failures > 0 {
-		return fmt.Errorf("%w: %d of 4", ErrCheck, failures)
+		return fmt.Errorf("%w: %d of %d", ErrCheck, failures, checks)
 	}
 	_, _ = fmt.Fprintln(l.Out, "\nevery automated check passed")
 	return nil
@@ -168,6 +177,38 @@ func (l *Local) checkCredentialed(ctx context.Context, target CheckTarget) (bool
 		return false, fmt.Sprintf("%s named %q, want %q", name, user.Login, want)
 	}
 	return true, fmt.Sprintf("%s named the GitHub account %q", name, user.Login)
+}
+
+// checkOpenRouter has the agent call OpenRouter's key endpoint, which runs
+// no model. The agent sends an empty key. The proxy replaces it with the
+// key in the zone's vault.
+func (l *Local) checkOpenRouter(ctx context.Context, target CheckTarget) (bool, string) {
+	const name = "credentialed: " + openRouterKeyURL
+	status, body, err := l.fetch(ctx, target, "sh", "-c",
+		`curl -sS -w '`+statusMarker+`%{http_code}' -H "Authorization: Bearer $OPENROUTER_API_KEY" `+openRouterKeyURL)
+	if err != nil {
+		return false, fmt.Sprintf("%s failed: %v", name, err)
+	}
+	if status != http.StatusOK {
+		return false, fmt.Sprintf("%s returned %d%s", name, status, l.refusal(ctx, target))
+	}
+	var key struct {
+		Data *struct {
+			Label string `json:"label"`
+		} `json:"data"`
+	}
+	if json.Unmarshal([]byte(body), &key) != nil || key.Data == nil {
+		return false, name + " did not return the API key's details"
+	}
+	return true, fmt.Sprintf("%s returned the API key %q", name, key.Data.Label)
+}
+
+// configured reports whether the zone-setup values file has a resource
+// for identifier.
+func (l *Local) configured(identifier string) bool {
+	return slices.ContainsFunc(l.previousValues().values.Resources, func(r zonesetup.ResourceValues) bool {
+		return r.Identifier == identifier
+	})
 }
 
 // checkDenied fetches a destination no endpoint names. The proxy's resolver
