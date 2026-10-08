@@ -6,8 +6,9 @@
 #
 # It does not publish the issuer. The zone fetches
 # <issuer>/.well-known/openid-configuration for every exchange. Keep
-# mirror.sh serving, and tunnel.sh or your own proxy forwarding the issuer's
-# https URL to it, before the checks run. check-issuer.sh verifies both.
+# `go run ./cmd/sandbox mirror` serving, and `go run ./cmd/sandbox tunnel` or
+# your own proxy forwarding the issuer's https URL to it, before the checks
+# run. `go run ./cmd/sandbox check-issuer` verifies both.
 #
 # The sandbox pod dials the zone at the address its host name resolves to.
 # With KEYCARD_LOCAL_ZONE_ON_HOST=true, it dials the gateway of the cluster's
@@ -66,7 +67,7 @@ zone_on_host=${KEYCARD_LOCAL_ZONE_ON_HOST:-}
 zone_values=$repo/${KEYCARD_LOCAL_ZONE_SETUP_VALUES:-zone-setup.yaml}
 
 require_cluster "$cluster"
-[[ -n $issuer ]] || die "no issuer. Set KEYCARD_LOCAL_ISSUER, or start tunnel.sh."
+[[ -n $issuer ]] || die "no issuer. Set KEYCARD_LOCAL_ISSUER, or start go run ./cmd/sandbox tunnel."
 [[ $zone_url =~ ^https://[a-z0-9.-]+$ ]] ||
 	die "KEYCARD_LOCAL_ZONE_URL must be https://<zone host> (got '$zone_url'). run.sh does not create a zone."
 [[ -n $user_email ]] || die "no user. Set KEYCARD_LOCAL_USER_EMAIL to an email zone-setup enrolls."
