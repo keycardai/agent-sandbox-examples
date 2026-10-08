@@ -3,7 +3,7 @@
 The steps under `local/` and `cmd/sandbox` run the sandbox flow on a
 workstation against a real Keycard zone, a real user and real upstreams.
 Only the Kubernetes cluster is local. It is a k3d cluster that
-`bootstrap.sh` creates, named by `KEYCARD_LOCAL_CLUSTER`. The steps write
+`sandbox bootstrap` creates, named by `KEYCARD_LOCAL_CLUSTER`. The steps write
 only to that cluster and to the zone.
 
 The steps create their own cluster because of the ServiceAccount issuer. A
@@ -29,7 +29,7 @@ Then:
     cp local/local.env.example local/local.env
     $EDITOR local/local.env            # the zone URL and the user's email
     go run ./cmd/sandbox tunnel        # in its own terminal, until you stop it
-    ./local/bootstrap.sh
+    go run ./cmd/sandbox bootstrap
     go run ./cmd/sandbox mirror        # in another terminal, until you stop it
     go run ./cmd/sandbox check-issuer
     ./local/run.sh
@@ -37,8 +37,8 @@ Then:
 zone-setup stops if another policy set is active. Run `run.sh` with
 `--replace-active-policy-set` to replace it for everyone in the zone.
 
-`./local/down.sh` deletes the cluster. The zone entities zone-setup created
-stay.
+`go run ./cmd/sandbox down` deletes the cluster. What zone-setup created in
+the zone stays.
 
 ## Publishing the issuer
 
@@ -58,9 +58,9 @@ The tunnel gets a new `https://<name>.trycloudflare.com` URL every time it
 starts. `sandbox tunnel` writes it to `local/out/issuer` and deletes the
 file when it exits. The other steps read the issuer from that file. The
 issuer is fixed when the cluster is created, so start `sandbox tunnel`
-before `bootstrap.sh`. After a restart, run `down.sh` and `bootstrap.sh`
-again. zone-setup then creates a new Provider for the new issuer. It does
-not delete the old one.
+before `sandbox bootstrap`. After a restart, run `sandbox down` and
+`sandbox bootstrap` again. zone-setup then creates a new provider for the
+new issuer, and keeps the old one.
 
 To keep one URL, use a named tunnel in your Cloudflare account. Its
 hostname must be in a zone whose DNS Cloudflare serves. Set it up once:
@@ -96,13 +96,13 @@ is empty, they trust only the system roots.
 | Step | What it does |
 |---|---|
 | `local/common.sh` | the settings, the checks, the Docker gateway and the CA file. Sourced, never run. |
-| `local/bootstrap.sh` | creates the cluster with the issuer, or checks that an existing one has it |
 | `sandbox tunnel` | publishes the mirror at the issuer's https URL through a Cloudflare tunnel |
+| `sandbox bootstrap` | creates the cluster with the issuer, or checks that an existing one has it |
 | `sandbox mirror` | reads the cluster's discovery document and JWKS and serves them |
 | `sandbox check-issuer` | mints a token and verifies it against the published issuer, as the zone does |
-| `run.sh` | `bootstrap.sh`, the images, `zone-setup`, `install.sh`, `new-sandbox`, then `checks.sh` |
+| `run.sh` | `sandbox bootstrap`, the images, `zone-setup`, `install.sh`, `new-sandbox`, then `checks.sh` |
 | `checks.sh` | the end-to-end checks against a running sandbox. It does not write to any cluster. |
-| `down.sh` | deletes the cluster, after asking unless `--yes` |
+| `sandbox down` | deletes the cluster, after asking unless `--yes` |
 
 Every id that `run.sh` passes on comes from the zone-setup output in
 `local/out/zone-setup.yaml`.

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Settings and checks that the local cluster scripts share. Sourced, never run.
 #
-# The scripts run the k3d, kubectl and jq that mise.toml pins, whatever else
-# is on PATH. They stop unless mise resolves each one from mise.toml to an
-# installed version.
+# The scripts run the tools that mise.toml pins, whatever else is on PATH.
+# They stop unless mise resolves each one from mise.toml to an installed
+# version.
 
 # shellcheck source=scripts/pinned
 . "$(dirname "${BASH_SOURCE[0]}")/../scripts/pinned"
@@ -94,25 +94,6 @@ use_pinned_tools() {
 		dirs=$(dirname "$path"):$dirs
 	done
 	export PATH=$dirs$PATH
-}
-
-# cluster_exists returns 0 when k3d lists a cluster named exactly $1 and 1
-# when it does not. A failed listing, or output that is not a list of named
-# clusters, stops the run, so an unreachable Docker never reads as a missing
-# cluster.
-cluster_exists() {
-	local list found
-	list=$(k3d cluster list -o json) || {
-		echo "$(basename "$0"): cannot list k3d clusters. Is Docker running?" >&2
-		exit 1
-	}
-	found=$(jq --arg name "$1" 'if type == "array" and all(.[]; (.name | type) == "string") then any(.[]; .name == $name) else error("not a cluster list") end' <<<"$list") || found=""
-	case $found in
-	true) return 0 ;;
-	false) return 1 ;;
-	esac
-	echo "$(basename "$0"): k3d cluster list printed something other than a cluster list" >&2
-	exit 1
 }
 
 # cluster_gateway prints the gateway of the k3d cluster's Docker network. A
