@@ -27,9 +27,8 @@ const (
 	defaultManagementAPI = "https://api.keycard.ai"
 	defaultCluster       = "keycard-sandbox-local"
 	zoneSetupFile        = "zone-setup.yaml"
-	githubAPI            = "https://api.github.com"
-	githubGit            = "https://github.com"
-	openRouterAPI        = "https://openrouter.ai/api/v1"
+	// githubTokenFile is the secret file of a GitHub personal access token.
+	githubTokenFile = "github-token"
 	// zonePoll and zoneWait bound the wait for a new zone. The policy
 	// engine caches a 404 for an unknown zone for about a minute.
 	zonePoll = 5 * time.Second
@@ -81,6 +80,8 @@ type wizard struct {
 	out   valuesFile
 	org   *zonesetup.Org
 	zone  *zonesetup.Session
+	// answers holds the text input answers of every scenario, by input id.
+	answers map[string]string
 }
 
 // previous holds the values file from before Init. exists reports whether
@@ -112,10 +113,11 @@ type resourceValues struct {
 	SecretFile         string `yaml:"secret_file,omitempty"`
 }
 
-// Init asks the operator for the settings and writes local/local.env and the
-// zone-setup values file. Secrets the operator types go in 0600 files under
-// local/out/secrets, and the values file names them. Each question defaults
-// to the value in the existing files.
+// Init asks the operator for the settings and the scenario's inputs, and
+// writes local/local.env, the zone-setup values file and local/answers.yaml.
+// Secrets the operator types go in 0600 files under local/out/secrets, and
+// the values file names them. Each question defaults to the value in the
+// file Init replaces.
 //
 // Init reads zones, users and providers from the management API. Its only
 // write creates a zone, when the operator asks for one. It does not change
@@ -149,12 +151,12 @@ func (l *Local) Init(ctx context.Context, ask Asker) (InitResult, error) {
 
 // The sections of the settings, in the order Init asks them.
 const (
-	sectionAccount     = "account"
-	sectionZone        = "zone"
-	sectionCredentials = "credentials"
-	sectionCluster     = "cluster"
-	changeEverything   = "\x00everything"
-	changeNothing      = "\x00nothing"
+	sectionAccount   = "account"
+	sectionZone      = "zone"
+	sectionScenario  = "scenario"
+	sectionCluster   = "cluster"
+	changeEverything = "\x00everything"
+	changeNothing    = "\x00nothing"
 )
 
 // chooseChanges returns the sections to ask. On a first run that is every
@@ -162,7 +164,7 @@ const (
 // asks what to change. If the answer is nothing, it returns an empty map and
 // Init does not write the files.
 func (w *wizard) chooseChanges() (map[string]bool, error) {
-	all := map[string]bool{sectionAccount: true, sectionZone: true, sectionCredentials: true, sectionCluster: true}
+	all := map[string]bool{sectionAccount: true, sectionZone: true, sectionScenario: true, sectionCluster: true}
 	if !w.prev.exists {
 		return all, nil
 	}
@@ -173,7 +175,7 @@ func (w *wizard) chooseChanges() (map[string]bool, error) {
 		{Label: "Everything. Answer each question again, starting from these answers.", Value: changeEverything},
 		{Label: "The Keycard account", Value: sectionAccount},
 		{Label: "The zone and the user", Value: sectionZone},
-		{Label: "The GitHub token and the OpenRouter key", Value: sectionCredentials},
+		{Label: "The demo, its credentials and its settings", Value: sectionScenario},
 		{Label: "The cluster and the issuer", Value: sectionCluster},
 	}, changeNothing)
 	switch {
@@ -197,26 +199,26 @@ func (w *wizard) summary() string {
 	}
 	return fmt.Sprintf("  Keycard account          %s at %s\n"+
 		"  Zone and user            %s in %s\n"+
-		"  GitHub and OpenRouter    %s\n"+
+		"  Demo and credentials     %s\n"+
 		"  Cluster and issuer       %s\n",
 		cmp.Or(values.ManagementServiceAccount.ClientID, "none"), cmp.Or(values.ManagementAPIURL, "none"),
 		user, cmp.Or(values.ZoneURL, values.ZoneID, "no zone"),
-		w.credentialsSummary(), w.clusterSummary())
+		w.scenarioSummary(), w.clusterSummary())
 }
 
-func (w *wizard) credentialsSummary() string {
-	var credentials []string
+// scenarioSummary names the scenario and where each resource's credential
+// comes from.
+func (w *wizard) scenarioSummary() string {
+	credentials := make([]string, 0, len(w.prev.values.Resources))
 	for _, resource := range w.prev.values.Resources {
-		switch {
-		case resource.Identifier == githubAPI && resource.CredentialProvider != "":
-			credentials = append(credentials, "GitHub token from the provider "+resource.CredentialProvider)
-		case resource.Identifier == githubAPI:
-			credentials = append(credentials, "GitHub personal access token")
-		case resource.Identifier == openRouterAPI:
-			credentials = append(credentials, "OpenRouter API key")
+		source := "secret file"
+		if resource.CredentialProvider != "" {
+			source = "provider " + resource.CredentialProvider
 		}
+		credentials = append(credentials, resource.Name+" ("+source+")")
 	}
-	return cmp.Or(strings.Join(credentials, ", "), "none")
+	return cmp.Or(w.l.Settings[KeyScenario], DefaultScenario) + ": " +
+		cmp.Or(strings.Join(credentials, ", "), "no credentials")
 }
 
 func (w *wizard) clusterSummary() string {
@@ -245,7 +247,7 @@ func (w *wizard) runSections(ctx context.Context, change map[string]bool) error 
 		ask, keep func(context.Context) error
 	}{
 		{sectionZone, w.askZone, w.keepZone},
-		{sectionCredentials, w.chooseResources, w.keepCredentials},
+		{sectionScenario, w.chooseScenario, w.keepScenario},
 		{sectionCluster, w.chooseCluster, w.keepCluster},
 	} {
 		run := section.keep
@@ -266,7 +268,7 @@ func (w *wizard) account(ctx context.Context, change map[string]bool) error {
 	switch {
 	case change[sectionAccount]:
 		return w.login(ctx)
-	case change[sectionZone] || change[sectionCredentials]:
+	case change[sectionZone] || change[sectionScenario]:
 		return w.signInAgain(ctx)
 	default:
 		w.keepAccount()
@@ -331,8 +333,10 @@ func (w *wizard) keepZone(ctx context.Context) error {
 		ErrAnswer, cmp.Or(w.out.ZoneID, "(none)"))
 }
 
-// keepCredentials keeps the resources from the values file.
-func (w *wizard) keepCredentials(context.Context) error {
+// keepScenario keeps the scenario from local.env and the resources from the
+// values file. It does not change local/answers.yaml.
+func (w *wizard) keepScenario(context.Context) error {
+	w.env[KeyScenario] = w.l.Settings[KeyScenario]
 	for _, resource := range w.prev.values.Resources {
 		w.out.Resources = append(w.out.Resources, resourceValues{
 			Identifier: resource.Identifier, Name: resource.Name, Prefix: resource.Prefix,
@@ -557,51 +561,115 @@ func (w *wizard) chooseUser(ctx context.Context) error {
 	}
 }
 
-// chooseResources asks for the credentials of the demo's endpoints in
-// sandbox/values.example.yaml: a GitHub token, and an optional OpenRouter
-// API key.
-func (w *wizard) chooseResources(ctx context.Context) error {
-	if err := w.chooseGitHub(ctx); err != nil {
+// chooseScenario asks which scenario to run, then asks its inputs.
+func (w *wizard) chooseScenario(ctx context.Context) error {
+	scenarios, err := Scenarios(w.l.Root)
+	if err != nil {
 		return err
 	}
-	return w.chooseOpenRouter()
+	options := make([]Option, 0, len(scenarios))
+	for _, scenario := range scenarios {
+		options = append(options, Option{Label: scenario.Title + " (" + scenario.Name + ")", Value: scenario.Name})
+	}
+	value := cmp.Or(w.l.Settings[KeyScenario], DefaultScenario)
+	if !slices.ContainsFunc(scenarios, func(s *Scenario) bool { return s.Name == value }) {
+		value = scenarios[0].Name
+	}
+	choice, err := w.choose("Which demo?", options, value)
+	if err != nil {
+		return err
+	}
+	w.env[KeyScenario] = choice
+	if w.answers, err = w.l.answers(); err != nil {
+		return err
+	}
+	return w.askInputs(ctx, scenarios[slices.IndexFunc(scenarios, func(s *Scenario) bool { return s.Name == choice })])
+}
+
+// askInputs asks the scenario's inputs in order, and adds the scenario's
+// resources whose credential the operator gave.
+func (w *wizard) askInputs(ctx context.Context, scenario *Scenario) error {
+	var err error
+	credentials := map[string]resourceValues{}
+	for _, input := range scenario.Inputs {
+		var credential resourceValues
+		switch input.Kind {
+		case inputGitHub:
+			credential, err = w.chooseGitHub(ctx, w.prevCredential(scenario, input.ID))
+		case inputSecret:
+			credential, err = w.askSecret(input, w.prevCredential(scenario, input.ID).SecretFile)
+		default:
+			w.answers[input.ID], err = w.input(input.Prompt, w.answers[input.ID], required)
+		}
+		if err != nil {
+			return err
+		}
+		if credential != (resourceValues{}) {
+			credentials[input.ID] = credential
+		}
+	}
+	for _, resource := range scenario.Resources {
+		if credential, ok := credentials[resource.Credential]; ok {
+			credential.Identifier, credential.Name, credential.Prefix = resource.Identifier, resource.Name, true
+			w.out.Resources = append(w.out.Resources, credential)
+		}
+	}
+	return nil
+}
+
+// prevCredential finds the first of the scenario's resources whose
+// credential is input id, and returns that resource's provider and secret
+// file from the previous values file.
+func (w *wizard) prevCredential(scenario *Scenario, id string) resourceValues {
+	for _, resource := range scenario.Resources {
+		if resource.Credential != id {
+			continue
+		}
+		for _, prev := range w.prev.values.Resources {
+			if prev.Identifier == resource.Identifier {
+				return resourceValues{CredentialProvider: prev.CredentialProvider, SecretFile: prev.SecretFile}
+			}
+		}
+	}
+	return resourceValues{}
+}
+
+// askSecret asks for a secret input and writes it to
+// local/out/secrets/<id>. It keeps prevFile when that still holds a secret.
+// For an input with a confirm question, a no returns an empty credential.
+func (w *wizard) askSecret(input ScenarioInput, prevFile string) (resourceValues, error) {
+	if input.Confirm != "" {
+		add, err := w.confirm(input.Confirm, prevFile != "")
+		if err != nil || !add {
+			return resourceValues{}, err
+		}
+	}
+	file, err := w.secretFile(prevFile, input.Prompt, input.ID)
+	return resourceValues{SecretFile: file}, err
 }
 
 // chooseGitHub asks where the GitHub token comes from: a GitHub provider in
 // the zone, which gives each user their own token, or a personal access
-// token, which every user shares. The demo's check calls GitHub, so GitHub
-// is not optional.
-func (w *wizard) chooseGitHub(ctx context.Context) error {
+// token, which every user shares. prev is the previous answer.
+func (w *wizard) chooseGitHub(ctx context.Context, prev resourceValues) (resourceValues, error) {
 	providers, err := w.zone.Providers(ctx)
 	if err != nil {
-		return fmt.Errorf("listing the zone's providers: %w", err)
+		return resourceValues{}, fmt.Errorf("listing the zone's providers: %w", err)
 	}
 	options := w.gitHubOptions(providers)
-	prevFile := w.prevSecretFile(githubAPI)
 	value := options[0].Value
-	prev := w.prevProvider(githubAPI)
 	switch {
-	case slices.ContainsFunc(options, func(o Option) bool { return o.Value == prev }):
-		value = prev
-	case prevFile != "":
+	case slices.ContainsFunc(options, func(o Option) bool { return o.Value == prev.CredentialProvider }):
+		value = prev.CredentialProvider
+	case prev.SecretFile != "":
 		value = gitHubToken
 	}
 	choice, err := w.choose("How does the sandbox get a GitHub token?", options, value)
-	if err != nil {
-		return err
+	if err != nil || choice != gitHubToken {
+		return resourceValues{CredentialProvider: choice}, err
 	}
-	api := resourceValues{Identifier: githubAPI, Name: "GitHub", Prefix: true, CredentialProvider: choice}
-	git := resourceValues{Identifier: githubGit, Name: "GitHub git", Prefix: true, CredentialProvider: choice}
-	if choice == gitHubToken {
-		file, err := w.secretFile(prevFile, "GitHub personal access token", "github-token")
-		if err != nil {
-			return err
-		}
-		api.CredentialProvider, api.SecretFile = "", file
-		git.CredentialProvider, git.SecretFile = "", file
-	}
-	w.out.Resources = append(w.out.Resources, api, git)
-	return nil
+	file, err := w.secretFile(prev.SecretFile, "GitHub personal access token", githubTokenFile)
+	return resourceValues{SecretFile: file}, err
 }
 
 // gitHubOptions returns a choice for each GitHub provider in the zone, then
@@ -653,32 +721,6 @@ func (w *wizard) secretFile(prevFile, question, name string) (string, error) {
 		return "", err
 	}
 	return w.l.writeSecret(name, secret)
-}
-
-// prevSecretFile returns the secret_file the previous values file named for
-// identifier, or "".
-func (w *wizard) prevSecretFile(identifier string) string {
-	for _, resource := range w.prev.values.Resources {
-		if resource.Identifier == identifier {
-			return resource.SecretFile
-		}
-	}
-	return ""
-}
-
-func (w *wizard) chooseOpenRouter() error {
-	prevFile := w.prevSecretFile(openRouterAPI)
-	add, err := w.confirm("Add an OpenRouter API key?", prevFile != "")
-	if err != nil || !add {
-		return err
-	}
-	file, err := w.secretFile(prevFile, "OpenRouter API key", "openrouter-api-key")
-	if err != nil {
-		return err
-	}
-	w.out.Resources = append(w.out.Resources,
-		resourceValues{Identifier: openRouterAPI, Name: "OpenRouter", Prefix: true, SecretFile: file})
-	return nil
 }
 
 // chooseCluster asks whether to create a local k3d cluster or use an
@@ -806,7 +848,8 @@ func (w *wizard) askReplaceActive(ctx context.Context) (bool, error) {
 		strings.Join(others, ", "), zonesetup.DefaultPolicySetName), false)
 }
 
-// write writes the values file and local/local.env.
+// write writes the values file, local/answers.yaml when there are answers,
+// and local/local.env.
 func (w *wizard) write() error {
 	raw, err := yaml.Marshal(w.out)
 	if err != nil {
@@ -818,6 +861,18 @@ func (w *wizard) write() error {
 		return fmt.Errorf("writing %s: %w", w.l.valuesPath(), err)
 	}
 	_, _ = fmt.Fprintf(w.l.Out, "Wrote %s.\n", w.l.valuesName())
+	if len(w.answers) > 0 {
+		if raw, err = yaml.Marshal(w.answers); err != nil {
+			return fmt.Errorf("encoding the answers: %w", err)
+		}
+		header = "# Written by `go run ./cmd/sandbox init`. The answers to the scenarios'\n" +
+			"# questions that are not secrets, by input id.\n"
+		path := filepath.Join(w.l.Root, answersFile)
+		if err = os.WriteFile(path, append([]byte(header), raw...), fileMode); err != nil {
+			return fmt.Errorf("writing %s: %w", path, err)
+		}
+		_, _ = fmt.Fprintf(w.l.Out, "Wrote %s.\n", answersFile)
+	}
 	w.env[KeyCluster] = cmp.Or(w.l.Settings[KeyCluster], defaultCluster)
 	w.env[KeyZoneSetupValues] = zoneSetupFile
 	w.env[KeyGitHubLogin] = w.l.Settings[KeyGitHubLogin]
@@ -893,17 +948,6 @@ func (l *Local) previousValues() previous {
 		_ = yaml.Unmarshal(raw, &prev.values)
 	}
 	return prev
-}
-
-// prevProvider returns the credential provider the previous values file
-// named for identifier, or "".
-func (w *wizard) prevProvider(identifier string) string {
-	for _, resource := range w.prev.values.Resources {
-		if resource.Identifier == identifier && resource.CredentialProvider != "" {
-			return resource.CredentialProvider
-		}
-	}
-	return ""
 }
 
 // onHost reports whether every address of the zone's host is a loopback or

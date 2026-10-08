@@ -29,7 +29,8 @@ const (
 )
 
 var (
-	// ErrImages means Docker does not have an image the sandbox runs.
+	// ErrImages means Docker does not have an image the sandbox runs, or
+	// cannot build it.
 	ErrImages = errors.New("images missing")
 	// ErrZoneSetup is a failed zone-setup run, or zone-setup output that
 	// lacks what the sandbox needs.
@@ -83,12 +84,15 @@ type runSettings struct {
 	imageTag string
 	// clusterCIDRs is set for an existing cluster.
 	clusterCIDRs []string
+	scenario     *Scenario
+	// scenarioValues is the scenario's values file for both charts.
+	scenarioValues []byte
 }
 
-// Run runs the sandbox flow end to end: the k3d cluster and the three
-// images, zone-setup against the Keycard zone, the install chart, a sandbox
-// for KEYCARD_LOCAL_USER_EMAIL, and the checks. It writes to the cluster and
-// to the zone.
+// Run runs the sandbox flow end to end: the k3d cluster and the images,
+// zone-setup against the Keycard zone, the install chart, a sandbox for
+// KEYCARD_LOCAL_USER_EMAIL that runs the agent of KEYCARD_LOCAL_SCENARIO,
+// and the checks. It writes to the cluster and to the zone.
 //
 // Run does not publish the issuer. Before the checks run, start the mirror,
 // and the tunnel or your own proxy that forwards the issuer's https URL to
@@ -105,7 +109,10 @@ type runSettings struct {
 // imports them from Docker.
 //
 // For an existing cluster, Run does not create the cluster or import
-// images. The issuer comes from the cluster's discovery document.
+// images. The issuer comes from the cluster's discovery document. Run
+// refuses a scenario with a
+// Dockerfile there, because the cluster cannot pull an image built on this
+// machine.
 func (l *Local) Run(ctx context.Context, opts RunOptions) error {
 	cfg, err := l.runSettings(ctx)
 	if err != nil {
@@ -143,7 +150,11 @@ func (l *Local) deploy(ctx context.Context, cfg runSettings, out *zonesetup.Outp
 		return err
 	}
 	l.step("Creating the sandbox for " + cfg.email + " (user " + access.UserID + ")")
+	generation := l.sandboxGeneration(ctx, cfg.cluster, namespace, access.UserID)
 	if err := l.newSandbox(ctx, cfg.cluster, out, access); err != nil {
+		return err
+	}
+	if err := l.replaceStalePod(ctx, cfg.cluster, namespace, access.UserID, generation); err != nil {
 		return err
 	}
 	l.step("Waiting for the sandbox pod to become ready")
@@ -241,18 +252,14 @@ func LocalValues(input LocalValuesInput) ([]byte, []byte, error) {
 	return installYAML, sandboxYAML, nil
 }
 
-// k3dCluster creates or checks the k3d cluster, and imports the images
-// when KEYCARD_LOCAL_IMAGE_TAG is set.
+// k3dCluster creates or checks the k3d cluster and imports the images that
+// come from Docker.
 func (l *Local) k3dCluster(ctx context.Context, cfg runSettings) error {
 	l.step("Creating or checking the k3d cluster " + cfg.cluster)
 	if err := l.Bootstrap(ctx, cfg.cluster, cfg.issuerURL, false); err != nil {
 		return err
 	}
-	if cfg.imageTag == "" {
-		return nil
-	}
-	l.step("Importing the three images into the cluster")
-	return l.importImages(ctx, cfg.cluster, cfg.imageTag)
+	return l.importImages(ctx, cfg.cluster, cfg.imageTag, cfg.scenario)
 }
 
 func (l *Local) runSettings(ctx context.Context) (runSettings, error) {
@@ -273,14 +280,13 @@ func (l *Local) runSettings(ctx context.Context) (runSettings, error) {
 		return cfg, fmt.Errorf("%w: %s is empty. Set it to the email of a user in zone-setup.yaml",
 			ErrSettings, KeyUserEmail)
 	}
-	switch onHost := l.Settings[KeyZoneOnHost]; onHost {
-	case "":
-	case settingTrue:
-		cfg.zoneOnHost = true
-	default:
-		return cfg, fmt.Errorf("%w: %s must be true or empty (got %q)", ErrSettings, KeyZoneOnHost, onHost)
+	if cfg.zoneOnHost, err = l.zoneOnHost(); err != nil {
+		return cfg, err
 	}
 	if cfg.caFile, err = l.caFile(); err != nil {
+		return cfg, err
+	}
+	if cfg.scenario, cfg.scenarioValues, err = l.scenarioValues(); err != nil {
 		return cfg, err
 	}
 	cfg.imageTag = l.Settings[KeyImageTag]
@@ -290,11 +296,28 @@ func (l *Local) runSettings(ctx context.Context) (runSettings, error) {
 	return cfg, nil
 }
 
+// zoneOnHost reads KEYCARD_LOCAL_ZONE_ON_HOST, which is true or empty.
+func (l *Local) zoneOnHost() (bool, error) {
+	switch onHost := l.Settings[KeyZoneOnHost]; onHost {
+	case "":
+		return false, nil
+	case settingTrue:
+		return true, nil
+	default:
+		return false, fmt.Errorf("%w: %s must be true or empty (got %q)", ErrSettings, KeyZoneOnHost, onHost)
+	}
+}
+
 // existingSettings adds the cluster's ranges for an existing cluster.
 // KEYCARD_LOCAL_ZONE_ON_HOST works only with k3d.
 func (l *Local) existingSettings(cfg runSettings) (runSettings, error) {
 	if cfg.zoneOnHost {
 		return cfg, fmt.Errorf("%w: %s is for a k3d cluster", ErrExisting, KeyZoneOnHost)
+	}
+	if cfg.scenario.Image != "" {
+		return cfg, fmt.Errorf("%w: the scenario %s runs %s, which is built on this machine. "+
+			"An existing cluster pulls its images from a registry, so run this scenario on a k3d cluster",
+			ErrExisting, cfg.scenario.Name, cfg.scenario.Image)
 	}
 	var err error
 	if cfg.clusterCIDRs, err = ParseCIDRs(l.Settings[KeyClusterCIDRs]); err != nil {
@@ -326,11 +349,39 @@ func ParseCIDRs(list string) ([]string, error) {
 	return out, nil
 }
 
-// importImages imports the three images, tagged tag, from Docker into the
-// cluster. It fails before the import if Docker does not have one of them.
-// A tag other than latest defaults imagePullPolicy to IfNotPresent, so the
-// node runs the imported images and does not pull.
-func (l *Local) importImages(ctx context.Context, cluster, tag string) error {
+// importImages imports images from Docker into the cluster: the three
+// images, when tag is set, and the scenario's agent image, which it builds
+// first. It fails before the build if Docker does not have one of the
+// three. A tag other than latest defaults imagePullPolicy to IfNotPresent,
+// so the node runs the imported images and does not pull.
+func (l *Local) importImages(ctx context.Context, cluster, tag string, scenario *Scenario) error {
+	var all []string
+	if tag != "" {
+		if err := l.inspectImages(ctx, tag); err != nil {
+			return err
+		}
+		all = images(tag)
+	}
+	if scenario.Image != "" {
+		if err := l.buildImage(ctx, tag, scenario); err != nil {
+			return err
+		}
+		all = append(all, scenario.Image)
+	}
+	if len(all) == 0 {
+		return nil
+	}
+	l.step("Importing the images into the cluster")
+	if err := l.k3d(ctx, l.Out, slices.Concat([]string{"image", "import", "--cluster", cluster}, all)...); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(l.Out, "Imported %s into the k3d cluster %s.\n", strings.Join(all, ", "), cluster)
+	return nil
+}
+
+// inspectImages fails if Docker does not have one of the three images,
+// tagged tag.
+func (l *Local) inspectImages(ctx context.Context, tag string) error {
 	var missing []string
 	for _, image := range images(tag) {
 		cmd, err := l.Tool(ctx, "docker", "image", "inspect", image)
@@ -345,15 +396,53 @@ func (l *Local) importImages(ctx context.Context, cluster, tag string) error {
 		return fmt.Errorf("%w: %s. Build them in the egress-proxy repository and tag them with these names",
 			ErrImages, strings.Join(missing, ", "))
 	}
-	if err := l.k3d(
-		ctx,
-		l.Out,
-		slices.Concat([]string{"image", "import", "--cluster", cluster}, images(tag))...,
-	); err != nil {
+	return nil
+}
+
+// buildImage builds the scenario's agent image. The build gets the
+// sandbox-base image as BASE_IMAGE: at tag when it is set, or the one the
+// install chart pins.
+func (l *Local) buildImage(ctx context.Context, tag string, scenario *Scenario) error {
+	base := imageRegistry + "sandbox-base:" + tag
+	if tag == "" {
+		var err error
+		if base, err = l.pinnedBase(); err != nil {
+			return err
+		}
+	}
+	l.step("Building " + scenario.Image + " from " + filepath.Join(scenariosDir, scenario.Name))
+	cmd, err := l.Tool(ctx, "docker", "build", "--tag", scenario.Image, "--build-arg", "BASE_IMAGE="+base,
+		filepath.Join(l.Root, scenariosDir, scenario.Name))
+	if err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(l.Out, "Imported %d images into the k3d cluster %s.\n", len(images(tag)), cluster)
+	cmd.Stdout, cmd.Stderr = l.Out, l.Out
+	if err = cmd.Run(); err != nil {
+		return fmt.Errorf("%w: building %s: %w", ErrImages, scenario.Image, err)
+	}
+	_, _ = fmt.Fprintf(l.Out, "Built the image %s.\n", scenario.Image)
 	return nil
+}
+
+// pinnedBase returns the sandbox-base image the install chart pins. The
+// chart's images.agent defaults to sandbox-base itself.
+func (l *Local) pinnedBase() (string, error) {
+	raw, err := os.ReadFile(filepath.Join(l.Root, "install", "values.yaml"))
+	if err != nil {
+		return "", fmt.Errorf("%w: reading the install chart's values: %w", ErrImages, err)
+	}
+	var values struct {
+		Images struct {
+			Agent string `json:"agent"`
+		} `json:"images"`
+	}
+	if err = yaml.Unmarshal(raw, &values); err != nil {
+		return "", fmt.Errorf("%w: install/values.yaml: %w", ErrImages, err)
+	}
+	if values.Images.Agent == "" {
+		return "", fmt.Errorf("%w: install/values.yaml does not set images.agent", ErrImages)
+	}
+	return values.Images.Agent, nil
 }
 
 // zoneSetup runs zone-setup and writes its output to local/out/zone-setup.yaml,
@@ -418,7 +507,8 @@ func userAccess(out *zonesetup.Output, email string) (zonesetup.UserAccess, erro
 	)
 }
 
-// writeLocalValues writes the values files LocalValues returns to local/out.
+// writeLocalValues writes the values files LocalValues returns, and the
+// scenario's values file, to local/out.
 func (l *Local) writeLocalValues(ctx context.Context, cfg runSettings) error {
 	gateway := ""
 	if cfg.zoneOnHost {
@@ -442,12 +532,15 @@ func (l *Local) writeLocalValues(ctx context.Context, cfg runSettings) error {
 	if err != nil {
 		return err
 	}
-	for name, body := range map[string][]byte{"install.values.yaml": install, "sandbox.values.yaml": sandbox} {
+	for name, body := range map[string][]byte{
+		"install.values.yaml": install, "sandbox.values.yaml": sandbox, "scenario.values.yaml": cfg.scenarioValues,
+	} {
 		if err = os.WriteFile(filepath.Join(l.outDir(), name), body, fileMode); err != nil {
 			return fmt.Errorf("writing %s: %w", name, err)
 		}
 	}
-	_, _ = fmt.Fprintln(l.Out, "Wrote local/out/install.values.yaml and local/out/sandbox.values.yaml.")
+	_, _ = fmt.Fprintln(l.Out, "Wrote local/out/install.values.yaml, local/out/sandbox.values.yaml "+
+		"and local/out/scenario.values.yaml.")
 	return nil
 }
 
@@ -481,6 +574,7 @@ func (l *Local) install(ctx context.Context, cluster, namespace string) error {
 		Values: []string{
 			filepath.Join(l.Root, "local", "values", "install.yaml"),
 			filepath.Join(l.outDir(), "install.values.yaml"),
+			filepath.Join(l.outDir(), "scenario.values.yaml"),
 		},
 		Tool: l.Tool,
 		Out:  l.Out,
@@ -515,6 +609,7 @@ func (l *Local) newSandbox(
 			filepath.Join(l.Root, "sandbox", "values.example.yaml"),
 			filepath.Join(l.Root, "local", "values", "sandbox.yaml"),
 			filepath.Join(l.outDir(), "sandbox.values.yaml"),
+			filepath.Join(l.outDir(), "scenario.values.yaml"),
 		},
 		Apply: true,
 		Kube: func(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
@@ -533,6 +628,41 @@ func (l *Local) newSandbox(
 	return nil
 }
 
+// sandboxGeneration returns the metadata.generation of the Sandbox name,
+// or "" when it does not exist or cannot be read.
+func (l *Local) sandboxGeneration(ctx context.Context, cluster, namespace, name string) string {
+	out, err := l.kubectl(ctx, cluster, nil, "--namespace", namespace,
+		"get", "sandbox", name, "--ignore-not-found", "-o", "jsonpath={.metadata.generation}")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// replaceStalePod deletes the pod of the Sandbox name when the pod has
+// finished or the Sandbox's generation differs from before. The controller
+// then creates the pod again from the template. The controller does not
+// update an existing pod, and the pod's restartPolicy is Never.
+func (l *Local) replaceStalePod(ctx context.Context, cluster, namespace, name, before string) error {
+	out, err := l.kubectl(ctx, cluster, nil, "--namespace", namespace,
+		"get", "pod", name, "--ignore-not-found", "-o", "jsonpath={.status.phase}")
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrPod, err)
+	}
+	phase := strings.TrimSpace(string(out))
+	finished := phase == "Failed" || phase == "Succeeded"
+	changed := before != "" && l.sandboxGeneration(ctx, cluster, namespace, name) != before
+	if phase == "" || (!finished && !changed) {
+		return nil
+	}
+	if _, err = l.kubectl(ctx, cluster, nil, "--namespace", namespace, "delete", "pod", name, "--wait=true"); err != nil {
+		return fmt.Errorf("%w: %w", ErrPod, err)
+	}
+	_, _ = fmt.Fprintf(l.Out, "Deleted the pod %s, so the controller creates it again from the sandbox's template.\n",
+		name)
+	return nil
+}
+
 // waitForPod waits for the sandbox pod to exist and become Ready. If the pod
 // does not become Ready, it prints the last 40 lines of each container's log.
 func (l *Local) waitForPod(ctx context.Context, cluster, namespace, pod string) error {
@@ -546,7 +676,7 @@ func (l *Local) waitForPod(ctx context.Context, cluster, namespace, pod string) 
 	if err == nil {
 		return nil
 	}
-	for _, container := range []string{"egress-netsetup", "egress-proxy", "agent"} {
+	for _, container := range []string{"egress-netsetup", "egress-proxy", agentContainer} {
 		logs, _ := l.kubectl(ctx, cluster, nil, "--namespace", namespace, "logs", pod, "-c", container, "--tail=40")
 		_, _ = fmt.Fprintf(l.Out, "--- %s\n%s", container, logs)
 	}

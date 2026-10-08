@@ -23,6 +23,8 @@ const (
 	// githubUserURL is the endpoint the proxy injects the user's GitHub
 	// credential into.
 	githubUserURL = "https://api.github.com/user"
+	// openRouterAPI is the OpenRouter resource in the zone-setup values.
+	openRouterAPI = "https://openrouter.ai/api/v1"
 	// openRouterKeyURL returns the details of the caller's OpenRouter key.
 	openRouterKeyURL = "https://openrouter.ai/api/v1/key"
 	// deniedHost is a host that no endpoint in sandbox/values.example.yaml
@@ -39,6 +41,8 @@ const (
 	// TLS handshake and an untrusted certificate.
 	curlSSLConnect   = 35
 	curlPeerFailedCA = 60
+	// agentContainer is the sandbox pod's agent container.
+	agentContainer = "agent"
 	// proxyLogLines is how many lines of the proxy's log a check reads.
 	proxyLogLines = "--tail=500"
 )
@@ -248,7 +252,7 @@ func (l *Local) fetch(ctx context.Context, target CheckTarget, command ...string
 	var err error
 	for range tlsRetries {
 		out, err = l.kubectl(ctx, target.Cluster, nil, slices.Concat([]string{
-			"--namespace", target.Namespace, "exec", target.Pod, "-c", "agent", "--",
+			"--namespace", target.Namespace, "exec", target.Pod, "-c", agentContainer, "--",
 		}, command)...)
 		var exit *exec.ExitError
 		if !errors.As(err, &exit) || (exit.ExitCode() != curlSSLConnect && exit.ExitCode() != curlPeerFailedCA) {

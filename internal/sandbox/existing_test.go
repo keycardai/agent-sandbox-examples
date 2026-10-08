@@ -70,8 +70,9 @@ func TestExistingRefuses(t *testing.T) {
 }
 
 // TestRunExistingSettings checks that Run refuses settings it cannot use
-// for an existing cluster. Run reads the cluster's issuer before it checks
-// the settings, so each case expects that one kubectl call.
+// for an existing cluster, and a scenario whose image the cluster cannot
+// pull. Run reads the cluster's issuer before it checks the settings, so each
+// case expects that one kubectl call.
 func TestRunExistingSettings(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -94,6 +95,13 @@ func TestRunExistingSettings(t *testing.T) {
 			sandbox.ErrSettings,
 			`"10.0.0.0" is not an address range`,
 		},
+		{
+			"a scenario with an image built here",
+			sandbox.KeyScenario,
+			agentName,
+			sandbox.ErrExisting,
+			"the scenario agent runs ghcr.io/keycardai/sandbox-agent:local, which is built on this machine",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -101,6 +109,9 @@ func TestRunExistingSettings(t *testing.T) {
 			settings := existing()
 			settings[tc.key] = tc.value
 			local, calls := newLocal(t, settings, eksTool(healthy()))
+			linkCharts(t, local.Root)
+			addScenario(t, local.Root, agentName, agentScenario, true)
+			writeFile(t, filepath.Join(local.Root, "local", "answers.yaml"), "repo: octo/demo\n")
 			checkErr(t, local.Run(t.Context(), sandbox.RunOptions{}), []error{tc.want}, tc.wantText)
 			want := "kubectl KUBERC=off --context " + eksContext + " get --raw /.well-known/openid-configuration\n"
 			if got := readCalls(t, calls); got != want {
@@ -141,7 +152,11 @@ func TestRunExisting(t *testing.T) {
 			}
 		}
 	}
-	checkImages(t, local.Root, pinnedImages())
+	manifest, err := os.ReadFile(filepath.Join(local.Root, "local", "out", "sandbox.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkContains(t, "sandbox.yaml", string(manifest), imageLines(pinnedImages()))
 }
 
 // TestUpExistingPrint prints only check-issuer and run for an existing

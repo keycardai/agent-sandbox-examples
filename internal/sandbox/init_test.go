@@ -16,6 +16,15 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 )
 
+const (
+	// changeQuestion is the question a rerun of Init starts with, and
+	// changeDemo its answer for the demo section.
+	changeQuestion = "What do you want to change?"
+	changeDemo     = "scenario"
+	// apiKeyQuestion is the agent scenario's secret question.
+	apiKeyQuestion = "API key"
+)
+
 // scriptedAsker answers a question with the next answer under the key the
 // question starts with. With no answer left, it keeps the default. It
 // records every question.
@@ -150,7 +159,8 @@ func fakeManagement(t *testing.T, zoneURL, providers, activeSets string) (*httpt
 }
 
 // initLocal returns a Local rooted in a new directory that holds
-// local/local.env.example, as the repository does. Its tools run body.
+// local/local.env.example and the scenarios, as the repository does. Its
+// tools run body.
 func initLocal(t *testing.T, body string) *sandbox.Local {
 	t.Helper()
 	example, err := os.ReadFile("../../local/local.env.example")
@@ -158,6 +168,7 @@ func initLocal(t *testing.T, body string) *sandbox.Local {
 		t.Fatal(err)
 	}
 	local, _ := newLocal(t, sandbox.Settings{}, body)
+	linkCharts(t, local.Root)
 	writeFile(t, filepath.Join(local.Root, "local", "local.env.example"), string(example))
 	return local
 }
@@ -199,6 +210,7 @@ func TestInit(t *testing.T) {
 		sandbox.KeyZoneSetupValues: "zone-setup.yaml", sandbox.KeyUserEmail: email,
 		sandbox.KeyGitHubLogin: "", sandbox.KeyCAFile: run.caFile,
 		sandbox.KeyKubeContext: "", sandbox.KeyImageTag: "", sandbox.KeyClusterCIDRs: "",
+		sandbox.KeyScenario: "smoke",
 	})
 	for _, line := range []string{
 		"Wrote local/out/secrets/management-client-secret, readable only by you.\n",
@@ -249,6 +261,7 @@ func firstRun(t *testing.T) initRun {
 	server, caFile := fakeManagement(t, "https://localhost", gitHubProviders,
 		`{"id":"s1","name":"default-zone-policies","active":true,"target_type":"zone"}`)
 	local := initLocal(t, "")
+	addScenario(t, local.Root, agentName, agentScenario, true)
 	out := &bytes.Buffer{}
 	local.Out = out
 	answers := signInAnswers(server.URL, caFile, "bad", goodSecret)
@@ -333,7 +346,6 @@ func TestInitGitHubToken(t *testing.T) {
 // keeps the saved image tag.
 func TestInitRerun(t *testing.T) {
 	t.Parallel()
-	const changeQuestion = "What do you want to change?"
 	tests := []struct {
 		name      string
 		answers   map[string][]string
@@ -350,9 +362,27 @@ func TestInitRerun(t *testing.T) {
 			check:     checkValuesKept,
 		},
 		{
-			name: "credentials",
+			name:     "demo, keeping its answers",
+			answers:  map[string][]string{changeQuestion: {changeDemo}},
+			notAsked: append(signInQuestions(), "GitHub personal access token", openRouterKeyQuestion),
+			check:    checkValuesKept,
+		},
+		{
+			name: "another demo",
 			answers: map[string][]string{
-				changeQuestion: {"credentials"},
+				changeQuestion: {changeDemo},
+				"Which demo?":  {agentName},
+				"Repository":   {agentRepo},
+				apiKeyQuestion: {"api-secret"},
+			},
+			notAsked:  signInQuestions(),
+			wantFiles: map[string]string{"api-key": "api-secret\n"},
+			check:     checkAgentValues,
+		},
+		{
+			name: "demo credentials",
+			answers: map[string][]string{
+				changeQuestion: {changeDemo},
 				"How does the sandbox get a GitHub token": {"\x00token"},
 				"GitHub personal access token":            {"ghp-new"},
 				"Keep the saved OpenRouter API key?":      {"n"},
@@ -404,7 +434,8 @@ func checkKept(t *testing.T, run initRun) {
 	t.Helper()
 	for _, want := range []string{
 		"  Keycard account          sa-1 at " + run.server.URL + "\n",
-		"  GitHub and OpenRouter    GitHub token from the provider github, OpenRouter API key\n",
+		"  Demo and credentials     smoke: GitHub (provider github), GitHub git (provider github), " +
+			"OpenRouter (secret file)\n",
 		"  Cluster and issuer       a local k3d cluster, keycard-sandbox-local, with a quick tunnel\n",
 		"Kept local/local.env and zone-setup.yaml as they are.\n",
 	} {
@@ -440,8 +471,42 @@ func checkTokenValues(t *testing.T, run initRun) {
 	}
 }
 
+// checkAgentValues requires the values file to keep the zone and to hold
+// only the agent scenario's resource, local/answers.yaml to hold its text
+// answer, and local.env to name it.
+func checkAgentValues(t *testing.T, run initRun) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(run.local.Root, "zone-setup.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(run.local.Root, "local", "out", "secrets", "api-key")
+	checkContains(t, "zone-setup.yaml", string(raw), []string{"zone_id: zone-a\n", "resources:\n" +
+		"    - identifier: https://api.example.com\n      name: Example\n      prefix: true\n" +
+		"      secret_file: " + secret + "\n"})
+	if strings.Contains(string(raw), "github") {
+		t.Errorf("zone-setup.yaml = %s\nwant only the agent scenario's resource", raw)
+	}
+	checkFile(t, filepath.Join(run.local.Root, "local", "answers.yaml"), wantAgentAnswers)
+	checkContains(t, "output", run.out.String(), []string{"Wrote local/answers.yaml.\n"})
+	settings, err := sandbox.LoadSettings(run.local.Root, "", func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings[sandbox.KeyScenario] != agentName || settings[sandbox.KeyUserEmail] != email {
+		t.Errorf("local.env = %q, want the agent scenario and the kept user", settings)
+	}
+}
+
+// wantAgentAnswers is local/answers.yaml after the agent scenario's
+// questions.
+const wantAgentAnswers = "# Written by `go run ./cmd/sandbox init`. The answers to the scenarios'\n" +
+	"# questions that are not secrets, by input id.\n" +
+	"repo: octo/demo\n"
+
 // checkNamedTunnel requires the values file as the first run wrote it, and
-// local.env to name the tunnel and keep the user and the image tag.
+// local.env to name the tunnel and keep the user, the demo and the image
+// tag.
 func checkNamedTunnel(t *testing.T, run initRun) {
 	t.Helper()
 	checkValuesKept(t, run)
@@ -450,8 +515,9 @@ func checkNamedTunnel(t *testing.T, run initRun) {
 		t.Fatal(err)
 	}
 	if settings[sandbox.KeyTunnel] != "demo" || settings[sandbox.KeyIssuer] != "https://issuer.example.org" ||
-		settings[sandbox.KeyUserEmail] != email || settings[sandbox.KeyImageTag] != devTag {
-		t.Errorf("local.env = %q, want the named tunnel, the kept user and the kept image tag", settings)
+		settings[sandbox.KeyUserEmail] != email || settings[sandbox.KeyScenario] != sandbox.DefaultScenario ||
+		settings[sandbox.KeyImageTag] != devTag {
+		t.Errorf("local.env = %q, want the named tunnel, and the kept user, demo and image tag", settings)
 	}
 }
 
@@ -470,4 +536,51 @@ func checkFile(t *testing.T, path, want string) {
 	if err == nil && info.Mode().Perm()&0o077 != 0 {
 		t.Errorf("%s mode = %v, want no access for group or others", path, info.Mode().Perm())
 	}
+}
+
+// TestInitScenario chooses a scenario with a text input and a secret
+// input on a first run. A rerun that changes the demo and accepts every
+// default keeps the saved answer and secret, and does not ask for the secret.
+func TestInitScenario(t *testing.T) {
+	t.Parallel()
+	server, caFile := fakeManagement(t, "https://192.0.2.10", gitHubProviders, "")
+	local := initLocal(t, "")
+	addScenario(t, local.Root, agentName, agentScenario, true)
+	out := &bytes.Buffer{}
+	local.Out = out
+	answers := signInAnswers(server.URL, caFile, goodSecret)
+	maps.Copy(answers, map[string][]string{
+		"Which demo?":  {agentName},
+		"Repository":   {agentRepo},
+		apiKeyQuestion: {"api-secret"},
+	})
+	ask := &scriptedAsker{t: t, answers: answers}
+	if _, err := local.Init(t.Context(), ask); err != nil {
+		t.Fatal(err)
+	}
+	if demos := ask.offered["Which demo?"]; !slices.Contains(demos, agentName) || !slices.Contains(demos, "smoke") {
+		t.Errorf("demos offered = %q, want agent and smoke among them", demos)
+	}
+	checkFile(t, filepath.Join(local.Root, "local", "out", "secrets", "api-key"), "api-secret\n")
+	checkContains(t, "output", out.String(), []string{"Wrote local/out/secrets/api-key, readable only by you.\n"})
+	run := initRun{local: local, out: out}
+	checkAgentValues(t, run)
+	values, err := os.ReadFile(filepath.Join(local.Root, "zone-setup.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if local.Settings, err = sandbox.LoadSettings(local.Root, "", func(string) string { return "" }); err != nil {
+		t.Fatal(err)
+	}
+	again := &scriptedAsker{t: t, answers: map[string][]string{changeQuestion: {changeDemo}}}
+	if _, err = local.Init(t.Context(), again); err != nil {
+		t.Fatal(err)
+	}
+	checkNotAsked(t, again, []string{apiKeyQuestion})
+	if !slices.Contains(again.asked, "Keep the saved API key?") {
+		t.Errorf("second run asked %q, want it to offer to keep the API key", again.asked)
+	}
+	checkFile(t, filepath.Join(local.Root, "local", "answers.yaml"), wantAgentAnswers)
+	checkFile(t, filepath.Join(local.Root, "zone-setup.yaml"), string(values))
 }

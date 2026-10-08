@@ -35,6 +35,7 @@ const (
 	KeyKubeContext      = "KEYCARD_LOCAL_KUBE_CONTEXT"
 	KeyImageTag         = "KEYCARD_LOCAL_IMAGE_TAG"
 	KeyClusterCIDRs     = "KEYCARD_LOCAL_CLUSTER_CIDRS"
+	KeyScenario         = "KEYCARD_LOCAL_SCENARIO"
 	maxClusterNameBytes = 32
 	// settingTrue is the value of a setting that is on.
 	settingTrue = "true"
@@ -74,7 +75,7 @@ func settingKeys() []string {
 	return []string{
 		KeyCluster, KeyIssuer, KeyTunnel, KeyZoneURL, KeyZoneOnHost,
 		KeyZoneSetupValues, KeyUserEmail, KeyGitHubLogin, KeyCAFile,
-		KeyKubeContext, KeyImageTag, KeyClusterCIDRs,
+		KeyKubeContext, KeyImageTag, KeyClusterCIDRs, KeyScenario,
 	}
 }
 

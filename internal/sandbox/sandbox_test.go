@@ -151,6 +151,7 @@ func TestLoadSettings(t *testing.T) {
 				sandbox.KeyZoneURL: "", sandbox.KeyZoneOnHost: "", sandbox.KeyZoneSetupValues: "zone-setup.yaml",
 				sandbox.KeyUserEmail: "", sandbox.KeyGitHubLogin: "", sandbox.KeyCAFile: "",
 				sandbox.KeyKubeContext: "", sandbox.KeyImageTag: "", sandbox.KeyClusterCIDRs: "",
+				sandbox.KeyScenario: "smoke",
 			},
 		},
 	}

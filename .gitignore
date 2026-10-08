@@ -1,4 +1,5 @@
 /bin/
+/local/answers.yaml
 /local/local.env
 /local/out/
 /zone-setup.yaml
