@@ -20,10 +20,6 @@ zone fetches `<issuer>/.well-known/openid-configuration` and compares its
 - A user in the zone for the sandbox to act for. The management API can't
   create users. Add one in the Keycard console, or have the person sign in
   to the zone.
-- The three images, built in the egress-proxy repository and tagged
-  `ghcr.io/keycardai/egress-netsetup:local`,
-  `ghcr.io/keycardai/egress-proxy:local` and
-  `ghcr.io/keycardai/sandbox-base:local`.
 
 Then:
 
@@ -37,6 +33,12 @@ It writes `local/local.env` and `zone-setup.yaml`. Secrets you type go in
 `KEYCARD_MANAGEMENT_CLIENT_SECRET` is set, `init` uses it and doesn't ask for
 the secret. To write the files by hand, start from
 `local/local.env.example` and `zone-setup.example.yaml`.
+
+The cluster pulls `egress-netsetup`, `egress-proxy` and `sandbox-base` from
+`ghcr.io/keycardai`, at the release digests the charts pin. To run images
+you built in the egress-proxy repository, tag them
+`ghcr.io/keycardai/<name>:local` and set `KEYCARD_LOCAL_IMAGE_TAG=local`.
+`sandbox run` then imports them into the k3d cluster.
 
 To change something, run `go run ./cmd/sandbox init` again. It shows your
 current settings and asks which part to change. Each question defaults to
@@ -81,6 +83,30 @@ sandbox, use `go run ./cmd/sandbox check`.
 
 `go run ./cmd/sandbox down` deletes the cluster. It does not delete what
 zone-setup created in the zone.
+
+## Using an existing cluster
+
+To run the sandbox in an existing cluster, such as EKS, choose its
+kubeconfig context in `sandbox init`. `init` saves the context in
+`KEYCARD_LOCAL_KUBE_CONTEXT`. The cluster must:
+
+- Publish its ServiceAccount issuer on the internet, as EKS does. `init`
+  reads the issuer from the cluster and shows it.
+- Pull images from `ghcr.io/keycardai`. With `KEYCARD_LOCAL_IMAGE_TAG` set,
+  the cluster pulls the images at that tag instead of the ones the charts
+  pin.
+- Enforce NetworkPolicy, and allow the privileged Pod Security level in the
+  sandbox namespace. The egress-netsetup init container adds `NET_ADMIN`
+  and `NET_RAW`.
+
+`init` also asks for the cluster's pod and service ranges and saves them in
+`KEYCARD_LOCAL_CLUSTER_CIDRS`. The sandbox NetworkPolicy and the proxy
+block these ranges.
+
+With an existing cluster, `sandbox up` runs only `check-issuer` and `run`,
+and stops after the checks. `run` doesn't create a cluster or import images.
+`bootstrap`, `down`, `tunnel` and `mirror` fail. The other steps take the
+context in `--cluster`.
 
 ## Publishing the issuer
 
@@ -146,17 +172,17 @@ the management API URL is not `https://api.keycard.ai`.
 
 | Step | What it does |
 |---|---|
-| `sandbox init` | asks for the zone, the user and the credentials, and writes `local/local.env` and `zone-setup.yaml` |
-| `sandbox up` | `sandbox init` when its files are missing, then every step below, in order, in one process |
-| `sandbox tunnel` | publishes the mirror at the issuer's https URL through a Cloudflare tunnel |
-| `sandbox bootstrap` | creates the cluster with the issuer, or checks that an existing one has it |
-| `sandbox mirror` | reads the cluster's discovery document and JWKS and serves them |
-| `sandbox check-issuer` | mints a token and verifies it against the published issuer, as the zone does |
-| `sandbox run` | `sandbox bootstrap`, the images, zone-setup, `sandbox install`, the user's sandbox, then `sandbox check` |
-| `sandbox check` | the end-to-end checks against a running sandbox. It does not write to any cluster. |
-| `sandbox down` | deletes the cluster, after asking unless `--yes` |
+| `sandbox init` | asks for your Keycard service account, zone, user and cluster, and writes `local/local.env` and `zone-setup.yaml` |
+| `sandbox up` | runs `sandbox init` if the settings files are missing, then each step below, in order |
+| `sandbox tunnel` | publishes the cluster's issuer on the internet through a Cloudflare tunnel |
+| `sandbox bootstrap` | creates the local k3d cluster with the issuer, or checks the one you have |
+| `sandbox mirror` | serves the cluster's issuer documents for the tunnel |
+| `sandbox check-issuer` | checks that a Keycard zone can verify the cluster's tokens |
+| `sandbox run` | runs `sandbox bootstrap`, imports the images, runs zone-setup and `sandbox install`, creates the user's sandbox, then runs `sandbox check` |
+| `sandbox check` | runs the checks against the running sandbox. It doesn't change the cluster. |
+| `sandbox down` | deletes the local cluster. It asks first, unless you pass `--yes`. |
 
-Every id that `sandbox run` passes on comes from the zone-setup output in
+Every ID that `sandbox run` passes on comes from the zone-setup output in
 `local/out/zone-setup.yaml`.
 
 ## How a pod reaches the zone

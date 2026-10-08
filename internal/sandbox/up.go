@@ -72,9 +72,12 @@ type upRun struct {
 // Up prints the command that runs the step by hand. When a step fails or ctx
 // ends, it prints the commands that are left.
 //
-// After run, Up keeps the tunnel and the mirror running until ctx ends. An
-// empty line on opts.Answers runs the checks again. Up does not delete the
-// cluster when it stops.
+// After run, Up keeps the tunnel and the mirror serving the issuer until ctx
+// ends. An empty line on opts.Answers runs the checks again. Up does not
+// delete the cluster when it stops.
+//
+// For an existing cluster, Up runs only check-issuer and run, and returns
+// after run.
 //
 // Up does not start a tunnel when the operator publishes the issuer or
 // already runs a quick tunnel.
@@ -103,25 +106,33 @@ func (l *Local) Up(ctx context.Context, opts UpOptions) error {
 			return err
 		}
 	}
+	if !l.servesAfterRun() {
+		return nil
+	}
 	return l.serve(ctx, state)
 }
 
-// upSteps returns Up's steps for the settings.
+// servesAfterRun reports whether Up keeps running after the run step. It
+// does on a k3d cluster, where it keeps the tunnel and the mirror serving the
+// issuer.
+func (l *Local) servesAfterRun() bool {
+	return !l.Existing()
+}
+
+// upSteps returns Up's steps for the settings. An existing cluster
+// publishes its own issuer and needs only check-issuer and run.
 func (l *Local) upSteps(opts UpOptions) []upStep {
 	listen := []string{"--listen", opts.Listen}
+	runStep := l.upRunStep(opts)
+	if l.Existing() {
+		return []upStep{{args: []string{"check-issuer"}, run: l.upCheckIssuer}, runStep}
+	}
 	var steps []upStep
 	if l.needsTunnel() {
 		steps = append(steps, upStep{
 			args: append([]string{"tunnel"}, listen...), note: "in a terminal of its own", background: true,
 			run: l.upTunnel,
 		})
-	}
-	runArgs := []string{"run"}
-	if opts.Run.SkipZoneSetup {
-		runArgs = append(runArgs, "--skip-zone-setup")
-	}
-	if opts.Run.ReplaceActive {
-		runArgs = append(runArgs, "--replace-active-policy-set")
 	}
 	return append(steps,
 		upStep{args: []string{"bootstrap"}, run: l.upBootstrap},
@@ -130,17 +141,28 @@ func (l *Local) upSteps(opts UpOptions) []upStep {
 			run: l.upMirror,
 		},
 		upStep{args: []string{"check-issuer"}, run: l.upCheckIssuer},
-		upStep{args: runArgs, run: func(ctx context.Context, state *upRun) error {
-			err := l.Run(ctx, state.opts.Run)
-			if errors.Is(err, ErrCheck) {
-				// Failed checks do not stop Up. The sandbox is up, and
-				// serve runs the checks again on request.
-				_, _ = fmt.Fprintf(l.Out, "\n%v\n", err)
-				return nil
-			}
-			return err
-		}},
+		runStep,
 	)
+}
+
+func (l *Local) upRunStep(opts UpOptions) upStep {
+	args := []string{"run"}
+	if opts.Run.SkipZoneSetup {
+		args = append(args, "--skip-zone-setup")
+	}
+	if opts.Run.ReplaceActive {
+		args = append(args, "--replace-active-policy-set")
+	}
+	return upStep{args: args, run: func(ctx context.Context, state *upRun) error {
+		err := l.Run(ctx, state.opts.Run)
+		if errors.Is(err, ErrCheck) && l.servesAfterRun() {
+			// A failed check leaves the sandbox up. Print the failure and
+			// continue. serve runs the checks again on request.
+			_, _ = fmt.Fprintf(l.Out, "\n%v\n", err)
+			return nil
+		}
+		return err
+	}}
 }
 
 // needsTunnel reports whether Up starts a tunnel. Up starts a named tunnel

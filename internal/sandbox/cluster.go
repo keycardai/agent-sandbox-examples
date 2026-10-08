@@ -50,7 +50,7 @@ var (
 //
 // An empty cluster or issuerURL comes from the settings.
 func (l *Local) Bootstrap(ctx context.Context, cluster, issuerURL string, dryRun bool) error {
-	cluster, err := l.cluster(cluster)
+	cluster, err := l.k3dName("bootstrap", cluster)
 	if err != nil {
 		return err
 	}
@@ -111,7 +111,7 @@ func (l *Local) Bootstrap(ctx context.Context, cluster, issuerURL string, dryRun
 //
 // An empty cluster comes from the settings.
 func (l *Local) Down(ctx context.Context, cluster string, yes bool, answers io.Reader) error {
-	cluster, err := l.cluster(cluster)
+	cluster, err := l.k3dName("down", cluster)
 	if err != nil {
 		return err
 	}

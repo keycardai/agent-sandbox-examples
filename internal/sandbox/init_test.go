@@ -79,9 +79,6 @@ func (a *scriptedAsker) next(question string) (string, bool) {
 	return "", false
 }
 
-// goodSecret is the service account secret the fake management API takes.
-const goodSecret = "good"
-
 // The providers a zone can have. Only github signs users in to GitHub.
 const (
 	keycardIDProvider = `{"id":"p0","identifier":"keycard-id","name":"Keycard ID",` +
@@ -106,11 +103,12 @@ func signInAnswers(serverURL, caFile string, secrets ...string) map[string][]str
 	}
 }
 
-// fakeManagement is a management API with one zone at https://localhost.
-// The service account's secret is goodSecret. The zone has no user until
-// the second listing, and has the providers and the active policy sets
+// fakeManagement serves a management API with one zone at zoneURL, and
+// returns a PEM file that trusts it. The service account secret is
+// goodSecret. The first user listing is empty and later ones list
+// ada@example.com. The zone has the providers and the active policy sets
 // given.
-func fakeManagement(t *testing.T, providers, activeSets string) (*httptest.Server, string) {
+func fakeManagement(t *testing.T, zoneURL, providers, activeSets string) (*httptest.Server, string) {
 	t.Helper()
 	var userLists atomic.Int32
 	mux := http.NewServeMux()
@@ -123,7 +121,7 @@ func fakeManagement(t *testing.T, providers, activeSets string) (*httptest.Serve
 	})
 	page := func(items string) string { return `{"items":[` + items + `],"pagination":{}}` }
 	mux.HandleFunc("GET /zones", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(page(`{"id":"zone-a","name":"Acme","protocols":{"oauth2":{"issuer":"https://localhost/"}}}`)))
+		_, _ = w.Write([]byte(page(`{"id":"zone-a","name":"Acme","protocols":{"oauth2":{"issuer":"` + zoneURL + `/"}}}`)))
 	})
 	mux.HandleFunc("GET /zones/zone-a/users", func(w http.ResponseWriter, _ *http.Request) {
 		if userLists.Add(1) == 1 {
@@ -151,15 +149,15 @@ func fakeManagement(t *testing.T, providers, activeSets string) (*httptest.Serve
 	return server, caFile
 }
 
-// initLocal returns a Local rooted in a new directory that holds a copy of
-// local/local.env.example.
-func initLocal(t *testing.T) *sandbox.Local {
+// initLocal returns a Local rooted in a new directory that holds
+// local/local.env.example, as the repository does. Its tools run body.
+func initLocal(t *testing.T, body string) *sandbox.Local {
 	t.Helper()
 	example, err := os.ReadFile("../../local/local.env.example")
 	if err != nil {
 		t.Fatal(err)
 	}
-	local, _ := newLocal(t, sandbox.Settings{}, "")
+	local, _ := newLocal(t, sandbox.Settings{}, body)
 	writeFile(t, filepath.Join(local.Root, "local", "local.env.example"), string(example))
 	return local
 }
@@ -200,6 +198,7 @@ func TestInit(t *testing.T) {
 		sandbox.KeyZoneURL: "https://localhost", sandbox.KeyZoneOnHost: "true",
 		sandbox.KeyZoneSetupValues: "zone-setup.yaml", sandbox.KeyUserEmail: email,
 		sandbox.KeyGitHubLogin: "", sandbox.KeyCAFile: run.caFile,
+		sandbox.KeyKubeContext: "", sandbox.KeyImageTag: "", sandbox.KeyClusterCIDRs: "",
 	})
 	for _, line := range []string{
 		"Wrote local/out/secrets/management-client-secret, readable only by you.\n",
@@ -247,9 +246,9 @@ type initRun struct {
 // loads the settings it wrote.
 func firstRun(t *testing.T) initRun {
 	t.Helper()
-	server, caFile := fakeManagement(t, gitHubProviders,
+	server, caFile := fakeManagement(t, "https://localhost", gitHubProviders,
 		`{"id":"s1","name":"default-zone-policies","active":true,"target_type":"zone"}`)
-	local := initLocal(t)
+	local := initLocal(t, "")
 	out := &bytes.Buffer{}
 	local.Out = out
 	answers := signInAnswers(server.URL, caFile, "bad", goodSecret)
@@ -298,8 +297,8 @@ func checkSettings(t *testing.T, root string, want sandbox.Settings) sandbox.Set
 // it from one secret file.
 func TestInitGitHubToken(t *testing.T) {
 	t.Parallel()
-	server, caFile := fakeManagement(t, noGitHubProviders, "")
-	local := initLocal(t)
+	server, caFile := fakeManagement(t, "https://192.0.2.10", noGitHubProviders, "")
+	local := initLocal(t, "")
 	out := &bytes.Buffer{}
 	local.Out = out
 	answers := signInAnswers(server.URL, caFile, goodSecret)
@@ -330,7 +329,8 @@ func TestInitGitHubToken(t *testing.T) {
 // TestInitRerun runs Init a second time. It shows the current settings and
 // asks only the sections chosen. Sections it keeps come from the files, and
 // it signs in with the saved account only when a chosen section needs
-// Keycard. Saved secrets stay unless the answer is no.
+// Keycard. Saved secrets stay unless the answer is no. Choosing k3d again
+// keeps the saved image tag.
 func TestInitRerun(t *testing.T) {
 	t.Parallel()
 	const changeQuestion = "What do you want to change?"
@@ -379,6 +379,7 @@ func TestInitRerun(t *testing.T) {
 			t.Parallel()
 			run := firstRun(t)
 			run.out.Reset()
+			run.local.Settings[sandbox.KeyImageTag] = devTag
 			ask := &scriptedAsker{t: t, answers: tc.answers}
 			if _, err := run.local.Init(t.Context(), ask); err != nil {
 				t.Fatal(err)
@@ -440,7 +441,7 @@ func checkTokenValues(t *testing.T, run initRun) {
 }
 
 // checkNamedTunnel requires the values file as the first run wrote it, and
-// local.env to name the tunnel and keep the user.
+// local.env to name the tunnel and keep the user and the image tag.
 func checkNamedTunnel(t *testing.T, run initRun) {
 	t.Helper()
 	checkValuesKept(t, run)
@@ -449,8 +450,8 @@ func checkNamedTunnel(t *testing.T, run initRun) {
 		t.Fatal(err)
 	}
 	if settings[sandbox.KeyTunnel] != "demo" || settings[sandbox.KeyIssuer] != "https://issuer.example.org" ||
-		settings[sandbox.KeyUserEmail] != email {
-		t.Errorf("local.env = %q, want the named tunnel and the kept user", settings)
+		settings[sandbox.KeyUserEmail] != email || settings[sandbox.KeyImageTag] != devTag {
+		t.Errorf("local.env = %q, want the named tunnel, the kept user and the kept image tag", settings)
 	}
 }
 

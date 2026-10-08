@@ -334,7 +334,11 @@ func installCommand() *cli.Command {
 }
 
 func clusterFlag() *cli.StringFlag {
-	return &cli.StringFlag{Name: "cluster", Usage: "k3d cluster (default " + sandbox.KeyCluster + ")"}
+	return &cli.StringFlag{
+		Name: "cluster",
+		Usage: "k3d cluster name, or kubeconfig context of an existing cluster (default " +
+			sandbox.KeyCluster + " or " + sandbox.KeyKubeContext + ")",
+	}
 }
 
 func issuerFlag() *cli.StringFlag {
