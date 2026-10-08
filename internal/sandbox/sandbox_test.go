@@ -27,6 +27,8 @@ const (
 	// namedTunnel is the Cloudflare tunnel name the tests use. It differs
 	// from cluster, so a test fails if the code uses one name for the other.
 	namedTunnel = "asp-tunnel"
+	// email is the user the tests' sandbox acts for.
+	email = "ada@example.com"
 )
 
 // record is the start of every fake tool. It appends the tool's name, the
@@ -389,6 +391,7 @@ func writeFile(t *testing.T, path, body string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		t.Fatal(err)
 	}
+	//nolint:gosec // G703: the path is under the test's own directory.
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

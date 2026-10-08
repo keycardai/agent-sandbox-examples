@@ -130,6 +130,9 @@ type Local struct {
 	// Ask asks the operator questions. When stdin is not a terminal, Ask is
 	// nil and every question returns ErrNoTerminal.
 	Ask Asker
+	// Getenv reads the environment for Init. If it is nil, Init does not
+	// read the environment.
+	Getenv func(string) string
 }
 
 // QuickIssuerFile is where the tunnel step writes a quick tunnel's URL while

@@ -12,11 +12,20 @@ var (
 	ErrInterrupted = errors.New("interrupted")
 )
 
-// Asker asks the operator questions on the terminal. Its methods return an
-// error that wraps ctx.Err() when ctx ends, and ErrInterrupted on Ctrl-C.
+// Asker asks the operator one question at a time on the terminal. value is
+// the default answer. When check returns an error, the Asker asks again. Its
+// methods return an error that wraps ctx.Err() when ctx ends, and
+// ErrInterrupted on Ctrl-C.
 type Asker interface {
-	// Confirm asks a yes or no question. value is the default answer.
+	Input(ctx context.Context, question, value string, check func(string) error) (string, error)
+	Secret(ctx context.Context, question string, check func(string) error) (string, error)
+	Choose(ctx context.Context, question string, options []Option, value string) (string, error)
 	Confirm(ctx context.Context, question string, value bool) (bool, error)
+}
+
+// Option is one choice. Choose shows Label and returns Value.
+type Option struct {
+	Label, Value string
 }
 
 // confirm asks question with l.Ask. It returns ErrNoTerminal when l.Ask is

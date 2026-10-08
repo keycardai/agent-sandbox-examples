@@ -38,12 +38,33 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
+var errNotInitialized = errors.New("there are no settings yet. " +
+	"Run go run ./cmd/sandbox init in a terminal to create local/local.env and zone-setup.yaml")
+
 const (
 	defaultListen     = "127.0.0.1:8480"
 	defaultIssuerWait = 2 * time.Minute
+	// The help lists the subcommands under these headings, sorted by name.
+	startCategory = "Get started"
+	stepCategory  = "Steps, one at a time"
 )
 
 var errUnexpectedArgument = errors.New("unexpected argument")
+
+// intro is what `sandbox` prints with no subcommand.
+const intro = `This runs an AI agent in a Kubernetes sandbox. The agent's HTTPS requests
+go through the Keycard egress proxy, which adds the user's credentials from
+your Keycard zone.
+
+To set up the demo and run it:
+
+    go run ./cmd/sandbox up
+
+The first time, up asks for your Keycard service account, zone and user.
+Then it runs each step and prints the command for it, so you can run the
+steps yourself later. To list the steps, run go run ./cmd/sandbox --help.
+
+`
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
@@ -60,10 +81,12 @@ func newCommand() *cli.Command {
 		Name:            "sandbox",
 		Usage:           "run an AI agent in a Kubernetes sandbox behind the Keycard egress proxy",
 		HideHelpCommand: true,
+		Action:          start,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "env", Usage: "settings file (default local/local.env)"},
 		},
 		Commands: []*cli.Command{
+			initCommand(),
 			upCommand(),
 			tunnelCommand(),
 			bootstrapCommand(),
@@ -77,10 +100,43 @@ func newCommand() *cli.Command {
 	}
 }
 
+// start prints intro. On a terminal, it offers to run up.
+func start(ctx context.Context, cmd *cli.Command) error {
+	_, _ = fmt.Fprint(cmd.Writer, intro)
+	if !onTerminal() {
+		return nil
+	}
+	run, err := terminalAsker{}.Confirm(ctx, "Run go run ./cmd/sandbox up now?", true)
+	if err != nil || !run {
+		return nil //nolint:nilerr // Declining or pressing Ctrl-C ends the intro.
+	}
+	args := []string{cmd.Name}
+	if env := cmd.String("env"); env != "" {
+		args = append(args, "--env", env)
+	}
+	if err = newCommand().Run(ctx, append(args, "up")); err != nil {
+		return fmt.Errorf("up: %w", err)
+	}
+	return nil
+}
+
+func initCommand() *cli.Command {
+	return &cli.Command{
+		Name:     "init",
+		Category: startCategory,
+		Usage:    "ask for your Keycard service account, zone and user, and write the settings files",
+		Action: step(func(ctx context.Context, _ *cli.Command, local *sandbox.Local) error {
+			_, err := runInit(ctx, local)
+			return err
+		}),
+	}
+}
+
 func upCommand() *cli.Command {
 	return &cli.Command{
-		Name:  "up",
-		Usage: "set up and run the whole demo, and print the command for each step",
+		Name:     "up",
+		Category: startCategory,
+		Usage:    "set up and run the whole demo, and print the command for each step",
 		Flags: append([]cli.Flag{
 			listenFlag(),
 			&cli.BoolFlag{Name: "print", Usage: "print the commands and do not run them"},
@@ -91,8 +147,22 @@ func upCommand() *cli.Command {
 			},
 		}, runFlags()...),
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
+			run := runOptions(cmd)
+			if cmd.String("env") == "" && !cmd.Bool("print") && !local.Initialized() {
+				if local.Ask == nil {
+					return errNotInitialized
+				}
+				result, err := runInit(ctx, local)
+				if err != nil {
+					return err
+				}
+				if local, err = newLocal(cmd); err != nil {
+					return err
+				}
+				run.ReplaceActive = run.ReplaceActive || result.ReplaceActive
+			}
 			return local.Up(ctx, sandbox.UpOptions{
-				Run:        runOptions(cmd),
+				Run:        run,
 				Listen:     cmd.String("listen"),
 				EnvFile:    cmd.String("env"),
 				Print:      cmd.Bool("print"),
@@ -104,9 +174,10 @@ func upCommand() *cli.Command {
 
 func tunnelCommand() *cli.Command {
 	return &cli.Command{
-		Name:  "tunnel",
-		Usage: "publish the cluster's issuer on the internet through a Cloudflare tunnel, until stopped",
-		Flags: []cli.Flag{listenFlag()},
+		Name:     "tunnel",
+		Category: stepCategory,
+		Usage:    "publish the cluster's issuer on the internet through a Cloudflare tunnel, until stopped",
+		Flags:    []cli.Flag{listenFlag()},
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
 			return local.Tunnel(ctx, cmd.String("listen"))
 		}),
@@ -115,8 +186,9 @@ func tunnelCommand() *cli.Command {
 
 func bootstrapCommand() *cli.Command {
 	return &cli.Command{
-		Name:  "bootstrap",
-		Usage: "create the local k3d cluster, or check the one you have",
+		Name:     "bootstrap",
+		Category: stepCategory,
+		Usage:    "create the local k3d cluster, or check the one you have",
 		Flags: []cli.Flag{
 			clusterFlag(), issuerFlag(),
 			&cli.BoolFlag{Name: "dry-run", Usage: "print the k3d command without running it"},
@@ -129,9 +201,10 @@ func bootstrapCommand() *cli.Command {
 
 func mirrorCommand() *cli.Command {
 	return &cli.Command{
-		Name:  "mirror",
-		Usage: "serve the cluster's issuer documents for the tunnel, until stopped",
-		Flags: []cli.Flag{clusterFlag(), issuerFlag(), listenFlag()},
+		Name:     "mirror",
+		Category: stepCategory,
+		Usage:    "serve the cluster's issuer documents for the tunnel, until stopped",
+		Flags:    []cli.Flag{clusterFlag(), issuerFlag(), listenFlag()},
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
 			return local.Mirror(ctx, cmd.String("cluster"), cmd.String("issuer"), cmd.String("listen"))
 		}),
@@ -140,9 +213,10 @@ func mirrorCommand() *cli.Command {
 
 func checkIssuerCommand() *cli.Command {
 	return &cli.Command{
-		Name:  "check-issuer",
-		Usage: "check that a Keycard zone can verify the cluster's tokens",
-		Flags: []cli.Flag{clusterFlag(), issuerFlag()},
+		Name:     "check-issuer",
+		Category: stepCategory,
+		Usage:    "check that a Keycard zone can verify the cluster's tokens",
+		Flags:    []cli.Flag{clusterFlag(), issuerFlag()},
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
 			return local.CheckIssuer(ctx, cmd.String("cluster"), cmd.String("issuer"))
 		}),
@@ -151,9 +225,10 @@ func checkIssuerCommand() *cli.Command {
 
 func runCommand() *cli.Command {
 	return &cli.Command{
-		Name:  "run",
-		Usage: "set up the cluster and Keycard, install the sandbox and the egress proxy, and run the checks",
-		Flags: runFlags(),
+		Name:     "run",
+		Category: stepCategory,
+		Usage:    "set up the cluster and Keycard, install the sandbox and the egress proxy, and run the checks",
+		Flags:    runFlags(),
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
 			return local.Run(ctx, runOptions(cmd))
 		}),
@@ -162,8 +237,9 @@ func runCommand() *cli.Command {
 
 func checkCommand() *cli.Command {
 	return &cli.Command{
-		Name:  "check",
-		Usage: "run the checks again against the running sandbox",
+		Name:     "check",
+		Category: stepCategory,
+		Usage:    "run the checks again against the running sandbox",
 		Flags: []cli.Flag{
 			clusterFlag(),
 			&cli.StringFlag{Name: "namespace", Usage: "sandbox namespace (default from the last run)"},
@@ -179,8 +255,9 @@ func checkCommand() *cli.Command {
 
 func downCommand() *cli.Command {
 	return &cli.Command{
-		Name:  "down",
-		Usage: "delete the local k3d cluster. The Keycard zone is not changed",
+		Name:     "down",
+		Category: stepCategory,
+		Usage:    "delete the local k3d cluster. The Keycard zone is not changed",
 		Flags: []cli.Flag{
 			clusterFlag(),
 			&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "delete without asking"},
@@ -295,6 +372,25 @@ func noArgs(cmd *cli.Command) error {
 	return nil
 }
 
+// onTerminal reports whether stdin is a terminal. huh reads os.Stdin and
+// needs a terminal.
+func onTerminal() bool {
+	return term.IsTerminal(os.Stdin.Fd())
+}
+
+// runInit runs Init. On Ctrl-C it says that the settings files are
+// unchanged.
+func runInit(ctx context.Context, local *sandbox.Local) (sandbox.InitResult, error) {
+	result, err := local.Init(ctx)
+	if errors.Is(err, sandbox.ErrInterrupted) {
+		return result, fmt.Errorf("init: %w. The settings files are unchanged", err)
+	}
+	if err != nil {
+		return result, fmt.Errorf("init: %w", err)
+	}
+	return result, nil
+}
+
 func newLocal(cmd *cli.Command) (*sandbox.Local, error) {
 	root, err := pinned.Root()
 	if err != nil {
@@ -304,9 +400,8 @@ func newLocal(cmd *cli.Command) (*sandbox.Local, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading the settings: %w", err)
 	}
-	local := &sandbox.Local{Root: root, Settings: settings, Tool: sandbox.Tool, Out: cmd.Writer}
-	// huh reads os.Stdin and needs a terminal.
-	if term.IsTerminal(os.Stdin.Fd()) {
+	local := &sandbox.Local{Root: root, Settings: settings, Tool: sandbox.Tool, Out: cmd.Writer, Getenv: os.Getenv}
+	if onTerminal() {
 		local.Ask = terminalAsker{}
 	}
 	return local, nil

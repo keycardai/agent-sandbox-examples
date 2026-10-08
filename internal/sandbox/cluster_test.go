@@ -239,10 +239,13 @@ func TestDown(t *testing.T) {
 	}
 }
 
-// confirmAsker answers every question with answer and err. It records each
-// question with its default answer. A nil confirmAsker means stdin is not a
-// terminal.
+// confirmAsker answers every yes or no question with answer and err. It
+// records each question with its default answer. A nil confirmAsker means
+// stdin is not a terminal. Any other kind of question panics, because the
+// embedded Asker is nil.
 type confirmAsker struct {
+	sandbox.Asker
+
 	answer bool
 	err    error
 	asked  []string
