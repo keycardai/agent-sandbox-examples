@@ -199,7 +199,7 @@ func (l *Local) clusterExists(ctx context.Context, cluster string) (bool, error)
 // checkDiscovery returns ErrIssuer when the cluster's discovery document has
 // an issuer other than issuerURL or a jwks_uri other than jwksURI.
 func (l *Local) checkDiscovery(ctx context.Context, cluster, issuerURL, jwksURI string) error {
-	raw, err := l.kubectl(ctx, cluster, "get", "--raw", "/.well-known/openid-configuration")
+	raw, err := l.kubectl(ctx, cluster, nil, "get", "--raw", "/.well-known/openid-configuration")
 	if err != nil {
 		return fmt.Errorf("reading the cluster's discovery document to check its issuer: %w", err)
 	}
@@ -224,12 +224,23 @@ func (l *Local) checkDiscovery(ctx context.Context, cluster, issuerURL, jwksURI 
 // checkTokenIssuer mints a token for the default ServiceAccount and returns
 // ErrIssuer when its iss is not issuerURL.
 func (l *Local) checkTokenIssuer(ctx context.Context, cluster, issuerURL string) error {
-	_, err := l.kubectl(ctx, cluster, "--namespace", "default",
+	_, err := l.kubectl(ctx, cluster, nil, "--namespace", "default",
 		"wait", "--for=create", "serviceaccount/default", "--timeout=120s")
 	if err != nil {
 		return err
 	}
-	token, err := l.kubectl(ctx, cluster, "--namespace", "default", "create", "token", "default", "--duration", "10m")
+	token, err := l.kubectl(
+		ctx,
+		cluster,
+		nil,
+		"--namespace",
+		"default",
+		"create",
+		"token",
+		"default",
+		"--duration",
+		"10m",
+	)
 	if err != nil {
 		return err
 	}

@@ -21,16 +21,17 @@ The once-per-cluster Helm chart for Keycard agent sandboxes. It installs:
 
 ## Install
 
-`install.sh` applies the agent-sandbox controller, then installs the chart. It
-stops before any change when an existing namespace sets a Pod Security level
-other than `privileged`, and prints the `kubectl label` command that fixes it.
-It also stops unless the namespace enforces `privileged` after the install.
+`sandbox install` applies the agent-sandbox controller, then installs the
+chart. It stops before any change when an existing namespace sets a Pod
+Security level other than `privileged`, and prints the `kubectl label` command
+that fixes it. It also stops unless the namespace enforces `privileged` after
+the install.
 
-    ./install/install.sh --context NAME --values my-values.yaml
+    go run ./cmd/sandbox install --context NAME --values my-values.yaml
 
 The controller manifest in `agent-sandbox/` is the upstream release asset.
-`agent-sandbox/refresh.sh` downloads it and checks it against the digest GitHub
-publishes.
+`internal/install/install_test.go` pins its release and sha256, and says how
+to download another release.
 
 ## A zone that is not on the internet
 
