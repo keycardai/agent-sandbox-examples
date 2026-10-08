@@ -25,6 +25,9 @@ var (
 	ErrDocker = errors.New("k3d unavailable")
 	// ErrConfirm is a deletion the operator did not confirm.
 	ErrConfirm = errors.New("not confirmed")
+	// ErrOtherIssuer is an existing cluster created with another issuer.
+	// It comes wrapped with ErrIssuer.
+	ErrOtherIssuer = errors.New("cluster has another issuer")
 )
 
 var (
@@ -213,12 +216,12 @@ func (l *Local) checkDiscovery(ctx context.Context, cluster, issuerURL, jwksURI 
 		return fmt.Errorf("%w: the cluster's discovery document is not JSON: %w", ErrIssuer, err)
 	}
 	if doc.Issuer != issuerURL || doc.JWKSURI != jwksURI {
-		return fmt.Errorf("%w: cluster %s was created with other settings:\n\n"+
+		return fmt.Errorf("%w: %w: cluster %s was created with other settings:\n\n"+
 			"    issuer   : %s (wanted %s)\n"+
 			"    jwks_uri : %s (wanted %s)\n\n"+
 			"    k3d sets them only when it creates a cluster. Delete the cluster with\n"+
 			"    go run ./cmd/sandbox down --cluster %s, or bootstrap with its issuer",
-			ErrIssuer, cluster, doc.Issuer, issuerURL, doc.JWKSURI, jwksURI, cluster)
+			ErrIssuer, ErrOtherIssuer, cluster, doc.Issuer, issuerURL, doc.JWKSURI, jwksURI, cluster)
 	}
 	return nil
 }

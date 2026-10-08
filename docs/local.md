@@ -29,11 +29,29 @@ Then:
 
     cp local/local.env.example local/local.env
     $EDITOR local/local.env            # the zone URL and the user's email
+    go run ./cmd/sandbox up
+
+`up` runs the steps in order. The tunnel and the mirror run in the
+background and log to `local/out/tunnel.log` and `local/out/mirror.log`.
+Before each step, `up` prints the command that runs it by hand. If a step
+fails or you press Ctrl-C, `up` prints the commands that are left. After the
+checks, `up` keeps the tunnel and the mirror running until you press Ctrl-C.
+Press Enter to run the checks again. If the cluster was created with a
+different issuer, `up` asks to delete the cluster and create it again.
+Press Enter to accept, or answer n to keep the cluster.
+
+`sandbox up --print` prints the commands without running them:
+
     go run ./cmd/sandbox tunnel        # in its own terminal, until you stop it
     go run ./cmd/sandbox bootstrap
     go run ./cmd/sandbox mirror        # in another terminal, until you stop it
     go run ./cmd/sandbox check-issuer
     go run ./cmd/sandbox run
+
+A quick tunnel's URL lasts only as long as its process, and the cluster
+keeps the issuer it was created with. To run the steps by hand after `up`,
+start `sandbox tunnel` in its own terminal first. `up` uses that tunnel, and
+the cluster keeps working after `up` stops.
 
 zone-setup stops if another policy set is active. Run `sandbox run` with
 `--replace-active-policy-set` to replace it for everyone in the zone.
@@ -98,6 +116,7 @@ is empty, they trust only the system roots.
 
 | Step | What it does |
 |---|---|
+| `sandbox up` | every step below, in order, in one process |
 | `sandbox tunnel` | publishes the mirror at the issuer's https URL through a Cloudflare tunnel |
 | `sandbox bootstrap` | creates the cluster with the issuer, or checks that an existing one has it |
 | `sandbox mirror` | reads the cluster's discovery document and JWKS and serves them |

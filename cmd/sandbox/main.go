@@ -1,6 +1,11 @@
 // Command sandbox sets up the sandbox demo on a local k3d cluster against a
 // Keycard zone. Each subcommand is one step, and each step reads its settings
-// from local/local.env. docs/local.md lists the steps in order.
+// from local/local.env. docs/local.md lists the steps in order. `up` runs
+// them all in one process:
+//
+//	go run ./cmd/sandbox up
+//
+// or one at a time:
 //
 //	go run ./cmd/sandbox tunnel        # in a terminal of its own
 //	go run ./cmd/sandbox bootstrap
@@ -16,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/urfave/cli/v3"
 
@@ -24,7 +30,10 @@ import (
 	"github.com/keycardai/agent-sandbox-poc/internal/zonesetup"
 )
 
-const defaultListen = "127.0.0.1:8480"
+const (
+	defaultListen     = "127.0.0.1:8480"
+	defaultIssuerWait = 2 * time.Minute
+)
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -45,6 +54,7 @@ func newCommand() *cli.Command {
 			&cli.StringFlag{Name: "env", Usage: "settings file (default local/local.env)"},
 		},
 		Commands: []*cli.Command{
+			upCommand(),
 			tunnelCommand(),
 			bootstrapCommand(),
 			mirrorCommand(),
@@ -53,6 +63,44 @@ func newCommand() *cli.Command {
 			checkCommand(),
 			downCommand(),
 		},
+	}
+}
+
+func upCommand() *cli.Command {
+	return &cli.Command{
+		Name: "up",
+		Usage: "run every step in one process, print the command for each, " +
+			"and keep the tunnel and the mirror serving until interrupted",
+		Flags: []cli.Flag{
+			listenFlag(),
+			&cli.BoolFlag{Name: "print", Usage: "print the commands up runs, and stop"},
+			&cli.DurationFlag{
+				Name:  "issuer-wait",
+				Value: defaultIssuerWait,
+				Usage: "how long to wait for the cluster's issuer to answer",
+			},
+			&cli.BoolFlag{
+				Name:  "skip-zone-setup",
+				Usage: "reuse the Keycard setup of the last run, in local/out/zone-setup.yaml",
+			},
+			&cli.BoolFlag{
+				Name:  zonesetup.ReplaceActiveFlag,
+				Usage: "make the sandbox policy set active, replacing the zone's active policy set",
+			},
+		},
+		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
+			return local.Up(ctx, sandbox.UpOptions{
+				Run: sandbox.RunOptions{
+					SkipZoneSetup: cmd.Bool("skip-zone-setup"),
+					ReplaceActive: cmd.Bool(zonesetup.ReplaceActiveFlag),
+				},
+				Listen:     cmd.String("listen"),
+				EnvFile:    cmd.String("env"),
+				Print:      cmd.Bool("print"),
+				IssuerWait: cmd.Duration("issuer-wait"),
+				Answers:    cmd.Reader,
+			})
+		}),
 	}
 }
 
