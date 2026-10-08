@@ -21,8 +21,8 @@ import (
 
 	"github.com/urfave/cli/v3"
 
-	"github.com/keycardai/agent-sandbox-examples/internal/chart"
 	"github.com/keycardai/agent-sandbox-examples/internal/newsandbox"
+	"github.com/keycardai/agent-sandbox-examples/internal/pinned"
 	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
@@ -158,6 +158,6 @@ func kubectl(kubeContext string) newsandbox.Runner {
 		if kubeContext != "" {
 			args = append([]string{"--context", kubeContext}, args...)
 		}
-		return chart.Pinned(ctx, stdin, "kubectl", args...)
+		return pinned.Output(ctx, stdin, "kubectl", args...)
 	}
 }
