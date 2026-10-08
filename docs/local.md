@@ -1,10 +1,11 @@
 # Running the sandbox locally
 
-The steps under `local/` and `cmd/sandbox` run the sandbox flow on a
-workstation against a real Keycard zone, a real user and real upstreams.
-Only the Kubernetes cluster is local. It is a k3d cluster that
-`sandbox bootstrap` creates, named by `KEYCARD_LOCAL_CLUSTER`. The steps write
-only to that cluster and to the zone.
+`go run ./cmd/sandbox` runs the sandbox demo from your workstation against a
+real Keycard zone, a real user and real upstream APIs. Only the Kubernetes
+cluster is local. It's a k3d cluster that `sandbox bootstrap` creates, named
+by `KEYCARD_LOCAL_CLUSTER`. The steps change only that cluster and the zone.
+Each step reads its settings from `local/local.env` and writes its output
+under `local/out/`.
 
 The steps create their own cluster because of the ServiceAccount issuer. A
 zone fetches `<issuer>/.well-known/openid-configuration` and compares its
@@ -21,8 +22,8 @@ zone fetches `<issuer>/.well-known/openid-configuration` and compares its
   `ghcr.io/keycardai/egress-proxy:local` and
   `ghcr.io/keycardai/sandbox-base:local`.
 - A zone-setup values file for the zone. Start from `zone-setup.example.yaml`.
-  `run.sh` passes the cluster's issuer to zone-setup with `--issuer-url`,
-  which replaces `issuer_url` in the file.
+  `sandbox run` gives zone-setup the cluster's issuer, which replaces
+  `issuer_url` in the file.
 
 Then:
 
@@ -32,10 +33,13 @@ Then:
     go run ./cmd/sandbox bootstrap
     go run ./cmd/sandbox mirror        # in another terminal, until you stop it
     go run ./cmd/sandbox check-issuer
-    ./local/run.sh
+    go run ./cmd/sandbox run
 
-zone-setup stops if another policy set is active. Run `run.sh` with
+zone-setup stops if another policy set is active. Run `sandbox run` with
 `--replace-active-policy-set` to replace it for everyone in the zone.
+`sandbox run --skip-zone-setup` reuses the Keycard setup of the last run, in
+`local/out/zone-setup.yaml`. To run the checks again against the running
+sandbox, use `go run ./cmd/sandbox check`.
 
 `go run ./cmd/sandbox down` deletes the cluster. What zone-setup created in
 the zone stays.
@@ -78,16 +82,15 @@ To publish the issuer another way, set `KEYCARD_LOCAL_ISSUER` and do not run
 with a reverse proxy that terminates TLS for the issuer host.
 
 `sandbox check-issuer` fetches the issuer at its https URL, as the zone
-does, and verifies a new token against it. `run.sh` does not publish the
-issuer. The mirror serves the cluster's signing key as it was when the
-mirror started, so run `sandbox mirror` again after you recreate the
-cluster.
+does, and verifies a new token against it. `sandbox run` doesn't publish the
+issuer. The mirror serves the cluster's signing key from when it started,
+so restart `sandbox mirror` after you create the cluster again.
 
 ## Extra trusted roots
 
 Set `KEYCARD_LOCAL_CA_FILE` when no public CA signed the zone's or the
 issuer's certificate. It is an absolute path to a PEM file of the roots that
-did. `sandbox check-issuer` trusts them, and `run.sh` gives them to the
+did. `sandbox check-issuer` trusts them, and `sandbox run` gives them to the
 proxy through `zoneTrust`. Both add these roots to the system roots. When it
 is empty, they trust only the system roots.
 
@@ -95,21 +98,20 @@ is empty, they trust only the system roots.
 
 | Step | What it does |
 |---|---|
-| `local/common.sh` | the settings, the checks, the Docker gateway and the CA file. Sourced, never run. |
 | `sandbox tunnel` | publishes the mirror at the issuer's https URL through a Cloudflare tunnel |
 | `sandbox bootstrap` | creates the cluster with the issuer, or checks that an existing one has it |
 | `sandbox mirror` | reads the cluster's discovery document and JWKS and serves them |
 | `sandbox check-issuer` | mints a token and verifies it against the published issuer, as the zone does |
-| `run.sh` | `sandbox bootstrap`, the images, `zone-setup`, `install.sh`, `new-sandbox`, then `checks.sh` |
-| `checks.sh` | the end-to-end checks against a running sandbox. It does not write to any cluster. |
+| `sandbox run` | `sandbox bootstrap`, the images, zone-setup, `install.sh`, the user's sandbox, then `sandbox check` |
+| `sandbox check` | the end-to-end checks against a running sandbox. It does not write to any cluster. |
 | `sandbox down` | deletes the cluster, after asking unless `--yes` |
 
-Every id that `run.sh` passes on comes from the zone-setup output in
+Every id that `sandbox run` passes on comes from the zone-setup output in
 `local/out/zone-setup.yaml`.
 
 ## How a pod reaches the zone
 
-`run.sh` writes `local/out/install.values.yaml` and
+`sandbox run` writes `local/out/install.values.yaml` and
 `local/out/sandbox.values.yaml`. The charts read them after
 `local/values/install.yaml` and `local/values/sandbox.yaml`. They set
 `zoneURL`, and `zoneTrust` when `KEYCARD_LOCAL_CA_FILE` is set. The proxy
@@ -118,7 +120,7 @@ dials the zone at the address its host name resolves to.
 Set `KEYCARD_LOCAL_ZONE_ON_HOST=true` for a zone that is not on the
 internet and answers on the Docker host. A pod in the k3d cluster
 reaches the Docker host at the gateway of the cluster's Docker network.
-`run.sh` reads that address on every run and adds these values:
+`sandbox run` reads that address on every run and adds these values:
 
 | Value | What it does |
 |---|---|

@@ -6,6 +6,7 @@
 //	go run ./cmd/sandbox bootstrap
 //	go run ./cmd/sandbox mirror        # in another terminal
 //	go run ./cmd/sandbox check-issuer
+//	go run ./cmd/sandbox run
 //	go run ./cmd/sandbox down
 package main
 
@@ -20,6 +21,7 @@ import (
 
 	"github.com/keycardai/agent-sandbox-poc/internal/pinned"
 	"github.com/keycardai/agent-sandbox-poc/internal/sandbox"
+	"github.com/keycardai/agent-sandbox-poc/internal/zonesetup"
 )
 
 const defaultListen = "127.0.0.1:8480"
@@ -43,53 +45,121 @@ func newCommand() *cli.Command {
 			&cli.StringFlag{Name: "env", Usage: "settings file (default local/local.env)"},
 		},
 		Commands: []*cli.Command{
-			{
-				Name:  "tunnel",
-				Usage: "publish the mirror at the issuer's https URL through a Cloudflare tunnel, until interrupted",
-				Flags: []cli.Flag{listenFlag()},
-				Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
-					return local.Tunnel(ctx, cmd.String("listen"))
-				}),
+			tunnelCommand(),
+			bootstrapCommand(),
+			mirrorCommand(),
+			checkIssuerCommand(),
+			runCommand(),
+			checkCommand(),
+			downCommand(),
+		},
+	}
+}
+
+func tunnelCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "tunnel",
+		Usage: "publish the mirror at the issuer's https URL through a Cloudflare tunnel, until interrupted",
+		Flags: []cli.Flag{listenFlag()},
+		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
+			return local.Tunnel(ctx, cmd.String("listen"))
+		}),
+	}
+}
+
+func bootstrapCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "bootstrap",
+		Usage: "create the k3d cluster with the issuer, or check that an existing one has it",
+		Flags: []cli.Flag{
+			clusterFlag(), issuerFlag(),
+			&cli.BoolFlag{Name: "dry-run", Usage: "print the k3d command without running it"},
+		},
+		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
+			return local.Bootstrap(ctx, cmd.String("cluster"), cmd.String("issuer"), cmd.Bool("dry-run"))
+		}),
+	}
+}
+
+func mirrorCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "mirror",
+		Usage: "serve the cluster's issuer discovery document and JWKS, until interrupted",
+		Flags: []cli.Flag{clusterFlag(), issuerFlag(), listenFlag()},
+		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
+			return local.Mirror(ctx, cmd.String("cluster"), cmd.String("issuer"), cmd.String("listen"))
+		}),
+	}
+}
+
+func checkIssuerCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "check-issuer",
+		Usage: "verify a new ServiceAccount token against the published issuer, as the zone does",
+		Flags: []cli.Flag{clusterFlag(), issuerFlag()},
+		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
+			return local.CheckIssuer(ctx, cmd.String("cluster"), cmd.String("issuer"))
+		}),
+	}
+}
+
+func runCommand() *cli.Command {
+	return &cli.Command{
+		Name: "run",
+		Usage: "run the flow end to end: the cluster, the images, zone-setup, the install chart, " +
+			"a sandbox for the user, and the checks",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:  "skip-zone-setup",
+				Usage: "reuse the Keycard setup of the last run, in local/out/zone-setup.yaml",
 			},
-			{
-				Name:  "bootstrap",
-				Usage: "create the k3d cluster with the issuer, or check that an existing one has it",
-				Flags: []cli.Flag{
-					clusterFlag(), issuerFlag(),
-					&cli.BoolFlag{Name: "dry-run", Usage: "check the settings and print the k3d command, without running it"},
-				},
-				Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
-					return local.Bootstrap(ctx, cmd.String("cluster"), cmd.String("issuer"), cmd.Bool("dry-run"))
-				}),
-			},
-			{
-				Name:  "mirror",
-				Usage: "serve the cluster's issuer discovery document and JWKS, until interrupted",
-				Flags: []cli.Flag{clusterFlag(), issuerFlag(), listenFlag()},
-				Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
-					return local.Mirror(ctx, cmd.String("cluster"), cmd.String("issuer"), cmd.String("listen"))
-				}),
-			},
-			{
-				Name:  "check-issuer",
-				Usage: "verify a new ServiceAccount token against the published issuer, as the zone does",
-				Flags: []cli.Flag{clusterFlag(), issuerFlag()},
-				Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
-					return local.CheckIssuer(ctx, cmd.String("cluster"), cmd.String("issuer"))
-				}),
-			},
-			{
-				Name:  "down",
-				Usage: "delete the k3d cluster, after asking unless --yes. The zone's entities stay.",
-				Flags: []cli.Flag{
-					clusterFlag(),
-					&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "delete without asking"},
-				},
-				Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
-					return local.Down(ctx, cmd.String("cluster"), cmd.Bool("yes"), cmd.Reader)
-				}),
+			&cli.BoolFlag{
+				Name:  zonesetup.ReplaceActiveFlag,
+				Usage: "make the sandbox policy set active, replacing the zone's active policy set",
 			},
 		},
+		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
+			return local.Run(ctx, sandbox.RunOptions{
+				SkipZoneSetup: cmd.Bool("skip-zone-setup"),
+				ReplaceActive: cmd.Bool(zonesetup.ReplaceActiveFlag),
+			})
+		}),
+	}
+}
+
+func checkCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "check",
+		Usage: "run the end-to-end checks against a running sandbox, without writing to the cluster",
+		Flags: []cli.Flag{
+			clusterFlag(),
+			&cli.StringFlag{Name: "namespace", Usage: "sandbox namespace (default from the last run)"},
+			&cli.StringFlag{Name: "pod", Usage: "sandbox pod (default the user's id)"},
+			&cli.StringFlag{Name: "user-id", Usage: "the user's Keycard id (default from the last run)"},
+		},
+		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
+			target, err := local.CheckTargetFor(
+				cmd.String("cluster"), cmd.String("namespace"), cmd.String("pod"), cmd.String("user-id"),
+			)
+			if err != nil {
+				return fmt.Errorf("finding the sandbox: %w", err)
+			}
+			return local.Check(ctx, target)
+		}),
+	}
+}
+
+func downCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "down",
+		Usage: "delete the k3d cluster, after asking unless --yes. The zone's entities stay.",
+		Flags: []cli.Flag{
+			clusterFlag(),
+			&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "delete without asking"},
+		},
+		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
+			return local.Down(ctx, cmd.String("cluster"), cmd.Bool("yes"), cmd.Reader)
+		}),
 	}
 }
 
@@ -133,5 +203,5 @@ func newLocal(cmd *cli.Command) (*sandbox.Local, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading the settings: %w", err)
 	}
-	return &sandbox.Local{Root: root, Settings: settings, Tool: pinned.Command, Out: cmd.Writer}, nil
+	return &sandbox.Local{Root: root, Settings: settings, Tool: sandbox.Tools(root), Out: cmd.Writer}, nil
 }

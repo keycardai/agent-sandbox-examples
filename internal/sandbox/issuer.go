@@ -33,11 +33,11 @@ func (l *Local) Mirror(ctx context.Context, cluster, issuerURL, listen string) e
 	if err != nil {
 		return err
 	}
-	discovery, err := l.kubectl(ctx, cluster, "get", "--raw", "/.well-known/openid-configuration")
+	discovery, err := l.kubectl(ctx, cluster, nil, "get", "--raw", "/.well-known/openid-configuration")
 	if err != nil {
 		return err
 	}
-	jwks, err := l.kubectl(ctx, cluster, "get", "--raw", "/openid/v1/jwks")
+	jwks, err := l.kubectl(ctx, cluster, nil, "get", "--raw", "/openid/v1/jwks")
 	if err != nil {
 		return err
 	}
@@ -71,7 +71,7 @@ func (l *Local) CheckIssuer(ctx context.Context, cluster, issuerURL string) erro
 	if err != nil {
 		return err
 	}
-	token, err := l.kubectl(ctx, cluster, "--namespace", "default",
+	token, err := l.kubectl(ctx, cluster, nil, "--namespace", "default",
 		"create", "token", "default", "--audience", checkAudience, "--duration", "10m")
 	if err != nil {
 		return err
