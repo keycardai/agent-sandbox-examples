@@ -2,6 +2,8 @@ package zonesetup
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net/http"
@@ -21,9 +23,19 @@ type Org struct {
 }
 
 // Login authenticates as the organization service account clientID at
-// managementAPIURL. It writes nothing. Every error wraps ErrAuth.
-func Login(ctx context.Context, managementAPIURL, clientID, secret string) (*Org, error) {
+// managementAPIURL. It trusts the system roots, and roots when it is not
+// nil. It does not change the organization. Every error wraps ErrAuth.
+func Login(ctx context.Context, managementAPIURL, clientID, secret string, roots *x509.CertPool) (*Org, error) {
 	httpClient := &http.Client{Timeout: requestTimeout, CheckRedirect: refuseRedirect}
+	if roots != nil {
+		base, ok := http.DefaultTransport.(*http.Transport)
+		if !ok {
+			return nil, fmt.Errorf("%w: the default transport is not an *http.Transport", ErrAuth)
+		}
+		transport := base.Clone()
+		transport.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
+		httpClient.Transport = transport
+	}
 	token, err := serviceAccountToken(ctx, httpClient, managementAPIURL, clientID, secret)
 	if err != nil {
 		return nil, err

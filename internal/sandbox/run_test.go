@@ -175,7 +175,7 @@ func TestRunSettings(t *testing.T) {
 	valid := func() sandbox.Settings {
 		return sandbox.Settings{
 			sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer,
-			sandbox.KeyZoneURL: "https://zone.example.com", sandbox.KeyUserEmail: "ada@example.com",
+			sandbox.KeyZoneURL: "https://zone.example.com", sandbox.KeyUserEmail: email,
 		}
 	}
 	tests := []struct {
@@ -284,7 +284,7 @@ sandbox_user_access:
 			t.Parallel()
 			local, calls := newLocal(t, sandbox.Settings{
 				sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer,
-				sandbox.KeyZoneURL: "https://zone.example.com", sandbox.KeyUserEmail: "ada@example.com",
+				sandbox.KeyZoneURL: "https://zone.example.com", sandbox.KeyUserEmail: email,
 			}, tc.sandbox.script())
 			out := &bytes.Buffer{}
 			local.Out = out

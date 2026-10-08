@@ -1,6 +1,7 @@
 package zonesetup_test
 
 import (
+	"crypto/x509"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -50,13 +51,15 @@ func TestCreateZone(t *testing.T) {
 				}
 				_, _ = w.Write([]byte(`{"items":[],"pagination":{}}`))
 			})
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				mux.ServeHTTP(w, r)
 			}))
 			t.Cleanup(server.Close)
 
-			org, err := zonesetup.Login(t.Context(), server.URL, "sa-1", "secret")
+			roots := x509.NewCertPool()
+			roots.AddCert(server.Certificate())
+			org, err := zonesetup.Login(t.Context(), server.URL, "sa-1", "secret", roots)
 			if err != nil {
 				t.Fatal(err)
 			}

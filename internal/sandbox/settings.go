@@ -129,6 +129,9 @@ type Local struct {
 	Tool func(ctx context.Context, name string, args ...string) (*exec.Cmd, error)
 	// Out receives progress lines and the output of long-running tools.
 	Out io.Writer
+	// Getenv reads the environment for Init. If it is nil, Init does not
+	// read the environment.
+	Getenv func(string) string
 }
 
 // QuickIssuerFile is where the tunnel step writes a quick tunnel's URL while

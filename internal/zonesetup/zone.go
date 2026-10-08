@@ -37,7 +37,7 @@ type Session struct {
 // ErrZoneAmbiguous or ErrZoneMismatch.
 func Connect(ctx context.Context, values *Values, secrets *Secrets) (*Session, error) {
 	org, err := Login(ctx, values.ManagementAPIURL, values.ManagementServiceAccount.ClientID,
-		secrets.ManagementClientSecret)
+		secrets.ManagementClientSecret, nil)
 	if err != nil {
 		return nil, err
 	}
