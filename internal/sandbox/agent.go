@@ -7,11 +7,13 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strings"
 
 	"golang.org/x/term"
 )
 
-// ErrAgent means a command in the agent container failed.
+// ErrAgent means a command in the agent container failed, or the agent
+// exited.
 var ErrAgent = errors.New("agent")
 
 // Shell runs the scenario's run.command in the agent container, or sh when
@@ -42,4 +44,37 @@ func (l *Local) Shell(ctx context.Context, target CheckTarget, stdin io.Reader) 
 		return fmt.Errorf("%w: %s exited: %w", ErrAgent, command[0], err)
 	}
 	return nil
+}
+
+// Logs writes the agent container's log to l.Out and follows it until ctx
+// ends or the agent exits. If the log ends while the agent runs, Logs follows
+// it again from the end. When the agent exits, Logs returns ErrAgent with the
+// exit code.
+func (l *Local) Logs(ctx context.Context, target CheckTarget) error {
+	from := "--tail=-1"
+	for {
+		cmd, err := l.kubectlCommand(ctx, target.Cluster, "--namespace", target.Namespace,
+			"logs", "--follow", from, target.Pod, "-c", agentContainer)
+		if err != nil {
+			return err
+		}
+		cmd.Stdout, cmd.Stderr = l.Out, l.Out
+		runErr := cmd.Run()
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+		out, err := l.kubectl(ctx, target.Cluster, nil, "--namespace", target.Namespace, "get", "pod", target.Pod,
+			"-o", `jsonpath={.status.containerStatuses[?(@.name=="agent")].state.terminated.exitCode}`)
+		switch code := strings.TrimSpace(string(out)); {
+		case err != nil:
+			return fmt.Errorf("%w: reading the agent's state: %w", ErrAgent, err)
+		case code != "":
+			return fmt.Errorf("%w: the agent exited with code %s. Its log is above", ErrAgent, code)
+		case runErr != nil:
+			return fmt.Errorf("%w: following the agent's log: %w", ErrAgent, runErr)
+		}
+		from = "--tail=0"
+	}
 }

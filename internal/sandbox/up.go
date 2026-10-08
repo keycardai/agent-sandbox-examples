@@ -77,8 +77,8 @@ type upRun struct {
 // the operator's answers until ctx ends. Up does not delete the cluster when
 // it stops.
 //
-// For an existing cluster, Up runs only check-issuer and run. It returns
-// after run, except in shell mode.
+// For an existing cluster, Up runs only check-issuer and run. In checks mode
+// it returns after run, with ErrCheck when a check fails.
 //
 // Up does not start a tunnel when the operator publishes the issuer or
 // already runs a quick tunnel.
@@ -304,11 +304,10 @@ func waitFor(ctx context.Context, state *upRun, what string, ready func() bool) 
 	return nil
 }
 
-// serve reads the operator's answers after the run step, until ctx ends or
-// a background step stops. In shell mode, it opens the scenario's command at
-// once. After the command exits, an empty line opens it again and any other
-// line runs the checks. In checks mode, every line runs the checks. When the
-// answers end, serve waits in idle.
+// serve runs after the run step until ctx ends or a background step stops.
+// In background mode it follows the agent's log. In shell and checks mode it
+// reads the operator's answers. On an existing cluster in checks mode it
+// returns at once.
 func (l *Local) serve(ctx context.Context, state *upRun) error {
 	scenario, err := l.scenario()
 	if err != nil {
@@ -317,11 +316,24 @@ func (l *Local) serve(ctx context.Context, state *upRun) error {
 	if !l.servesAfterRun(scenario) {
 		return nil
 	}
-	shell := scenario.Run.Mode == ModeShell
 	if !l.Existing() {
 		_, _ = fmt.Fprintln(l.Out, "\nThe sandbox is up. Leave this running so the zone can read the cluster's issuer\n"+
 			"through the tunnel and the mirror. Stopping does not delete the cluster.")
 	}
+	if scenario.Run.Mode == ModeBackground {
+		return l.follow(ctx, state)
+	}
+	return l.answer(ctx, state, scenario)
+}
+
+// answer serves shell and checks mode. In shell mode it opens the
+// scenario's command in the agent at once, and again on an empty line after
+// the command exits. A line of c runs the checks. In checks mode an empty
+// line also runs them. When the answers end, answer returns on an existing
+// cluster, which has no background steps. Otherwise it keeps the tunnel and
+// the mirror running.
+func (l *Local) answer(ctx context.Context, state *upRun, scenario *Scenario) error {
+	shell := scenario.Run.Mode == ModeShell
 	prompt := servePrompt(scenario)
 	stdin := commandInput(state.opts.Answers)
 	for open := shell; ; {
@@ -338,6 +350,23 @@ func (l *Local) serve(ctx context.Context, state *upRun) error {
 		if !open {
 			l.report(l.inSandbox(ctx, func(target CheckTarget) error { return l.Check(ctx, target) }))
 		}
+	}
+}
+
+// follow follows the agent's log until ctx ends, a background step stops,
+// or the agent exits.
+func (l *Local) follow(ctx context.Context, state *upRun) error {
+	_, _ = fmt.Fprintf(l.Out, "\n$ %s\n", stepCommand(upStep{args: []string{"logs"}}, state.opts.EnvFile))
+	_, _ = fmt.Fprintln(l.Out, "The agent runs in the background. Press Ctrl-C to stop following its log.")
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
+	done := make(chan error, 1)
+	go func() { done <- l.inSandbox(ctx, func(target CheckTarget) error { return l.Logs(ctx, target) }) }()
+	select {
+	case err := <-done:
+		return err
+	case err := <-state.services:
+		return err
 	}
 }
 

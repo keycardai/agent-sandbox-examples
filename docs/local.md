@@ -63,11 +63,12 @@ Before each step, `up` prints the command that runs it by hand. If a step
 fails or you press Ctrl-C, `up` prints the commands that are left. After the
 checks, `up` keeps the tunnel and the mirror running until you press Ctrl-C.
 Press Enter to run the checks again. For a scenario in shell mode, `up`
-opens the agent in your terminal after the checks. When you exit it, press
-Enter to open it again, or type c and press Enter to run the checks. If the
-cluster was created with a
-different issuer, `up` asks to delete the cluster and create it again.
-Press Enter to accept, or type n to keep it.
+opens the agent in your terminal after the checks. When you leave it, press
+Enter to open it again, or type c and press Enter to run the checks. For a
+scenario in background mode, `up` follows the agent's log after the checks,
+and stops if the agent exits. If the cluster was created with a different
+issuer, `up` asks to delete the cluster and create it again. Press Enter to
+accept, or answer n to keep the cluster.
 
 `sandbox up --print` prints the commands without running them:
 
@@ -106,7 +107,7 @@ keys:
 | `endpoints` | the sandbox chart's `endpoints`, as `sandbox/values.yaml` documents them |
 | `agent.args` | the agent container's args, which the sandbox-base entrypoint runs |
 | `agent.env` | the agent's environment. `{id}` in a value is the answer to the text input `id`. |
-| `run.mode` | what `sandbox up` does once the sandbox is up. `checks` runs the checks. `shell` runs the checks, then `run.command` in the agent container, attached to your terminal. |
+| `run.mode` | what `sandbox up` does once the sandbox is up. `checks` runs the checks. `shell` runs the checks, then `run.command` in the agent container, attached to your terminal. `background` runs the checks, then follows the log of the agent that `agent.args` starts. |
 | `run.command` | in shell mode, the command `sandbox up` and `sandbox shell` run in the agent container |
 
 The input kinds:
@@ -158,6 +159,38 @@ The image adds Node.js 24 to sandbox-base, and pi at the version
 --ignore-scripts` in that directory, and check that each package in
 `package-lock.json` has an `integrity` hash.
 
+## The slack scenario
+
+The `slack` scenario runs an agent in the background that answers your
+direct messages in Slack, and ignores everyone else. Each message is one
+command:
+
+    github whoami
+    github issues OWNER/REPO
+    github issue OWNER/REPO TITLE
+    linear whoami
+    linear issues
+    linear issue TEAM-KEY TITLE
+
+The agent is a Python script, `scenarios/slack/slack-agent`. It does not
+call a model. It reads the direct message with `conversations.history` every
+3 seconds, 20 calls a minute, and answers with `chat.postMessage`. Slack
+allows an internal app 50 or more `conversations.history` calls a minute
+([conversations.history](https://docs.slack.dev/reference/methods/conversations.history)).
+The proxy adds the bot token to every call to `https://slack.com/api`.
+
+Before `sandbox init`, create a Slack app for your workspace:
+
+1. Add the bot token scopes `im:write`, `im:history` and `chat:write`.
+2. In App Home, allow users to send messages from the Messages tab.
+3. Install the app, and copy the bot token, which starts with `xoxb-`.
+4. Copy your member ID from your Slack profile.
+
+`sandbox init` also asks for the GitHub token and a Linear personal API
+key, which you create in Linear's security settings. The proxy sends the
+Linear key in the `Authorization` header without a scheme, as Linear
+expects ([Linear API](https://linear.app/developers/graphql)).
+
 ## Using an existing cluster
 
 To run the sandbox in an existing cluster, such as EKS, choose its
@@ -178,11 +211,11 @@ kubeconfig context in `sandbox init`. `init` saves the context in
 `KEYCARD_LOCAL_CLUSTER_CIDRS`. The sandbox NetworkPolicy and the proxy
 block these ranges.
 
-With an existing cluster, `sandbox up` runs only `check-issuer` and `run`,
-and stops after the checks. For a scenario in shell mode, it stops when you
-press Ctrl-C. `run` doesn't create a cluster or import images.
-`bootstrap`, `down`, `tunnel` and `mirror` fail. The other steps take the
-context in `--cluster`.
+With an existing cluster, `sandbox up` runs only `check-issuer` and `run`.
+In checks mode it stops after the checks. In shell or background mode it
+stops when you press Ctrl-C. `run` doesn't create a cluster or import
+images. `bootstrap`, `down`, `tunnel` and `mirror` fail. The other steps
+take the context in `--cluster`.
 
 ## Publishing the issuer
 
@@ -256,6 +289,7 @@ the management API URL is not `https://api.keycard.ai`.
 | `sandbox check-issuer` | checks that a Keycard zone can verify the cluster's tokens |
 | `sandbox run` | runs `sandbox bootstrap`, imports the images, runs zone-setup and `sandbox install`, creates the user's sandbox, then runs `sandbox check` |
 | `sandbox check` | runs the checks against the running sandbox. It doesn't change the cluster. |
+| `sandbox logs` | follows the log of the running sandbox's agent, until you press Ctrl-C or the agent exits |
 | `sandbox shell` | runs the scenario's `run.command` in the running sandbox's agent container, or `sh` when it has none, attached to your terminal |
 | `sandbox down` | deletes the local cluster. It asks first, unless you pass `--yes`. |
 

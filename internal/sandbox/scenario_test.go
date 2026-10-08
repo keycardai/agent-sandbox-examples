@@ -89,17 +89,22 @@ func TestLoadScenario(t *testing.T) {
 		{
 			name:     "unknown mode",
 			body:     head + "run: {mode: daemon}\n",
-			wantText: `run.mode "daemon" is not one of checks, shell`,
+			wantText: `run.mode "daemon" is not one of checks, shell, background`,
+		},
+		{
+			name:     "background without args",
+			body:     head + "run: {mode: background}\n",
+			wantText: "agent.args is required in background mode",
 		},
 		{
 			name:     "shell without a command",
 			body:     head + "run: {mode: shell}\n",
-			wantText: "run.command is required in shell mode and not allowed in checks mode",
+			wantText: "run.command is required in shell mode and not allowed in other modes",
 		},
 		{
 			name:     "command in checks mode",
 			body:     head + "run: {mode: checks, command: [sh]}\n",
-			wantText: "run.command is required in shell mode and not allowed in checks mode",
+			wantText: "run.command is required in shell mode and not allowed in other modes",
 		},
 		{
 			name:     "default on a secret",

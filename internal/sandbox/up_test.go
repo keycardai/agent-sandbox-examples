@@ -296,6 +296,57 @@ func checkInOrder(t *testing.T, got string, wants []string) {
 	}
 }
 
+// TestUpBackground runs Up on an existing cluster in background mode. Up
+// follows the agent's log until the agent exits, and returns its exit code.
+func TestUpBackground(t *testing.T) {
+	t.Parallel()
+	const logs = "logs --follow "
+	tests := []struct {
+		name string
+		// running is how many times the log ends while the agent runs.
+		running   int
+		wantCalls []string
+		wantOut   string
+	}{
+		{
+			name:      "agent exits",
+			wantCalls: []string{logs + "--tail=-1 " + userID + " -c agent\n"},
+			wantOut:   "\n$ go run ./cmd/sandbox logs\n",
+		},
+		{
+			name:    "log ends while the agent runs",
+			running: 1,
+			wantCalls: []string{
+				logs + "--tail=-1 " + userID + " -c agent\n", logs + "--tail=0 " + userID + " -c agent\n",
+			},
+			wantOut: "agent log line\nagent log line\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			local, calls, out := existingUp(t, "run: {mode: background}", fmt.Sprintf(`case "$*" in
+*"logs --follow"*) echo "agent log line"; exit 0 ;;
+*"state.terminated.exitCode"*)
+	n=$(cat "$CALLS.ended" 2>/dev/null || echo 0); echo $((n + 1)) >"$CALLS.ended"
+	(( n < %d )) || printf 3
+	exit 0 ;;
+esac
+`, tc.running))
+			err := local.Up(t.Context(), sandbox.UpOptions{
+				Run: sandbox.RunOptions{SkipZoneSetup: true}, Answers: strings.NewReader(""),
+			})
+			checkErr(t, err, []error{sandbox.ErrAgent}, "the agent exited with code 3. Its log is above")
+			got := readCalls(t, calls)
+			checkInOrder(t, got, tc.wantCalls)
+			if n := strings.Count(got, logs); n != len(tc.wantCalls) {
+				t.Errorf("followed the log %d times, want %d\n%s", n, len(tc.wantCalls), got)
+			}
+			checkContains(t, "output", out.String(), []string{tc.wantOut})
+		})
+	}
+}
+
 // existingUp returns a Local for Up on an existing cluster, its calls file
 // and its output. The scenario is agentScenario with run as its run key. The
 // tool script runs tool before the fake cluster. The issuer is a test TLS

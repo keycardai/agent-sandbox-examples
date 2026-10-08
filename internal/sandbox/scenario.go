@@ -33,6 +33,9 @@ const (
 	// ModeShell runs the checks, then runs run.command in the agent
 	// container, attached to the terminal.
 	ModeShell = "shell"
+	// ModeBackground runs the agent as the container's args. `sandbox up`
+	// runs the checks, then follows the agent's log.
+	ModeBackground = "background"
 )
 
 // ErrScenario means a scenario is missing, or `sandbox` cannot use it as
@@ -215,7 +218,7 @@ func (l *Local) scenario() (*Scenario, error) {
 
 // modes returns the run modes a scenario can name.
 func modes() []string {
-	return []string{ModeChecks, ModeShell}
+	return []string{ModeChecks, ModeShell, ModeBackground}
 }
 
 // check refuses a scenario `sandbox` cannot use. Every error wraps
@@ -239,11 +242,19 @@ func (s *Scenario) check() error {
 	if err = s.checkEnv(kinds); err != nil {
 		return err
 	}
+	return s.checkRun()
+}
+
+// checkRun checks the run mode and the keys it needs.
+func (s *Scenario) checkRun() error {
 	if !slices.Contains(modes(), s.Run.Mode) {
 		return fmt.Errorf("%w: run.mode %q is not one of %s", ErrScenario, s.Run.Mode, strings.Join(modes(), ", "))
 	}
 	if (s.Run.Mode == ModeShell) != (len(s.Run.Command) > 0) {
-		return fmt.Errorf("%w: run.command is required in shell mode and not allowed in checks mode", ErrScenario)
+		return fmt.Errorf("%w: run.command is required in shell mode and not allowed in other modes", ErrScenario)
+	}
+	if s.Run.Mode == ModeBackground && len(s.Agent.Args) == 0 {
+		return fmt.Errorf("%w: agent.args is required in background mode", ErrScenario)
 	}
 	return nil
 }

@@ -13,6 +13,7 @@
 //	go run ./cmd/sandbox check-issuer
 //	go run ./cmd/sandbox run
 //	go run ./cmd/sandbox shell         # for a scenario in shell mode
+//	go run ./cmd/sandbox logs          # for a scenario in background mode
 //	go run ./cmd/sandbox down
 //
 // `install` installs the controller and the chart into any cluster. It does
@@ -96,6 +97,7 @@ func newCommand() *cli.Command {
 			runCommand(),
 			checkCommand(),
 			shellCommand(),
+			logsCommand(),
 			downCommand(),
 			installCommand(),
 		},
@@ -295,6 +297,24 @@ func shellCommand() *cli.Command {
 				return fmt.Errorf("finding the sandbox: %w", err)
 			}
 			return local.Shell(ctx, target, os.Stdin)
+		}),
+	}
+}
+
+func logsCommand() *cli.Command {
+	return &cli.Command{
+		Name:     "logs",
+		Category: stepCategory,
+		Usage:    "follow the agent's log until Ctrl-C or the agent exits",
+		Flags:    targetFlags(),
+		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
+			target, err := local.CheckTargetFor(
+				cmd.String("cluster"), cmd.String("namespace"), cmd.String("pod"), cmd.String("user-id"),
+			)
+			if err != nil {
+				return fmt.Errorf("finding the sandbox: %w", err)
+			}
+			return local.Logs(ctx, target)
 		}),
 	}
 }
