@@ -14,12 +14,13 @@ const (
 	agentRepo = "octo/demo"
 )
 
-// agentScenario is a scenario with a text input that its agent's
-// environment uses, and a secret.
+// agentScenario is a scenario with two text inputs that its agent's
+// environment uses, one with a default, and a secret.
 const agentScenario = `title: Agent
 inputs:
   - {id: repo, kind: text, prompt: Repository}
   - {id: api-key, kind: secret, prompt: API key}
+  - {id: branch, kind: text, prompt: Branch, default: main}
 resources:
   - {identifier: https://api.example.com, name: Example, credential: api-key}
 endpoints:
@@ -28,7 +29,7 @@ endpoints:
       placement: {kind: header, name: Authorization, template: "Bearer {credential}"}
 agent:
   args: [sleep, infinity]
-  env: {REPO: "https://github.com/{repo}.git", PLACEHOLDER: "{not a ref}"}
+  env: {REPO: "https://github.com/{repo}.git", BRANCH: "{branch}", PLACEHOLDER: "{not a ref}"}
 run: {mode: checks}
 `
 
@@ -85,7 +86,26 @@ func TestLoadScenario(t *testing.T) {
 			body:     head + "agent: {env: {\"A-B\": x}}\nrun: {mode: checks}\n",
 			wantText: `agent.env: "A-B" is not an environment variable name`,
 		},
-		{name: "unknown mode", body: head + "run: {mode: daemon}\n", wantText: `run.mode "daemon" is not one of checks`},
+		{
+			name:     "unknown mode",
+			body:     head + "run: {mode: daemon}\n",
+			wantText: `run.mode "daemon" is not one of checks, shell`,
+		},
+		{
+			name:     "shell without a command",
+			body:     head + "run: {mode: shell}\n",
+			wantText: "run.command is required in shell mode and not allowed in checks mode",
+		},
+		{
+			name:     "command in checks mode",
+			body:     head + "run: {mode: checks, command: [sh]}\n",
+			wantText: "run.command is required in shell mode and not allowed in checks mode",
+		},
+		{
+			name:     "default on a secret",
+			body:     "title: T\ninputs: [{id: key, kind: secret, prompt: Key, default: x}]\nrun: {mode: checks}\n",
+			wantText: "inputs[0].default is only for a text input",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -104,8 +124,8 @@ func TestLoadScenario(t *testing.T) {
 
 // TestScenarioValues checks the values file of a scenario with a
 // Dockerfile: its endpoints, the image `sandbox run` builds, and the agent's
-// environment with the text answer in place of {repo}. A missing answer is
-// refused.
+// environment with the text answer in place of {repo} and the default in
+// place of {branch}. Values refuses a missing answer that has no default.
 func TestScenarioValues(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -123,6 +143,7 @@ func TestScenarioValues(t *testing.T) {
   - sleep
   - infinity
   env:
+    BRANCH: main
     PLACEHOLDER: '{not a ref}'
     REPO: https://github.com/octo/demo.git
 endpoints:

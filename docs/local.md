@@ -62,7 +62,10 @@ background and log to `local/out/tunnel.log` and `local/out/mirror.log`.
 Before each step, `up` prints the command that runs it by hand. If a step
 fails or you press Ctrl-C, `up` prints the commands that are left. After the
 checks, `up` keeps the tunnel and the mirror running until you press Ctrl-C.
-Press Enter to run the checks again. If the cluster was created with a
+Press Enter to run the checks again. For a scenario in shell mode, `up`
+opens the agent in your terminal after the checks. When you exit it, press
+Enter to open it again, or type c and press Enter to run the checks. If the
+cluster was created with a
 different issuer, `up` asks to delete the cluster and create it again.
 Press Enter to accept, or type n to keep it.
 
@@ -103,13 +106,14 @@ keys:
 | `endpoints` | the sandbox chart's `endpoints`, as `sandbox/values.yaml` documents them |
 | `agent.args` | the agent container's args, which the sandbox-base entrypoint runs |
 | `agent.env` | the agent's environment. `{id}` in a value is the answer to the text input `id`. |
-| `run.mode` | what `sandbox up` does once the sandbox is up. `checks` runs the checks. |
+| `run.mode` | what `sandbox up` does once the sandbox is up. `checks` runs the checks. `shell` runs the checks, then `run.command` in the agent container, attached to your terminal. |
+| `run.command` | in shell mode, the command `sandbox up` and `sandbox shell` run in the agent container |
 
 The input kinds:
 
 | Kind | What `sandbox init` asks |
 |---|---|
-| `text` | `prompt`. The answer goes in `local/answers.yaml`. |
+| `text` | `prompt`, with `default` filled in. The answer goes in `local/answers.yaml`. |
 | `secret` | `prompt`. The answer goes in `local/out/secrets/<id>`, and the resources that name the input read it from there. With `confirm`, `init` first asks that yes or no question, and a no leaves out those resources. |
 | `github` | a GitHub provider in the zone, or a personal access token in `local/out/secrets/github-token` |
 
@@ -139,6 +143,21 @@ exists. When the sandbox's template changes, such as after you choose
 another demo, `run` deletes the pod and the controller creates it again.
 `run` also replaces a pod whose agent exited.
 
+## The pi scenario
+
+The `pi` scenario runs the [pi coding agent](https://pi.dev) in your
+terminal. pi calls a model on OpenRouter and works in a clone of the
+GitHub repository you name. `sandbox init` asks for GitHub access, the
+OpenRouter API key, the repository and the model. The agent does not see
+either credential. The proxy adds the OpenRouter key to each model request
+and the GitHub token to each GitHub request, including `git push`.
+
+The image adds Node.js 24 to sandbox-base, and pi at the version
+`scenarios/pi/package-lock.json` pins. To update pi, change its version in
+`scenarios/pi/package.json`, run `npm install --package-lock-only
+--ignore-scripts` in that directory, and check that each package in
+`package-lock.json` has an `integrity` hash.
+
 ## Using an existing cluster
 
 To run the sandbox in an existing cluster, such as EKS, choose its
@@ -160,7 +179,8 @@ kubeconfig context in `sandbox init`. `init` saves the context in
 block these ranges.
 
 With an existing cluster, `sandbox up` runs only `check-issuer` and `run`,
-and stops after the checks. `run` doesn't create a cluster or import images.
+and stops after the checks. For a scenario in shell mode, it stops when you
+press Ctrl-C. `run` doesn't create a cluster or import images.
 `bootstrap`, `down`, `tunnel` and `mirror` fail. The other steps take the
 context in `--cluster`.
 
@@ -236,6 +256,7 @@ the management API URL is not `https://api.keycard.ai`.
 | `sandbox check-issuer` | checks that a Keycard zone can verify the cluster's tokens |
 | `sandbox run` | runs `sandbox bootstrap`, imports the images, runs zone-setup and `sandbox install`, creates the user's sandbox, then runs `sandbox check` |
 | `sandbox check` | runs the checks against the running sandbox. It doesn't change the cluster. |
+| `sandbox shell` | runs the scenario's `run.command` in the running sandbox's agent container, or `sh` when it has none, attached to your terminal |
 | `sandbox down` | deletes the local cluster. It asks first, unless you pass `--yes`. |
 
 Every ID that `sandbox run` passes on comes from the zone-setup output in

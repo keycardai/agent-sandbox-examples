@@ -41,8 +41,9 @@ type UpOptions struct {
 	Print bool
 	// IssuerWait is how long Up retries check-issuer.
 	IssuerWait time.Duration
-	// Answers is the operator's input: y or n when the cluster has another
-	// issuer, and an empty line to run the checks again.
+	// Answers holds the operator's answers: y or n when the cluster has
+	// another issuer, then the lines that serve reads. If Answers is an
+	// *os.File, the shell-mode command reads from it too.
 	Answers io.Reader
 }
 
@@ -72,12 +73,12 @@ type upRun struct {
 // Up prints the command that runs the step by hand. When a step fails or ctx
 // ends, it prints the commands that are left.
 //
-// After run, Up keeps the tunnel and the mirror serving the issuer until ctx
-// ends. An empty line on opts.Answers runs the checks again. Up does not
-// delete the cluster when it stops.
+// After run, Up keeps the tunnel and the mirror serving the issuer and reads
+// the operator's answers until ctx ends. Up does not delete the cluster when
+// it stops.
 //
-// For an existing cluster, Up runs only check-issuer and run, and returns
-// after run.
+// For an existing cluster, Up runs only check-issuer and run. It returns
+// after run, except in shell mode.
 //
 // Up does not start a tunnel when the operator publishes the issuer or
 // already runs a quick tunnel.
@@ -106,17 +107,14 @@ func (l *Local) Up(ctx context.Context, opts UpOptions) error {
 			return err
 		}
 	}
-	if !l.servesAfterRun() {
-		return nil
-	}
 	return l.serve(ctx, state)
 }
 
 // servesAfterRun reports whether Up keeps running after the run step. It
 // does on a k3d cluster, where it keeps the tunnel and the mirror serving the
-// issuer.
-func (l *Local) servesAfterRun() bool {
-	return !l.Existing()
+// issuer, and for a scenario in any mode other than checks.
+func (l *Local) servesAfterRun(scenario *Scenario) bool {
+	return !l.Existing() || scenario.Run.Mode != ModeChecks
 }
 
 // upSteps returns Up's steps for the settings. An existing cluster
@@ -155,7 +153,10 @@ func (l *Local) upRunStep(opts UpOptions) upStep {
 	}
 	return upStep{args: args, run: func(ctx context.Context, state *upRun) error {
 		err := l.Run(ctx, state.opts.Run)
-		if errors.Is(err, ErrCheck) && l.servesAfterRun() {
+		if !errors.Is(err, ErrCheck) {
+			return err
+		}
+		if scenario, scenarioErr := l.scenario(); scenarioErr == nil && l.servesAfterRun(scenario) {
 			// A failed check leaves the sandbox up. Print the failure and
 			// continue. serve runs the checks again on request.
 			_, _ = fmt.Fprintf(l.Out, "\n%v\n", err)
@@ -303,36 +304,117 @@ func waitFor(ctx context.Context, state *upRun, what string, ready func() bool) 
 	return nil
 }
 
-// serve keeps the background steps running until ctx ends or one stops.
-// An empty line on the answers runs the checks again.
+// serve reads the operator's answers after the run step, until ctx ends or
+// a background step stops. In shell mode, it opens the scenario's command at
+// once. After the command exits, an empty line opens it again and any other
+// line runs the checks. In checks mode, every line runs the checks. When the
+// answers end, serve waits in idle.
 func (l *Local) serve(ctx context.Context, state *upRun) error {
-	_, _ = fmt.Fprintln(l.Out, "\nThe sandbox is up. Leave this running so the zone can read the cluster's issuer\n"+
-		"through the tunnel and the mirror.\n"+
-		"Press Enter to run the checks again, or Ctrl-C to stop. Stopping does not delete the cluster.")
-	lines := make(chan struct{})
+	scenario, err := l.scenario()
+	if err != nil {
+		return err
+	}
+	if !l.servesAfterRun(scenario) {
+		return nil
+	}
+	shell := scenario.Run.Mode == ModeShell
+	if !l.Existing() {
+		_, _ = fmt.Fprintln(l.Out, "\nThe sandbox is up. Leave this running so the zone can read the cluster's issuer\n"+
+			"through the tunnel and the mirror. Stopping does not delete the cluster.")
+	}
+	prompt := servePrompt(scenario)
+	stdin := commandInput(state.opts.Answers)
+	for open := shell; ; {
+		if open {
+			_, _ = fmt.Fprintf(l.Out, "\n$ %s\n", stepCommand(upStep{args: []string{"shell"}}, state.opts.EnvFile))
+			l.report(l.inSandbox(ctx, func(target CheckTarget) error { return l.Shell(ctx, target, stdin) }))
+		}
+		_, _ = fmt.Fprintln(l.Out, "\n"+prompt)
+		line, ok := readLine(ctx, state)
+		if !ok {
+			return l.idle(ctx, state)
+		}
+		open = shell && line == ""
+		if !open {
+			l.report(l.inSandbox(ctx, func(target CheckTarget) error { return l.Check(ctx, target) }))
+		}
+	}
+}
+
+// servePrompt says what serve does with each answer.
+func servePrompt(scenario *Scenario) string {
+	if scenario.Run.Mode == ModeShell {
+		return "Press Enter to open " + scenario.Run.Command[0] + " again, type c and Enter to run the checks, " +
+			"or press Ctrl-C to stop."
+	}
+	return "Press Enter to run the checks again, or Ctrl-C to stop."
+}
+
+// commandInput returns answers if it is an *os.File, such as the terminal,
+// and nil otherwise. A nil stdin gives the command empty input. exec copies
+// any other reader to the command until EOF, which would consume the answers
+// meant for up.
+func commandInput(answers io.Reader) io.Reader {
+	if file, ok := answers.(*os.File); ok {
+		return file
+	}
+	return nil
+}
+
+// readLine returns the next answer, trimmed. It returns false when ctx
+// ends, a background step stops, or the answers end. The error of a stopped
+// background step goes back on state.services, so idle returns it.
+func readLine(ctx context.Context, state *upRun) (string, bool) {
+	lines := make(chan string, 1)
 	go func() {
-		for {
-			if _, err := state.answers.ReadString('\n'); err != nil {
-				return
-			}
-			lines <- struct{}{}
+		line, err := state.answers.ReadString('\n')
+		if err != nil && line == "" {
+			close(lines)
+			return
 		}
+		lines <- strings.TrimSpace(line)
 	}()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case err := <-state.services:
-			return err
-		case <-lines:
-			target, err := l.CheckTargetFor("", "", "", "")
-			if err == nil {
-				err = l.Check(ctx, target)
-			}
-			if err != nil {
-				_, _ = fmt.Fprintf(l.Out, "%v\n", err)
-			}
-		}
+	select {
+	case <-ctx.Done():
+		return "", false
+	case err := <-state.services:
+		state.services <- err
+		return "", false
+	case line, ok := <-lines:
+		return line, ok
+	}
+}
+
+// idle waits until ctx ends or a background step stops. For an existing
+// cluster, which has no background steps, idle returns at once.
+func (l *Local) idle(ctx context.Context, state *upRun) error {
+	if l.Existing() {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-state.services:
+		return err
+	}
+}
+
+// inSandbox runs do against the sandbox of the last run.
+func (l *Local) inSandbox(ctx context.Context, do func(CheckTarget) error) error {
+	target, err := l.CheckTargetFor("", "", "", "")
+	if err != nil {
+		return err
+	}
+	if err = do(target); err != nil && ctx.Err() == nil {
+		return err
+	}
+	return nil
+}
+
+// report prints err, if any.
+func (l *Local) report(err error) {
+	if err != nil {
+		_, _ = fmt.Fprintf(l.Out, "%v\n", err)
 	}
 }
 

@@ -240,14 +240,24 @@ func (l *Local) requireK3d(step string) error {
 // standard output. It sets KUBERC=off, so a kuberc default for --server,
 // --cluster, --user or --token cannot override the context.
 func (l *Local) kubectl(ctx context.Context, cluster string, stdin []byte, args ...string) ([]byte, error) {
-	cmd, err := l.Tool(ctx, "kubectl", slices.Concat([]string{"--context", l.kubeContext(cluster)}, args)...)
+	cmd, err := l.kubectlCommand(ctx, cluster, args...)
 	if err != nil {
 		return nil, err
 	}
-	cmd.Env = append(cmd.Environ(), "KUBERC=off")
 	out, err := pinned.Run(cmd, stdin)
 	if err != nil {
 		return nil, fmt.Errorf("kubectl: %w", err)
 	}
 	return out, nil
+}
+
+// kubectlCommand returns a kubectl command in the cluster's context, with
+// KUBERC=off.
+func (l *Local) kubectlCommand(ctx context.Context, cluster string, args ...string) (*exec.Cmd, error) {
+	cmd, err := l.Tool(ctx, "kubectl", slices.Concat([]string{"--context", l.kubeContext(cluster)}, args)...)
+	if err != nil {
+		return nil, err
+	}
+	cmd.Env = append(cmd.Environ(), "KUBERC=off")
+	return cmd, nil
 }

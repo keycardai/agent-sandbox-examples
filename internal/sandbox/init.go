@@ -599,7 +599,7 @@ func (w *wizard) askInputs(ctx context.Context, scenario *Scenario) error {
 		case inputSecret:
 			credential, err = w.askSecret(input, w.prevCredential(scenario, input.ID).SecretFile)
 		default:
-			w.answers[input.ID], err = w.input(input.Prompt, w.answers[input.ID], required)
+			w.answers[input.ID], err = w.input(input.Prompt, cmp.Or(w.answers[input.ID], input.Default), required)
 		}
 		if err != nil {
 			return err

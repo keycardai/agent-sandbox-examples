@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -227,4 +228,93 @@ fi
 	if !strings.Contains(out.String(), want) {
 		t.Fatalf("output lacks %q\n%s", want, out)
 	}
+}
+
+// TestUpShell runs Up on an existing cluster with a scenario in shell mode.
+// Up opens the command after the run. An empty line opens it again, c runs
+// the checks, and the end of the answers ends Up. When the command fails, Up
+// prints the error and asks again.
+func TestUpShell(t *testing.T) {
+	t.Parallel()
+	const (
+		shellCall = "exec -i " + userID + " -c agent -- agent-cli\n"
+		curlCall  = "exec " + userID + " -c agent -- curl"
+		prompt    = "Press Enter to open agent-cli again, type c and Enter to run the checks, or press Ctrl-C to stop.\n"
+	)
+	tests := []struct {
+		name, answers string
+		exit          int
+		wantCalls     []string
+		wantOut       []string
+	}{
+		{
+			name:      "shell then checks then shell",
+			answers:   "c\n\n",
+			wantCalls: []string{shellCall, curlCall, shellCall},
+			wantOut:   []string{"\n$ go run ./cmd/sandbox shell\nagent-cli ran\n", prompt},
+		},
+		{
+			name:      "command fails",
+			exit:      3,
+			wantCalls: []string{shellCall},
+			wantOut:   []string{"agent-cli ran\nagent: agent-cli exited: exit status 3\n", prompt},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			local, calls, out := existingUp(t, "run: {mode: shell, command: [agent-cli]}", fmt.Sprintf(`case "$*" in
+*"exec -i %s -c agent -- agent-cli") echo "agent-cli ran"; exit %d ;;
+esac
+`, userID, tc.exit))
+			err := local.Up(t.Context(), sandbox.UpOptions{
+				Run: sandbox.RunOptions{SkipZoneSetup: true}, Answers: strings.NewReader(tc.answers),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := readCalls(t, calls)
+			checkInOrder(t, got[strings.LastIndex(got, "condition=Ready"):], tc.wantCalls)
+			if n, want := strings.Count(got, shellCall), strings.Count(strings.Join(tc.wantCalls, ""), shellCall); n != want {
+				t.Errorf("agent-cli ran %d times, want %d\n%s", n, want, got)
+			}
+			checkContains(t, "output", out.String(), tc.wantOut)
+		})
+	}
+}
+
+// checkInOrder requires got to contain each of wants, in order.
+func checkInOrder(t *testing.T, got string, wants []string) {
+	t.Helper()
+	rest := got
+	for _, want := range wants {
+		i := strings.Index(rest, want)
+		if i < 0 {
+			t.Fatalf("calls lack %q in order\n%s", want, got)
+		}
+		rest = rest[i+len(want):]
+	}
+}
+
+// existingUp returns a Local for Up on an existing cluster, its calls file
+// and its output. The scenario is agentScenario with run as its run key. The
+// tool script runs tool before the fake cluster. The issuer is a test TLS
+// server that KEYCARD_LOCAL_CA_FILE trusts, so check-issuer passes.
+func existingUp(t *testing.T, run, tool string) (*sandbox.Local, string, *bytes.Buffer) {
+	t.Helper()
+	issuerURL, caFile, token := servedIssuer(t)
+	settings := existing()
+	settings[sandbox.KeyCAFile], settings[sandbox.KeyScenario] = caFile, agentName
+	local, calls := newLocal(t, settings, tool+`case "$FAKE_TOOL $*" in
+*"get --raw /.well-known/openid-configuration") echo '{"issuer":"`+issuerURL+`"}'; exit 0 ;;
+*"create token default"*) echo '`+token+`'; exit 0 ;;
+esac
+`+healthy().script())
+	linkCharts(t, local.Root)
+	addScenario(t, local.Root, agentName, strings.Replace(agentScenario, "run: {mode: checks}", run, 1), false)
+	writeFile(t, filepath.Join(local.Root, "local", "answers.yaml"), "repo: "+agentRepo+"\n")
+	writeFile(t, filepath.Join(local.Root, "local", "out", "zone-setup.yaml"), zoneSetupOutput)
+	out := &bytes.Buffer{}
+	local.Out = out
+	return local, calls, out
 }

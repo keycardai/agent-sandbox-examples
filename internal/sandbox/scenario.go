@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -29,6 +30,9 @@ const (
 	inputGitHub = "github"
 	// ModeChecks runs the checks and keeps the sandbox up.
 	ModeChecks = "checks"
+	// ModeShell runs the checks, then runs run.command in the agent
+	// container, attached to the terminal.
+	ModeShell = "shell"
 )
 
 // ErrScenario means a scenario is missing, or `sandbox` cannot use it as
@@ -70,6 +74,8 @@ type ScenarioInput struct {
 	// Confirm makes a secret input optional. init asks this yes or no
 	// question before the secret.
 	Confirm string `yaml:"confirm"`
+	// Default is the answer init offers for a text input.
+	Default string `yaml:"default"`
 }
 
 // ScenarioResource is one zone-setup resource.
@@ -92,6 +98,8 @@ type ScenarioAgent struct {
 // ScenarioRun says what `sandbox up` does once the sandbox is up.
 type ScenarioRun struct {
 	Mode string `yaml:"mode"`
+	// Command is what shell mode runs in the agent container.
+	Command []string `yaml:"command"`
 }
 
 // LoadScenario reads and checks scenarios/<name>/scenario.yaml under root.
@@ -145,8 +153,9 @@ func Scenarios(root string) ([]*Scenario, error) {
 }
 
 // Values returns the values file for both charts that runs the scenario's
-// agent with its endpoints. answers holds the text inputs' answers. The
-// install chart does not read endpoints.
+// agent with its endpoints. answers holds the text inputs' answers. A text
+// input without an answer uses its default. The install chart does not
+// read endpoints.
 func (s *Scenario) Values(answers map[string]string) ([]byte, error) {
 	type agent struct {
 		Args []string          `json:"args,omitempty"`
@@ -164,13 +173,20 @@ func (s *Scenario) Values(answers map[string]string) ([]byte, error) {
 	if s.Image != "" {
 		out.Images = &images{Agent: s.Image}
 	}
+	withDefaults := map[string]string{}
+	for _, input := range s.Inputs {
+		if input.Default != "" {
+			withDefaults[input.ID] = input.Default
+		}
+	}
+	maps.Copy(withDefaults, answers)
 	var missing error
 	for name, value := range s.Agent.Env {
 		if out.Agent.Env == nil {
 			out.Agent.Env = map[string]string{}
 		}
 		out.Agent.Env[name] = answerRef.ReplaceAllStringFunc(value, func(ref string) string {
-			answer, ok := answers[ref[1:len(ref)-1]]
+			answer, ok := withDefaults[ref[1:len(ref)-1]]
 			if !ok {
 				missing = fmt.Errorf("%w: %s has no answer for %s. Run %s init", ErrScenario, answersFile, ref, sandboxCommand)
 			}
@@ -199,7 +215,7 @@ func (l *Local) scenario() (*Scenario, error) {
 
 // modes returns the run modes a scenario can name.
 func modes() []string {
-	return []string{ModeChecks}
+	return []string{ModeChecks, ModeShell}
 }
 
 // check refuses a scenario `sandbox` cannot use. Every error wraps
@@ -226,6 +242,9 @@ func (s *Scenario) check() error {
 	if !slices.Contains(modes(), s.Run.Mode) {
 		return fmt.Errorf("%w: run.mode %q is not one of %s", ErrScenario, s.Run.Mode, strings.Join(modes(), ", "))
 	}
+	if (s.Run.Mode == ModeShell) != (len(s.Run.Command) > 0) {
+		return fmt.Errorf("%w: run.command is required in shell mode and not allowed in checks mode", ErrScenario)
+	}
 	return nil
 }
 
@@ -250,25 +269,32 @@ func (s *Scenario) checkEnv(kinds map[string]string) error {
 func (s *Scenario) checkInputs() (map[string]string, error) {
 	kinds := map[string]string{}
 	for i, input := range s.Inputs {
-		var problem string
-		switch {
-		case !inputID.MatchString(input.ID):
-			problem = "id must be lowercase letters, digits and dashes"
-		case kinds[input.ID] != "":
-			problem = "id " + input.ID + " is listed twice"
-		case !slices.Contains([]string{inputText, inputSecret, inputGitHub}, input.Kind):
-			problem = "kind must be text, secret or github"
-		case input.Kind != inputGitHub && input.Prompt == "":
-			problem = "prompt is required"
-		case input.Confirm != "" && input.Kind != inputSecret:
-			problem = "confirm is only for a secret"
-		default:
-			kinds[input.ID] = input.Kind
-			continue
+		if problem := inputProblem(input, kinds); problem != "" {
+			return nil, fmt.Errorf("%w: inputs[%d].%s", ErrScenario, i, problem)
 		}
-		return nil, fmt.Errorf("%w: inputs[%d].%s", ErrScenario, i, problem)
+		kinds[input.ID] = input.Kind
 	}
 	return kinds, nil
+}
+
+// inputProblem describes what is wrong with input, or returns "". kinds
+// holds the kinds of the inputs listed before it.
+func inputProblem(input ScenarioInput, kinds map[string]string) string {
+	switch {
+	case !inputID.MatchString(input.ID):
+		return "id must be lowercase letters, digits and dashes"
+	case kinds[input.ID] != "":
+		return "id " + input.ID + " is listed twice"
+	case !slices.Contains([]string{inputText, inputSecret, inputGitHub}, input.Kind):
+		return "kind must be text, secret or github"
+	case input.Kind != inputGitHub && input.Prompt == "":
+		return "prompt is required"
+	case input.Confirm != "" && input.Kind != inputSecret:
+		return "confirm is only for a secret"
+	case input.Default != "" && input.Kind != inputText:
+		return "default is only for a text input"
+	}
+	return ""
 }
 
 // scenarioValues loads the scenario and returns its values file with the

@@ -12,6 +12,7 @@
 //	go run ./cmd/sandbox mirror        # in another terminal
 //	go run ./cmd/sandbox check-issuer
 //	go run ./cmd/sandbox run
+//	go run ./cmd/sandbox shell         # for a scenario in shell mode
 //	go run ./cmd/sandbox down
 //
 // `install` installs the controller and the chart into any cluster. It does
@@ -94,6 +95,7 @@ func newCommand() *cli.Command {
 			checkIssuerCommand(),
 			runCommand(),
 			checkCommand(),
+			shellCommand(),
 			downCommand(),
 			installCommand(),
 		},
@@ -266,12 +268,7 @@ func checkCommand() *cli.Command {
 		Name:     "check",
 		Category: stepCategory,
 		Usage:    "run the checks again against the running sandbox",
-		Flags: []cli.Flag{
-			clusterFlag(),
-			&cli.StringFlag{Name: "namespace", Usage: "sandbox namespace (default from the last run)"},
-			&cli.StringFlag{Name: "pod", Usage: "sandbox pod (default the user's id)"},
-			&cli.StringFlag{Name: "user-id", Usage: "the user's Keycard id (default from the last run)"},
-		},
+		Flags:    targetFlags(),
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
 			target, err := local.CheckTargetFor(
 				cmd.String("cluster"), cmd.String("namespace"), cmd.String("pod"), cmd.String("user-id"),
@@ -280,6 +277,24 @@ func checkCommand() *cli.Command {
 				return fmt.Errorf("finding the sandbox: %w", err)
 			}
 			return local.Check(ctx, target)
+		}),
+	}
+}
+
+func shellCommand() *cli.Command {
+	return &cli.Command{
+		Name:     "shell",
+		Category: stepCategory,
+		Usage:    "run the scenario's command, or sh, in the sandbox's agent container, attached to this terminal",
+		Flags:    targetFlags(),
+		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
+			target, err := local.CheckTargetFor(
+				cmd.String("cluster"), cmd.String("namespace"), cmd.String("pod"), cmd.String("user-id"),
+			)
+			if err != nil {
+				return fmt.Errorf("finding the sandbox: %w", err)
+			}
+			return local.Shell(ctx, target, os.Stdin)
 		}),
 	}
 }
@@ -330,6 +345,16 @@ func installCommand() *cli.Command {
 			}
 			return nil
 		},
+	}
+}
+
+// targetFlags select the running sandbox a step acts on.
+func targetFlags() []cli.Flag {
+	return []cli.Flag{
+		clusterFlag(),
+		&cli.StringFlag{Name: "namespace", Usage: "sandbox namespace (default from the last run)"},
+		&cli.StringFlag{Name: "pod", Usage: "sandbox pod (default the user's id)"},
+		&cli.StringFlag{Name: "user-id", Usage: "the user's Keycard id (default from the last run)"},
 	}
 }
 

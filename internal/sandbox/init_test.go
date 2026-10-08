@@ -502,6 +502,7 @@ func checkAgentValues(t *testing.T, run initRun) {
 // questions.
 const wantAgentAnswers = "# Written by `go run ./cmd/sandbox init`. The answers to the scenarios'\n" +
 	"# questions that are not secrets, by input id.\n" +
+	"branch: main\n" +
 	"repo: octo/demo\n"
 
 // checkNamedTunnel requires the values file as the first run wrote it, and
