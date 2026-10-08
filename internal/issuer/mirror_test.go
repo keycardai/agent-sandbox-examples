@@ -1,35 +1,23 @@
-package main
+package issuer_test
 
 import (
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/keycardai/agent-sandbox-examples/internal/issuer"
 )
 
 const (
+	wellKnownPath = "/.well-known/openid-configuration"
+	keysPath      = "/openid/v1/jwks"
 	testIssuer    = "https://oidc.example.com"
 	testDiscovery = `{"issuer":"` + testIssuer + `","jwks_uri":"` + testIssuer + `/openid/v1/jwks"}`
 	testJWKS      = `{"keys":[{"kty":"RSA","kid":"k","n":"AQAB","e":"AQAB"}]}`
 )
-
-func writeDocs(t *testing.T, discovery, jwks string) string {
-	t.Helper()
-	dir := t.TempDir()
-	for name, body := range map[string]string{discoveryFile: discovery, jwksFile: jwks} {
-		if body == "" {
-			continue
-		}
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return dir
-}
 
 func TestLoadRefuses(t *testing.T) {
 	t.Parallel()
@@ -38,23 +26,21 @@ func TestLoadRefuses(t *testing.T) {
 		name, issuer, discovery, jwks string
 		want                          error
 	}{
-		{"http issuer", "http://oidc.example.com", testDiscovery, testJWKS, errInsecure},
-		{"missing discovery", testIssuer, "", testJWKS, errFile},
-		{"oversized jwks", testIssuer, testDiscovery, strings.Repeat(" ", maxBody+1), errFile},
-		{"discovery is an array", testIssuer, "[]", testJWKS, errDiscovery},
-		{"discovery is null", testIssuer, "null", testJWKS, errDiscovery},
-		{"issuer with trailing slash", testIssuer + "/", testDiscovery, testJWKS, errIssuer},
-		{"jwks_uri on another host", testIssuer, other, testJWKS, errJWKSURI},
-		{"no keys array", testIssuer, testDiscovery, `{}`, errKeys},
-		{"zero keys", testIssuer, testDiscovery, `{"keys":[]}`, errKeys},
-		{"key without kty or kid", testIssuer, testDiscovery, `{"keys":[{}]}`, errKeys},
+		{"http issuer", "http://oidc.example.com", testDiscovery, testJWKS, issuer.ErrInsecure},
+		{"discovery is an array", testIssuer, "[]", testJWKS, issuer.ErrDiscovery},
+		{"discovery is null", testIssuer, "null", testJWKS, issuer.ErrDiscovery},
+		{"issuer with trailing slash", testIssuer + "/", testDiscovery, testJWKS, issuer.ErrIssuer},
+		{"jwks_uri on another host", testIssuer, other, testJWKS, issuer.ErrJWKSURI},
+		{"no keys array", testIssuer, testDiscovery, `{}`, issuer.ErrKeys},
+		{"zero keys", testIssuer, testDiscovery, `{"keys":[]}`, issuer.ErrKeys},
+		{"key without kty or kid", testIssuer, testDiscovery, `{"keys":[{}]}`, issuer.ErrKeys},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := load(tc.issuer, writeDocs(t, tc.discovery, tc.jwks))
+			_, err := issuer.Load(tc.issuer, []byte(tc.discovery), []byte(tc.jwks))
 			if !errors.Is(err, tc.want) {
-				t.Fatalf("load() = %v, want %v", err, tc.want)
+				t.Fatalf("issuer.Load() = %v, want %v", err, tc.want)
 			}
 		})
 	}
@@ -65,33 +51,33 @@ func TestServe(t *testing.T) {
 	const pathIssuer = testIssuer + "/oidc"
 	pathDiscovery := strings.ReplaceAll(testDiscovery, testIssuer, pathIssuer)
 	cases := map[string]map[string]string{
-		testIssuer: {discoveryPath: testDiscovery, jwksPath: testJWKS, "/other": ""},
+		testIssuer: {wellKnownPath: testDiscovery, keysPath: testJWKS, "/other": ""},
 		pathIssuer: {
-			"/oidc" + discoveryPath: pathDiscovery, "/oidc" + jwksPath: testJWKS,
-			discoveryPath: "", jwksPath: "",
+			"/oidc" + wellKnownPath: pathDiscovery, "/oidc" + keysPath: testJWKS,
+			wellKnownPath: "", keysPath: "",
 		},
 	}
-	for issuer, paths := range cases {
+	for issuerURL, paths := range cases {
 		discovery := testDiscovery
-		if issuer == pathIssuer {
+		if issuerURL == pathIssuer {
 			discovery = pathDiscovery
 		}
-		snap, err := load(issuer, writeDocs(t, discovery, testJWKS))
+		snap, err := issuer.Load(issuerURL, []byte(discovery), []byte(testJWKS))
 		if err != nil {
 			t.Fatal(err)
 		}
-		server := httptest.NewServer(handler(snap))
+		server := httptest.NewServer(snap)
 		t.Cleanup(server.Close)
 		for path, want := range paths {
 			status, contentType, body := get(t, server, path)
 			if want == "" {
 				if status != http.StatusNotFound {
-					t.Errorf("%s: GET %s = %d, want 404", issuer, path, status)
+					t.Errorf("%s: GET %s = %d, want 404", issuerURL, path, status)
 				}
 				continue
 			}
 			if body != want || contentType != "application/json" {
-				t.Errorf("%s: GET %s = %q (%s), want %q (application/json)", issuer, path, body, contentType, want)
+				t.Errorf("%s: GET %s = %q (%s), want %q (application/json)", issuerURL, path, body, contentType, want)
 			}
 		}
 	}

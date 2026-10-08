@@ -13,8 +13,8 @@ env_keys='KEYCARD_LOCAL_CLUSTER|KEYCARD_LOCAL_ISSUER|KEYCARD_LOCAL_ZONE_URL|KEYC
 env_keys+='|KEYCARD_LOCAL_ZONE_SETUP_VALUES|KEYCARD_LOCAL_GITHUB_LOGIN|KEYCARD_LOCAL_CA_FILE'
 env_keys+='|KEYCARD_LOCAL_TUNNEL|KEYCARD_LOCAL_ZONE_ON_HOST'
 
-# tunnel.sh writes the quick tunnel's URL here while it runs, and removes the
-# file when it exits.
+# `go run ./cmd/sandbox tunnel` writes the quick tunnel's URL here while it
+# runs, and removes the file when it exits.
 quick_issuer_file=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/out/issuer
 
 # load_env reads the settings file, local/local.env unless the first

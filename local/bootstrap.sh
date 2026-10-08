@@ -45,7 +45,7 @@ cluster=${cluster:-${KEYCARD_LOCAL_CLUSTER:-}}
 issuer=${issuer:-$(local_issuer)}
 
 require_cluster "$cluster"
-[[ -n $issuer ]] || die "no issuer. Set KEYCARD_LOCAL_ISSUER, pass --issuer, or start tunnel.sh."
+[[ -n $issuer ]] || die "no issuer. Set KEYCARD_LOCAL_ISSUER, pass --issuer, or start go run ./cmd/sandbox tunnel."
 [[ $issuer == https://* ]] || die "the issuer must be https (got '$issuer')"
 [[ $issuer != *\?* && $issuer != *\#* ]] || die "the issuer must have no query or fragment (got '$issuer')"
 [[ $issuer != */ ]] || die "the issuer must have no trailing slash (got '$issuer')"
