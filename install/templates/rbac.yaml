@@ -1,5 +1,5 @@
 # What the people who create sandboxes need in the namespace: the Sandbox, the
-# user's ServiceAccount and ConfigMaps, and enough on pods to see a sandbox
+# user's ServiceAccount and ConfigMap, and enough on pods to see a sandbox
 # come up and to run commands inside it.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

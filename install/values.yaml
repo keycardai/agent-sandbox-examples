@@ -39,6 +39,15 @@ proxy:
   # traffic leaves the pod. It must match --proxy-uid in netsetup.args. The
   # proxy refuses to start otherwise.
   uid: 1337
+  # The transparent listener the capture redirects to. It must match
+  # --redirect-port in netsetup.args. It is below 1024, so only the proxy,
+  # which holds NET_BIND_SERVICE, can bind it.
+  redirectPort: 1015
+  # net.ipv4.ip_unprivileged_port_start on the pod. Keep it above the higher
+  # of redirectPort and the resolver port, 53. It is on the kubelet's safe
+  # sysctl list (kubernetes/pkg/kubelet/sysctl/safe_sysctls.go), so it does
+  # not need node configuration.
+  unprivilegedPortStart: 1024
   # The ConfigMap that holds the proxy's configuration document, and the path
   # the proxy reads it from. Only the proxy mounts it, because it holds the
   # identity section. The sandbox chart does not read configMap. It makes one
@@ -49,33 +58,57 @@ proxy:
   # identity.workload_token_file in the document to <tokenPath>/token.
   tokenPath: /var/run/secrets/keycard
   tokenExpirationSeconds: 3600
-  # The startup probe runs the proxy binary against the admin socket. The
-  # agent does not mount the admin socket.
+  # Each probe runs the proxy binary, which dials the admin socket at the
+  # binary's default path. The admin socket is a Unix socket, not a TCP port,
+  # and the agent does not mount it.
+  #
+  # The agent starts once readyz passes: every listener is bound and ca.crt
+  # is written. Liveness reads healthz, so the kubelet does not restart a
+  # proxy that is still starting.
   startupProbe:
-    command: ["/ko-app/egress-proxy", "probe", "--admin-socket=/run/egress/admin.sock"]
+    command: ["/ko-app/egress-proxy", "probe", "readyz"]
     periodSeconds: 1
     failureThreshold: 60
+  livenessProbe:
+    command: ["/ko-app/egress-proxy", "probe", "healthz"]
+    periodSeconds: 10
+  readinessProbe:
+    command: ["/ko-app/egress-proxy", "probe", "readyz"]
+    periodSeconds: 10
 
 netsetup:
   # Arguments of the egress-netsetup init container. It redirects tcp/80 and
-  # tcp/443 from every uid except the proxy's to the redirect port, and DNS
-  # to the proxy's resolver. It drops all other traffic except the proxy's,
-  # loopback and established connections.
+  # tcp/443 from every uid except the proxy's to the redirect port, and
+  # udp/53 and tcp/53 to the proxy's resolver on --dns-port. The sandbox
+  # chart sets listen.dns to :53, so --dns-port must be 53. It drops all
+  # other traffic except the proxy's, loopback and established connections.
+  # It writes a receipt of the rules it programmed to --receipt, on the
+  # volume the proxy reads it from.
+  #
+  # Set every argument. egress-netsetup reads flags only, not environment
+  # variables, and the netsetup image is pinned separately from the proxy
+  # image. Each value must equal the one `egress-proxy settings` reports
+  # under netsetup.
   args:
     - --proxy-uid=1337
-    - --redirect-port=1001
+    - --redirect-port=1015
+    - --dns-port=53
     - --capture-ports=80,443
     - --ipv6=auto
+    - --receipt=/run/egress/netsetup/netsetup.json
 
 agent:
   # The agent's uid. Rendering fails if it equals proxy.uid.
   uid: 1000
-  # The ConfigMap with the configuration document minus the identity section,
-  # and the path the agent reads it from. The base image entrypoint exports
-  # one placeholder variable for each endpoint with a credential. The sandbox
-  # chart does not read configMap. It makes one ConfigMap per sandbox.
-  configMap: egress-agent-config
-  configPath: /etc/egress/config.yaml
+  # Replaces the image's entrypoint. Empty keeps it. The sandbox-base
+  # entrypoint installs the proxy's CA from /shared-ca/out/ca.crt before the
+  # agent starts. That path is the default in both images, so neither
+  # container sets it.
+  command: []
+  # The agent's command, which the sandbox-base entrypoint execs. The
+  # entrypoint exits 64 when there are no args. `sleep infinity` keeps an idle
+  # sandbox open for `kubectl exec`. Set the real agent's command here.
+  args: ["sleep", "infinity"]
 
 rbac:
   # Who is bound to the sandbox-admin Role. Empty renders the Role and no

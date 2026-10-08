@@ -1,13 +1,12 @@
 # sandbox
 
 This chart creates one sandbox for one user. `new-sandbox` renders it once
-per user into four objects in the sandbox namespace:
+per user into three objects in the sandbox namespace:
 
 | Object | Name | What it is |
 |---|---|---|
 | ServiceAccount | the user's public id | the subject the workload-identity credential is bound to |
 | ConfigMap | `<sandbox>-proxy-config` | the proxy's configuration document: the identity, the cluster ranges and the endpoints |
-| ConfigMap | `<sandbox>-agent-config` | the same document without `identity`. The base image reads it to export one placeholder per credentialed endpoint. |
 | Sandbox | the user's public id, or `--name` | the pod of the install chart's `SandboxTemplate`, running as that ServiceAccount |
 
     cp sandbox/values.example.yaml my-sandbox.yaml
@@ -43,13 +42,13 @@ template names. Each user needs their own ServiceAccount, so this chart
 renders the whole pod.
 
 The tests in `internal/chart` render both charts and check that the two pod
-specs differ only in the ServiceAccount and the two ConfigMap names.
+specs differ only in the ServiceAccount and the ConfigMap name.
 
 ## A zone that is not on the internet
 
 Give `zoneTrust` and `hostAliases` the values the install chart has.
 A non-empty `zoneTrust.configMap` mounts the root certificate on the proxy and
-writes its path into `tls.upstream_ca_files` in both documents. The proxy
+writes its path into the document's `tls.upstream_ca_files`. The proxy
 refuses to dial a zone address on its deny list, so a private zone address
 also goes in `policy.denyListExceptions`.
 
@@ -59,7 +58,7 @@ also goes in `policy.denyListExceptions`.
 an egress-proxy build here would also make this repository depend on that
 one. `internal/chart/document_test.go` holds a copy of the rules in
 egress-proxy's `internal/config/config.go` and `docs/configuration.md`, and
-the tests check both rendered documents against it. The decode is strict: a
+the tests check the rendered document against it. The decode is strict: a
 key the proxy does not read is an error. A table test checks that the copy
 refuses one broken document per rule. Replace the copy with the proxy's own
 check when one exists.
@@ -69,5 +68,4 @@ check when one exists.
 | Item | What this chart does | Why it is an assumption |
 |---|---|---|
 | `sandbox.id` | the `Sandbox` name, written into the document | Each sandbox has its own document, so the id is written in. The proxy does not read it through the Downward API. |
-| Agent configuration path | `/etc/egress/config.yaml`, read-only, no identity section | The `sandbox-base` entrypoint reads the endpoints from there. The path is `agent.configPath` in both charts. |
 | `Sandbox` fields | `spec.service: false` and `spec.podTemplate` | Read from the CRD in `install/agent-sandbox/`, agent-sandbox v1.0.4. Nothing in the cluster calls a sandbox. |

@@ -86,9 +86,9 @@ else
 	pass "credentialed: $credentialed_url named the GitHub account '$login'"
 fi
 
-# 3. A destination no endpoint names. The proxy does not mint a certificate
-#    for it, so the client sees a TLS failure. The audit record names the
-#    reason.
+# 3. A destination no endpoint names. The proxy's resolver answers NXDOMAIN
+#    for it, so the client fails at name resolution. The resolver's audit
+#    record names the reason.
 if agent curl -sS -o /dev/null "$denied_url" >/dev/null 2>&1; then
 	fail "denied: $denied_url was reachable"
 else
@@ -116,7 +116,9 @@ cat <<-MSG
 	          subject $user_id and actor system:serviceaccount:$namespace:$user_id,
 	          and none for check 3.
 	  MANUAL  A sandbox whose document names another enrolled user. Expect the
-	          proxy to log access_denied for its first credentialed request.
+	          proxy to log the audit reason exchange_denied for its first
+	          credentialed request. The zone answers that exchange with
+	          access_denied.
 MSG
 
 ((failures == 0)) || die "$failures check(s) failed"

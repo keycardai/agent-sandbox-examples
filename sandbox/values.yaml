@@ -37,11 +37,16 @@ policy:
 
 # The destinations the sandbox can reach. The proxy refuses every other
 # connection. Each entry is one endpoint of the proxy's configuration
-# document, with the same keys: host, port, path_prefix, resource, and
-# credential with its placement and env. The proxy forwards to an entry
-# without a credential and does not call the zone. `resource` defaults to
-# https://<host>/. The token exchange sends it as the resource parameter. It
-# must be a Resource in the zone and a dependency of the Application.
+# document, with the same keys: url, and credential with its placement and
+# env. `url` is https://host[:port][/path] or http://host[:port][/path]. The
+# proxy reads the host, the port and the path prefix from it. The token
+# exchange sends the canonical form of the url as the resource parameter:
+# lowercase scheme and host, no trailing dot, no port when the port is the
+# scheme's default, and no root path. Any other path stays as written. For an
+# entry with a credential, the resource must be a Resource in the zone and a
+# dependency of the Application. The proxy forwards to an entry without a
+# credential and does not call the zone. An http entry cannot have a
+# credential.
 endpoints: []
 
 # The keys below describe the pod. Each one has the same meaning and default
@@ -54,26 +59,37 @@ images:
 
 proxy:
   uid: 1337
+  redirectPort: 1015
+  unprivilegedPortStart: 1024
   configPath: /etc/egress/config.yaml
   tokenPath: /var/run/secrets/keycard
   tokenExpirationSeconds: 3600
   startupProbe:
-    command: ["/ko-app/egress-proxy", "probe", "--admin-socket=/run/egress/admin.sock"]
+    command: ["/ko-app/egress-proxy", "probe", "readyz"]
     periodSeconds: 1
     failureThreshold: 60
+  livenessProbe:
+    command: ["/ko-app/egress-proxy", "probe", "healthz"]
+    periodSeconds: 10
+  readinessProbe:
+    command: ["/ko-app/egress-proxy", "probe", "readyz"]
+    periodSeconds: 10
 
 netsetup:
   args:
     - --proxy-uid=1337
-    - --redirect-port=1001
+    - --redirect-port=1015
+    - --dns-port=53
     - --capture-ports=80,443
     - --ipv6=auto
+    - --receipt=/run/egress/netsetup/netsetup.json
 
 agent:
   uid: 1000
-  configPath: /etc/egress/config.yaml
+  command: []
+  args: ["sleep", "infinity"]
 
-# A non-empty configMap also writes the tls section of both documents.
+# A non-empty configMap also writes the tls section of the document.
 zoneTrust:
   configMap: ""
   key: zone-ca.pem

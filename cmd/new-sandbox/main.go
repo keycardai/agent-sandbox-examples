@@ -57,9 +57,8 @@ func newCommand(stdout, stderr io.Writer) *cli.Command {
 		Name:  "new-sandbox",
 		Usage: "create one sandbox for one user from the zone-setup outputs",
 		Description: "Renders the sandbox chart and applies it: a ServiceAccount named for the\n" +
-			"user's public id, the proxy's configuration document, the agent's copy of it\n" +
-			"without the identity section, and the Sandbox. The identity flags take the\n" +
-			"zone-setup outputs by name.",
+			"user's public id, the proxy's configuration document, and the Sandbox. The\n" +
+			"identity flags take the zone-setup outputs by name.",
 		Writer:          stdout,
 		ErrWriter:       stderr,
 		HideHelpCommand: true,

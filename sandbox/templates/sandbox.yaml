@@ -40,6 +40,9 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+        sysctls:
+          - name: net.ipv4.ip_unprivileged_port_start
+            value: {{ .Values.proxy.unprivilegedPortStart | quote }}
         # NEVER set fsGroup. Kubernetes adds every container to that group,
         # including the agent, and gives that group read and write on each
         # volume.
@@ -59,6 +62,8 @@ spec:
           volumeMounts:
             - name: xtables-run
               mountPath: /run
+            - name: egress-run
+              mountPath: /run/egress
         - name: egress-proxy
           image: {{ .Values.images.proxy }}
           restartPolicy: Always
@@ -72,6 +77,8 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+              # NEVER remove NET_BIND_SERVICE. The kernel refuses to exec the
+              # binary without it.
               add: ["NET_BIND_SERVICE"]
           startupProbe:
             exec:
@@ -79,6 +86,16 @@ spec:
                 {{- toYaml .Values.proxy.startupProbe.command | nindent 16 }}
             periodSeconds: {{ .Values.proxy.startupProbe.periodSeconds }}
             failureThreshold: {{ .Values.proxy.startupProbe.failureThreshold }}
+          livenessProbe:
+            exec:
+              command:
+                {{- toYaml .Values.proxy.livenessProbe.command | nindent 16 }}
+            periodSeconds: {{ .Values.proxy.livenessProbe.periodSeconds }}
+          readinessProbe:
+            exec:
+              command:
+                {{- toYaml .Values.proxy.readinessProbe.command | nindent 16 }}
+            periodSeconds: {{ .Values.proxy.readinessProbe.periodSeconds }}
           volumeMounts:
             - name: egress-run
               mountPath: /run/egress
@@ -100,6 +117,14 @@ spec:
       containers:
         - name: agent
           image: {{ .Values.images.agent }}
+          {{- with .Values.agent.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.agent.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           securityContext:
             # Without CAP_SETUID the agent cannot switch to the proxy's uid,
             # which the redirect and the DROP exempt. Rendering fails if the
@@ -119,9 +144,6 @@ spec:
             - name: shared-ca
               mountPath: /shared-ca
               readOnly: true
-            - name: agent-config
-              mountPath: {{ dir .Values.agent.configPath }}
-              readOnly: true
       volumes:
         - name: egress-run
           emptyDir:
@@ -137,11 +159,6 @@ spec:
         - name: egress-config
           configMap:
             name: {{ include "keycard-sandbox-user.proxyConfigMap" . }}
-        # The agent's copy of the document, without the identity section.
-        # NEVER point this at the proxy's ConfigMap.
-        - name: agent-config
-          configMap:
-            name: {{ include "keycard-sandbox-user.agentConfigMap" . }}
         {{- if .Values.zoneTrust.configMap }}
         - name: zone-trust
           configMap:
