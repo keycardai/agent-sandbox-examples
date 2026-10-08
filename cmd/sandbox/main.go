@@ -1,7 +1,11 @@
 // Command sandbox runs the sandbox demo: an agent in a Kubernetes sandbox
 // whose HTTPS goes through the Keycard egress proxy. Each subcommand is one
 // step, and each step reads its settings from local/local.env.
-// docs/local.md describes the steps.
+// docs/local.md describes the steps. `up` runs them all:
+//
+//	go run ./cmd/sandbox up
+//
+// or one at a time:
 //
 //	go run ./cmd/sandbox tunnel        # in a terminal of its own
 //	go run ./cmd/sandbox bootstrap
@@ -22,6 +26,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/urfave/cli/v3"
 
@@ -31,7 +36,10 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
-const defaultListen = "127.0.0.1:8480"
+const (
+	defaultListen     = "127.0.0.1:8480"
+	defaultIssuerWait = 2 * time.Minute
+)
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
@@ -54,6 +62,7 @@ func newCommand() *cli.Command {
 			&cli.StringFlag{Name: "env", Usage: "settings file (default local/local.env)"},
 		},
 		Commands: []*cli.Command{
+			upCommand(),
 			tunnelCommand(),
 			bootstrapCommand(),
 			mirrorCommand(),
@@ -63,6 +72,43 @@ func newCommand() *cli.Command {
 			downCommand(),
 			installCommand(),
 		},
+	}
+}
+
+func upCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "up",
+		Usage: "set up and run the whole demo, and print the command for each step",
+		Flags: []cli.Flag{
+			listenFlag(),
+			&cli.BoolFlag{Name: "print", Usage: "print the commands and do not run them"},
+			&cli.DurationFlag{
+				Name:  "issuer-wait",
+				Value: defaultIssuerWait,
+				Usage: "how long to wait for the cluster's issuer to answer",
+			},
+			&cli.BoolFlag{
+				Name:  "skip-zone-setup",
+				Usage: "reuse the Keycard setup of the last run, in local/out/zone-setup.yaml",
+			},
+			&cli.BoolFlag{
+				Name:  zonesetup.ReplaceActiveFlag,
+				Usage: "make the sandbox policy set active, replacing the zone's active policy set",
+			},
+		},
+		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
+			return local.Up(ctx, sandbox.UpOptions{
+				Run: sandbox.RunOptions{
+					SkipZoneSetup: cmd.Bool("skip-zone-setup"),
+					ReplaceActive: cmd.Bool(zonesetup.ReplaceActiveFlag),
+				},
+				Listen:     cmd.String("listen"),
+				EnvFile:    cmd.String("env"),
+				Print:      cmd.Bool("print"),
+				IssuerWait: cmd.Duration("issuer-wait"),
+				Answers:    cmd.Reader,
+			})
+		}),
 	}
 }
 

@@ -19,8 +19,12 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 )
 
-// cluster is the cluster name the tests pass.
-const cluster = "asp"
+const (
+	// cluster is the cluster name the tests pass.
+	cluster = "asp"
+	// namedTunnel is the Cloudflare tunnel name the tests use.
+	namedTunnel = "asp-tunnel"
+)
 
 // record is the start of every fake tool. It appends the tool's name, the
 // KUBERC it runs with and its arguments to $CALLS, one call per line.
@@ -176,10 +180,11 @@ func TestTunnel(t *testing.T) {
 	t.Parallel()
 	const (
 		host   = "https://oidc.example.com"
-		noHost = "the named tunnel asp needs KEYCARD_LOCAL_ISSUER set to https://<hostname>, with no port or path"
+		noHost = "the named tunnel " + namedTunnel +
+			" needs KEYCARD_LOCAL_ISSUER set to https://<hostname>, with no port or path"
 	)
 	named := func(issuerURL string) sandbox.Settings {
-		return sandbox.Settings{sandbox.KeyTunnel: "asp", sandbox.KeyIssuer: issuerURL}
+		return sandbox.Settings{sandbox.KeyTunnel: namedTunnel, sandbox.KeyIssuer: issuerURL}
 	}
 
 	tests := []struct {
@@ -193,7 +198,7 @@ func TestTunnel(t *testing.T) {
 		{
 			name:     "named tunnel",
 			settings: named(host),
-			wantCall: "cloudflared KUBERC= tunnel --no-autoupdate run --url http://127.0.0.1:8480 asp\n",
+			wantCall: "cloudflared KUBERC= tunnel --no-autoupdate run --url http://127.0.0.1:8480 " + namedTunnel + "\n",
 		},
 		{
 			name:     "quick tunnel with an issuer",
