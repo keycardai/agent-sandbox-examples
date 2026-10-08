@@ -69,16 +69,3 @@ check when one exists.
 |---|---|---|
 | `sandbox.id` | the `Sandbox` name, written into the document | Each sandbox has its own document, so the id is written in. The proxy does not read it through the Downward API. |
 | `Sandbox` fields | `spec.service: false` and `spec.podTemplate` | Read from the CRD in `install/agent-sandbox/`, agent-sandbox v1.0.4. Nothing in the cluster calls a sandbox. |
-
-## Open: the agent's placeholder environment
-
-The agent holds a placeholder where a credential goes. The proxy replaces
-the placeholder before the request leaves the pod, so the agent may send any
-string. Nothing in the pod sets that string in a variable such as
-`GITHUB_TOKEN`.
-
-The agent container mounts only `/shared-ca`. The `sandbox-base` entrypoint
-in keycardai/egress-proxy waits for the proxy's CA certificate, installs it
-and runs the agent. It does not read a configuration document. A placeholder
-is not a secret, so a literal `env:` value on the agent container would
-work. The egress-proxy owners choose the mechanism.
