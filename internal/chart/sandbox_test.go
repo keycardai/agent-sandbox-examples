@@ -11,7 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
-	"github.com/keycardai/agent-sandbox-poc/internal/chart"
+	"github.com/keycardai/agent-sandbox-examples/internal/chart"
 )
 
 // The user of the rendered sandbox. The ServiceAccount, the Helm release and

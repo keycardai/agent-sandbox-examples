@@ -72,7 +72,7 @@ formatters:
         - pattern: interface{}
           replacement: any
     gofumpt:
-      module-path: github.com/keycardai/agent-sandbox-poc
+      module-path: github.com/keycardai/agent-sandbox-examples
       extra:
         group-params: true
         balance-calls: true

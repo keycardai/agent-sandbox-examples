@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/keycardai/agent-sandbox-poc/internal/chart"
-	"github.com/keycardai/agent-sandbox-poc/internal/preflight"
+	"github.com/keycardai/agent-sandbox-examples/internal/chart"
+	"github.com/keycardai/agent-sandbox-examples/internal/preflight"
 )
 
 // TestPreflight runs preflight.Check over each chart's render, with the

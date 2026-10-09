@@ -1,4 +1,4 @@
-module github.com/keycardai/agent-sandbox-poc
+module github.com/keycardai/agent-sandbox-examples
 
 go 1.27.1
 

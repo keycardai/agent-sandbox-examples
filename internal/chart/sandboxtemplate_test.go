@@ -11,7 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/keycardai/agent-sandbox-poc/internal/chart"
+	"github.com/keycardai/agent-sandbox-examples/internal/chart"
 )
 
 // sandboxTemplate is the part of an extensions.agents.x-k8s.io/v1beta1

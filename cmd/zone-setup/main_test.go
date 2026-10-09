@@ -19,7 +19,7 @@ import (
 	"github.com/keycardai/keycard-go"
 	"github.com/urfave/cli/v3"
 
-	"github.com/keycardai/agent-sandbox-poc/internal/zonesetup"
+	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
 const (

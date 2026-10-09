@@ -15,8 +15,8 @@ import (
 
 	"sigs.k8s.io/yaml"
 
-	"github.com/keycardai/agent-sandbox-poc/internal/chart"
-	"github.com/keycardai/agent-sandbox-poc/internal/zonesetup"
+	"github.com/keycardai/agent-sandbox-examples/internal/chart"
+	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
 // The error classes a run can end in.

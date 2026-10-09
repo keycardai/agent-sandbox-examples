@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/keycardai/agent-sandbox-poc/internal/newsandbox"
+	"github.com/keycardai/agent-sandbox-examples/internal/newsandbox"
 )
 
 const (
