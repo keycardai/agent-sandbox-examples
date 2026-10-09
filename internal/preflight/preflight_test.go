@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/keycardai/agent-sandbox-poc/internal/preflight"
+	"github.com/keycardai/agent-sandbox-examples/internal/preflight"
 )
 
 const (

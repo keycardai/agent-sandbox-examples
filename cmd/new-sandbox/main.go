@@ -21,9 +21,9 @@ import (
 
 	"github.com/urfave/cli/v3"
 
-	"github.com/keycardai/agent-sandbox-poc/internal/chart"
-	"github.com/keycardai/agent-sandbox-poc/internal/newsandbox"
-	"github.com/keycardai/agent-sandbox-poc/internal/zonesetup"
+	"github.com/keycardai/agent-sandbox-examples/internal/chart"
+	"github.com/keycardai/agent-sandbox-examples/internal/newsandbox"
+	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
 // defaultTimeout bounds a whole run.

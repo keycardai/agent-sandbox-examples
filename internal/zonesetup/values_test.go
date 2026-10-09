@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/keycardai/agent-sandbox-poc/internal/zonesetup"
+	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
 const openRouterKey = "OPENROUTER_API_KEY"

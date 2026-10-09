@@ -16,7 +16,7 @@ import (
 
 	"github.com/keycardai/keycard-go"
 
-	"github.com/keycardai/agent-sandbox-poc/internal/zonesetup"
+	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
 const (

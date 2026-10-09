@@ -1,6 +1,6 @@
-module github.com/keycardai/agent-sandbox-poc
+module github.com/keycardai/agent-sandbox-examples
 
-go 1.27.1
+go 1.27.2
 
 // Build-time tools, run as `go tool <name>`. Their modules are requirements
 // of this module but no package here imports them, so they are in no binary.
@@ -232,7 +232,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	golang.org/x/exp/typeparams v0.0.0-20260811152304-ee035b5b010f // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect

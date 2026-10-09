@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/keycardai/agent-sandbox-poc/internal/chart"
+	"github.com/keycardai/agent-sandbox-examples/internal/chart"
 )
 
 // TestRenderRefusesGlobalHelm puts first on PATH a mise that resolves helm

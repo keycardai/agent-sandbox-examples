@@ -10,7 +10,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	"github.com/keycardai/agent-sandbox-poc/internal/chart"
+	"github.com/keycardai/agent-sandbox-examples/internal/chart"
 )
 
 // local/run.sh renders both charts with the files under local/values and one

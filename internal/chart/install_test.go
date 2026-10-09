@@ -14,7 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/yaml"
 
-	"github.com/keycardai/agent-sandbox-poc/internal/chart"
+	"github.com/keycardai/agent-sandbox-examples/internal/chart"
 )
 
 const release = "keycard-sandbox"

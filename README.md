@@ -1,4 +1,4 @@
-# agent-sandbox-poc
+# agent-sandbox-examples
 
 The reference deployment for running an agent in a Kubernetes sandbox whose
 outbound HTTPS the Keycard egress proxy mediates.

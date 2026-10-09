@@ -25,7 +25,7 @@ import (
 	"github.com/urfave/cli/v3"
 	"sigs.k8s.io/yaml"
 
-	"github.com/keycardai/agent-sandbox-poc/internal/zonesetup"
+	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
 func main() {
