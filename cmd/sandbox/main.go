@@ -48,8 +48,6 @@ func newCommand() *cli.Command {
 		Name:            "sandbox",
 		Usage:           "run an AI agent in a Kubernetes sandbox behind the Keycard egress proxy",
 		HideHelpCommand: true,
-		// A values file path may hold a comma.
-		DisableSliceFlagSeparator: true,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "env", Usage: "settings file (default local/local.env)"},
 		},
@@ -176,6 +174,9 @@ func installCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "install",
 		Usage: "install the agent-sandbox controller, then the keycard-sandbox chart, into a cluster",
+		// A values file path may hold a comma. The command that owns a flag
+		// decides whether it splits.
+		DisableSliceFlagSeparator: true,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "context", Required: true, Usage: "the kube context to install into"},
 			&cli.StringSliceFlag{
