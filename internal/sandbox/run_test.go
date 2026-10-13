@@ -12,15 +12,25 @@ import (
 )
 
 const (
-	userID     = "user1abc"
-	namespace  = "agents"
-	checkOK    = "every automated check passed"
-	oneFailed  = "1 of 4"
-	deniedLine = `{"destination":{"host":"example.com","port":53},` +
+	userID    = "user1abc"
+	namespace = "agents"
+	checkOK   = "every automated check passed"
+	oneFailed = "1 of 4"
+	// The fake proxy log replaces @NOW@ with the current time.
+	deniedLine = `{"ts":"@NOW@","destination":{"host":"example.com","port":53},` +
 		`"decision":{"verdict":"deny","reason":"no_matching_endpoint"}}`
-	refusedLine = `{"destination":{"host":"api.github.com","port":443},` +
+	refusedLine = `{"ts":"@NOW@","destination":{"host":"api.github.com","port":443},` +
 		`"decision":{"verdict":"deny","reason":"exchange_denied","error":"access_denied"}}`
+	upstreamLine = `{"ts":"@NOW@","destination":{"host":"example.com","port":53},` +
+		`"decision":{"verdict":"deny","reason":"upstream_failed"}}`
+	noDenyRecord = "  FAIL  denied: https://example.com/ was blocked, " +
+		"but the proxy did not log no_matching_endpoint for it\n"
 )
+
+// stale returns line stamped before any check runs.
+func stale(line string) string {
+	return strings.ReplaceAll(line, "@NOW@", "2020-01-01T00:00:00Z")
+}
 
 // fakeSandbox sets what the fake tools return for a running sandbox.
 type fakeSandbox struct {
@@ -62,7 +72,7 @@ case "$FAKE_TOOL $*" in
 *"exec %[2]s -c agent -- curl"*"https://example.com/")
 	[[ %[7]d == 0 ]] && printf '\n__sandbox_status__:200'
 	exit %[7]d ;;
-*"logs %[2]s -c egress-proxy"*) printf '%%s\n' '%[8]s' ;;
+*"logs %[2]s -c egress-proxy"*) printf '%%s\n' '%[8]s' | sed "s/@NOW@/$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)/g" ;;
 *"get pod %[2]s -o jsonpath={.spec.serviceAccountName}") printf '%%s' '%[9]s' ;;
 *"get namespace %[10]s -o jsonpath="*) printf privileged ;;
 *" apply "*) echo "applied" ;;
@@ -121,6 +131,15 @@ func TestCheck(t *testing.T) {
 			},
 		},
 		{
+			name: "exchange refused, with only another host's record and a stale one",
+			sandbox: with(func(f *fakeSandbox) {
+				f.githubStatus, f.githubBody, f.logs = "502", "", stale(refusedLine)+"\n"+deniedLine
+			}),
+			want:     []error{sandbox.ErrCheck},
+			wantText: oneFailed,
+			wantOut:  []string{"  FAIL  credentialed: https://api.github.com/user returned 502\n"},
+		},
+		{
 			name:     "another GitHub account",
 			sandbox:  healthy(),
 			login:    "someone",
@@ -136,13 +155,32 @@ func TestCheck(t *testing.T) {
 			wantOut:  []string{"  FAIL  denied: https://example.com/ was reachable\n"},
 		},
 		{
+			name:     "denied destination fails after name resolution",
+			sandbox:  with(func(f *fakeSandbox) { f.deniedExit = 7 }),
+			want:     []error{sandbox.ErrCheck},
+			wantText: oneFailed,
+			wantOut:  []string{"  FAIL  denied: https://example.com/ did not fail at name resolution: "},
+		},
+		{
 			name:     "no audit record",
 			sandbox:  with(func(f *fakeSandbox) { f.logs = refusedLine }),
 			want:     []error{sandbox.ErrCheck},
 			wantText: oneFailed,
-			wantOut: []string{
-				"  FAIL  denied: https://example.com/ was blocked, but the proxy did not log a deny record for it\n",
-			},
+			wantOut:  []string{noDenyRecord},
+		},
+		{
+			name:     "denied because upstream DNS failed",
+			sandbox:  with(func(f *fakeSandbox) { f.logs = upstreamLine }),
+			want:     []error{sandbox.ErrCheck},
+			wantText: oneFailed,
+			wantOut:  []string{noDenyRecord},
+		},
+		{
+			name:     "stale audit record",
+			sandbox:  with(func(f *fakeSandbox) { f.logs = stale(deniedLine) }),
+			want:     []error{sandbox.ErrCheck},
+			wantText: oneFailed,
+			wantOut:  []string{noDenyRecord},
 		},
 		{
 			name:     "another ServiceAccount",
