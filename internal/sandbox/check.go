@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 const (
@@ -47,8 +49,12 @@ const (
 	clockSkew = 2 * time.Second
 )
 
-// ErrCheck is a check that did not pass.
-var ErrCheck = errors.New("checks failed")
+var (
+	// ErrCheck is a check that did not pass.
+	ErrCheck = errors.New("checks failed")
+	// ErrTarget is a namespace, pod or user id that is not a Kubernetes name.
+	ErrTarget = errors.New("check target")
+)
 
 // CheckTarget is the sandbox the checks run against.
 type CheckTarget struct {
@@ -112,7 +118,9 @@ func (l *Local) Check(ctx context.Context, target CheckTarget) error {
 // CheckTargetFor returns the sandbox an earlier Run created for
 // KEYCARD_LOCAL_USER_EMAIL, from local/out/zone-setup.yaml. A non-empty
 // argument overrides the value from the file. The pod name defaults to the
-// user id.
+// user id. Each value goes to kubectl as an argument, so CheckTargetFor
+// returns ErrTarget unless the namespace and user id are DNS labels and the
+// pod name is a DNS subdomain.
 func (l *Local) CheckTargetFor(cluster, namespace, pod, userID string) (CheckTarget, error) {
 	var err error
 	target := CheckTarget{Namespace: namespace, Pod: pod, UserID: userID}
@@ -132,6 +140,19 @@ func (l *Local) CheckTargetFor(cluster, namespace, pod, userID string) (CheckTar
 		target.Namespace = cmp.Or(target.Namespace, out.K8sSandbox.Namespace)
 	}
 	target.Pod = cmp.Or(target.Pod, target.UserID)
+	for _, name := range []struct {
+		field, value string
+		problems     []string
+	}{
+		{"namespace", target.Namespace, validation.IsDNS1123Label(target.Namespace)},
+		{"user id", target.UserID, validation.IsDNS1123Label(target.UserID)},
+		{"pod", target.Pod, validation.IsDNS1123Subdomain(target.Pod)},
+	} {
+		if len(name.problems) > 0 {
+			return target, fmt.Errorf("%w: the %s %q is not valid: %s",
+				ErrTarget, name.field, name.value, strings.Join(name.problems, "; "))
+		}
+	}
 	return target, nil
 }
 

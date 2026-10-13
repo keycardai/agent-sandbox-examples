@@ -2,8 +2,10 @@ package sandbox_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +15,7 @@ import (
 
 const (
 	userID    = "user1abc"
+	email     = "ada@example.com"
 	namespace = "agents"
 	checkOK   = "every automated check passed"
 	oneFailed = "1 of 4"
@@ -216,7 +219,7 @@ func TestRunSettings(t *testing.T) {
 	valid := func() sandbox.Settings {
 		return sandbox.Settings{
 			sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer,
-			sandbox.KeyZoneURL: "https://zone.example.com", sandbox.KeyUserEmail: "ada@example.com",
+			sandbox.KeyZoneURL: "https://zone.example.com", sandbox.KeyUserEmail: email,
 		}
 	}
 	tests := []struct {
@@ -257,61 +260,150 @@ func TestRunSettings(t *testing.T) {
 	}
 }
 
-// TestRun runs the whole flow against fake tools and the zone-setup output
-// of an earlier run. The pinned helm renders the repository's sandbox chart.
-// A missing image stops Run before the import. A missing zone-setup output
-// stops it before the install.
-func TestRun(t *testing.T) {
-	t.Parallel()
-	const (
-		images = "ghcr.io/keycardai/egress-netsetup:local ghcr.io/keycardai/egress-proxy:local" +
-			" ghcr.io/keycardai/sandbox-base:local"
-		inspects = "docker KUBERC= image inspect ghcr.io/keycardai/egress-netsetup:local\n" +
-			"docker KUBERC= image inspect ghcr.io/keycardai/egress-proxy:local\n" +
-			"docker KUBERC= image inspect ghcr.io/keycardai/sandbox-base:local\n"
-		importCall = "k3d KUBERC= image import --cluster asp " + images + "\n"
-		kube       = "kubectl KUBERC=off --context k3d-asp --namespace agents "
-	)
-	output := `k8s_sandbox:
+// zoneSetupOutput is the zone-setup output of an earlier run, for
+// ada@example.com.
+const zoneSetupOutput = `k8s_sandbox:
   application_id: app-1
   application_identifier: urn:keycard:sandbox:agents
   namespace: agents
   provider_id: provider-1
 sandbox_user_access:
-- user_email: ada@example.com
+- user_email: ` + email + `
   user_id: ` + userID + `
   service_account: system:serviceaccount:agents:` + userID + `
   client_id: client-1
   namespace: agents
 `
+
+// TestCheckTargetFor checks that each name the checks pass to kubectl, from
+// a flag or from the zone-setup output, is a Kubernetes name.
+func TestCheckTargetFor(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
-		name      string
-		sandbox   fakeSandbox
+		name                   string
+		output                 string
+		namespace, pod, userID string
+		want                   sandbox.CheckTarget
+		wantText               string
+	}{
+		{
+			name:   "from the zone-setup output",
+			output: zoneSetupOutput,
+			want:   sandbox.CheckTarget{Cluster: cluster, Namespace: namespace, Pod: userID, UserID: userID},
+		},
+		{
+			name:      "flags beat the zone-setup output",
+			output:    zoneSetupOutput,
+			namespace: "agents-2", pod: "pod-1.a", userID: "user2",
+			want: sandbox.CheckTarget{Cluster: cluster, Namespace: "agents-2", Pod: "pod-1.a", UserID: "user2"},
+		},
+		{
+			name:     "pod is a flag",
+			output:   zoneSetupOutput,
+			pod:      "--all-containers",
+			wantText: `the pod "--all-containers" is not valid`,
+		},
+		{
+			name:      "namespace has a capital",
+			namespace: "Agents", userID: userID,
+			wantText: `the namespace "Agents" is not valid`,
+		},
+		{
+			name:     "user id in the zone-setup output is a flag",
+			output:   strings.ReplaceAll(zoneSetupOutput, "user_id: "+userID, "user_id: -x"),
+			wantText: `the user id "-x" is not valid`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			local, calls := newLocal(t, sandbox.Settings{sandbox.KeyUserEmail: email}, "")
+			if tc.output != "" {
+				writeFile(t, filepath.Join(local.Root, "local", "out", "zone-setup.yaml"), tc.output)
+			}
+			got, err := local.CheckTargetFor(cluster, tc.namespace, tc.pod, tc.userID)
+			if tc.wantText != "" {
+				checkErr(t, err, []error{sandbox.ErrTarget}, tc.wantText)
+			} else if err != nil || got != tc.want {
+				t.Fatalf("CheckTargetFor() = %+v, %v, want %+v", got, err, tc.want)
+			}
+			if got := readCalls(t, calls); got != "" {
+				t.Fatalf("calls = %q, want none", got)
+			}
+		})
+	}
+}
+
+// TestRun runs the whole flow against fake tools and the zone-setup output
+// of an earlier run. The pinned helm renders the repository's sandbox chart.
+// A run that fails must make exactly the calls in wantCalls, so each row
+// shows the step Run stops at. A whole run must make each call in wantCalls.
+func TestRun(t *testing.T) {
+	t.Parallel()
+	const (
+		images = "ghcr.io/keycardai/egress-netsetup:local ghcr.io/keycardai/egress-proxy:local" +
+			" ghcr.io/keycardai/sandbox-base:local"
+		dockerCall = "docker KUBERC= version --format {{.Server.Version}}\n"
+		inspects   = "docker KUBERC= image inspect ghcr.io/keycardai/egress-netsetup:local\n" +
+			"docker KUBERC= image inspect ghcr.io/keycardai/egress-proxy:local\n" +
+			"docker KUBERC= image inspect ghcr.io/keycardai/sandbox-base:local\n"
+		importCall = "k3d KUBERC= image import --cluster asp " + images + "\n"
+		kube       = "kubectl KUBERC=off --context k3d-asp --namespace agents "
+		imported   = dockerCall + listCall + discoveryCall + mintCalls + inspects + importCall
+	)
+	tests := []struct {
+		name    string
+		sandbox fakeSandbox
+		// noDocker makes docker a path that does not exist.
+		noDocker  bool
 		output    string
 		want      []error
 		wantText  string
 		wantCalls []string
 	}{
 		{
+			name:     "docker missing",
+			sandbox:  healthy(),
+			noDocker: true,
+			want:     []error{sandbox.ErrDocker},
+			wantText: "no such file or directory. Install Docker, and start OrbStack or Docker Desktop",
+		},
+		{
 			name:      "image missing",
 			sandbox:   with(func(f *fakeSandbox) { f.missingImage = "ghcr.io/keycardai/egress-proxy:local" }),
 			want:      []error{sandbox.ErrImages},
 			wantText:  "ghcr.io/keycardai/egress-proxy:local. Build them in the egress-proxy repository",
-			wantCalls: []string{listCall + discoveryCall + mintCalls + inspects},
+			wantCalls: []string{dockerCall + listCall + discoveryCall + mintCalls + inspects},
 		},
 		{
 			name:      "no zone-setup output",
 			sandbox:   healthy(),
 			want:      []error{sandbox.ErrZoneSetup},
 			wantText:  "zone-setup.yaml is missing or empty. Run without --skip-zone-setup",
-			wantCalls: []string{listCall + discoveryCall + mintCalls + inspects + importCall},
+			wantCalls: []string{imported},
+		},
+		{
+			name:      "zone-setup output without a provider",
+			sandbox:   healthy(),
+			output:    strings.ReplaceAll(zoneSetupOutput, "  provider_id: provider-1\n", ""),
+			want:      []error{sandbox.ErrZoneSetup},
+			wantText:  "zone-setup.yaml has no k8s_sandbox.provider_id. Run without --skip-zone-setup",
+			wantCalls: []string{imported},
+		},
+		{
+			name:      "zone-setup output without a client id",
+			sandbox:   healthy(),
+			output:    strings.ReplaceAll(zoneSetupOutput, "  client_id: client-1\n", ""),
+			want:      []error{sandbox.ErrZoneSetup},
+			wantText:  "zone-setup.yaml has no sandbox_user_access[0].client_id. Run without --skip-zone-setup",
+			wantCalls: []string{imported},
 		},
 		{
 			name:    "whole flow",
 			sandbox: healthy(),
-			output:  output,
+			output:  zoneSetupOutput,
 			wantCalls: []string{
-				listCall + discoveryCall + mintCalls + inspects + importCall,
+				imported,
 				"helm KUBERC=off upgrade --install keycard-sandbox ",
 				"kubectl KUBERC=off --context k3d-asp apply --namespace agents -f -\n" +
 					kube + "wait --for=create pod/" + userID + " --timeout=120s\n" +
@@ -325,8 +417,18 @@ sandbox_user_access:
 			t.Parallel()
 			local, calls := newLocal(t, sandbox.Settings{
 				sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer,
-				sandbox.KeyZoneURL: "https://zone.example.com", sandbox.KeyUserEmail: "ada@example.com",
+				sandbox.KeyZoneURL: "https://zone.example.com", sandbox.KeyUserEmail: email,
 			}, tc.sandbox.script())
+			if tc.noDocker {
+				tool, missing := local.Tool, filepath.Join(t.TempDir(), "docker")
+				local.Tool = func(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
+					if name == "docker" {
+						//nolint:gosec // G204: the path is the test's own missing file.
+						return exec.CommandContext(ctx, missing, args...), nil
+					}
+					return tool(ctx, name, args...)
+				}
+			}
 			out := &bytes.Buffer{}
 			local.Out = out
 			linkCharts(t, local.Root)
@@ -336,14 +438,18 @@ sandbox_user_access:
 			err := local.Run(t.Context(), sandbox.RunOptions{SkipZoneSetup: true})
 			checkErr(t, err, tc.want, tc.wantText)
 			got := readCalls(t, calls)
+			if tc.want != nil {
+				if want := strings.Join(tc.wantCalls, ""); got != want {
+					t.Fatalf("calls = %q, want %q", got, want)
+				}
+				return
+			}
 			for _, want := range tc.wantCalls {
 				if !strings.Contains(got, want) {
 					t.Fatalf("calls lack %q\n%s", want, got)
 				}
 			}
-			if tc.want == nil {
-				checkRunWrote(t, local.Root, out.String())
-			}
+			checkRunWrote(t, local.Root, out.String())
 		})
 	}
 }

@@ -20,9 +20,9 @@ import (
 const k3sImage = "rancher/k3s:v1.36.4-k3s1"
 
 var (
-	// ErrDocker means k3d could not list its clusters. Usually Docker is not
-	// running.
-	ErrDocker = errors.New("k3d unavailable")
+	// ErrDocker means docker or k3d could not reach Docker. Usually Docker
+	// is not installed or not running.
+	ErrDocker = errors.New("docker unavailable")
 	// ErrConfirm means the operator did not confirm a deletion.
 	ErrConfirm = errors.New("not confirmed")
 )
