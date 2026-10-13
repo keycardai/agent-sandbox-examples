@@ -238,7 +238,7 @@ func (l *Local) runSettings() (runSettings, error) {
 }
 
 // checkDocker runs docker version. It fails when the docker CLI is not on
-// PATH or cannot reach the Docker daemon.
+// PATH or cannot connect to the Docker daemon.
 func (l *Local) checkDocker(ctx context.Context) error {
 	cmd, err := l.Tool(ctx, "docker", "version", "--format", "{{.Server.Version}}")
 	if err != nil {
