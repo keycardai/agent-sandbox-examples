@@ -38,7 +38,7 @@ fails or you press Ctrl-C, `up` prints the commands that are left. After the
 checks, `up` keeps the tunnel and the mirror running until you press Ctrl-C.
 Press Enter to run the checks again. If the cluster was created with a
 different issuer, `up` asks to delete the cluster and create it again.
-Press Enter to accept, or type n to keep it.
+Type y to accept. Any other answer keeps the cluster.
 
 `sandbox up --print` prints the commands without running them:
 

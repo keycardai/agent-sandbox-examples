@@ -57,27 +57,23 @@ func Load(issuer string, discovery, jwks []byte) (*Snapshot, error) {
 	return &Snapshot{issuer: issuer, docs: docs, keys: keys}, nil
 }
 
-// Serve serves snap over plain HTTP on listen until ctx ends, for a
-// TLS-terminating proxy to publish at the issuer URL. It writes one line to
-// log once it listens.
-func Serve(ctx context.Context, snap *Snapshot, listen string, log io.Writer) error {
-	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listen)
-	if err != nil {
-		return fmt.Errorf("listening: %w", err)
-	}
+// Serve serves snap over plain HTTP on listener until ctx ends, for a
+// TLS-terminating proxy to publish at the issuer URL. It closes listener. It
+// writes one line to log once it serves.
+func Serve(ctx context.Context, snap *Snapshot, listener net.Listener, log io.Writer) error {
 	server := &http.Server{Handler: snap, ReadHeaderTimeout: readHeaderTimeout}
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(listener) }()
 	_, _ = fmt.Fprintf(log, "serving %s on http://%s with %d keys\n", snap.issuer, listener.Addr(), snap.keys)
 
 	select {
-	case err = <-served:
+	case err := <-served:
 		return fmt.Errorf("serving: %w", err)
 	case <-ctx.Done():
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
 	defer cancel()
-	if err = server.Shutdown(shutdownCtx); err != nil {
+	if err := server.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutting down: %w", err)
 	}
 	return nil

@@ -156,7 +156,9 @@ func TestBootstrap(t *testing.T) {
 // The lines Down prints when the cluster is absent and when it deletes it.
 const (
 	noCluster = "There is no k3d cluster named asp. Nothing to delete.\n"
-	deleted   = "Deleted the k3d cluster asp, and removed the context k3d-asp from your kubeconfig.\n"
+	// nothingDeleted is the error text for an answer other than y.
+	nothingDeleted = "nothing deleted"
+	deleted        = "Deleted the k3d cluster asp, and removed the context k3d-asp from your kubeconfig.\n"
 )
 
 // TestDown checks that Down deletes the cluster only when it exists and the
@@ -185,7 +187,7 @@ func TestDown(t *testing.T) {
 		{name: "answered y", list: present, answer: "y\n", wantOut: deleted, wantCalls: listCall + deleteCall},
 		{
 			name: "answered n", list: present, answer: "n\n",
-			want: []error{sandbox.ErrConfirm}, wantText: "nothing deleted", wantCalls: listCall,
+			want: []error{sandbox.ErrConfirm}, wantText: nothingDeleted, wantCalls: listCall,
 		},
 		{
 			name: "no answer", list: present,

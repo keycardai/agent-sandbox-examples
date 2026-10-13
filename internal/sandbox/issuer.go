@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/issuer"
@@ -26,6 +27,17 @@ const (
 // Empty cluster and issuerURL default to the settings, as Local.cluster and
 // Local.issuer describe.
 func (l *Local) Mirror(ctx context.Context, cluster, issuerURL, listen string) error {
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listen)
+	if err != nil {
+		return fmt.Errorf("mirror: %w", err)
+	}
+	return l.mirror(ctx, cluster, issuerURL, listener)
+}
+
+// mirror serves the issuer documents on listener, as Mirror does. It closes
+// listener.
+func (l *Local) mirror(ctx context.Context, cluster, issuerURL string, listener net.Listener) error {
+	defer func() { _ = listener.Close() }()
 	cluster, err := l.cluster(cluster)
 	if err != nil {
 		return err
@@ -46,7 +58,7 @@ func (l *Local) Mirror(ctx context.Context, cluster, issuerURL, listen string) e
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrIssuer, err)
 	}
-	if err = issuer.Serve(ctx, snap, listen, l.Out); err != nil {
+	if err = issuer.Serve(ctx, snap, listener, l.Out); err != nil {
 		return fmt.Errorf("mirror: %w", err)
 	}
 	return nil

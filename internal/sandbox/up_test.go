@@ -2,9 +2,11 @@ package sandbox_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -88,62 +90,105 @@ func TestUpPrint(t *testing.T) {
 }
 
 // TestUpStops checks that Up stops at the failed step and prints the
-// commands from that step on.
+// commands from that step on, and the background steps before it.
 func TestUpStops(t *testing.T) {
 	t.Parallel()
-	local, _ := newLocal(t, sandbox.Settings{sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer},
-		clusterTool("FAIL", "", ""))
-	out := &bytes.Buffer{}
-	local.Out = out
-	err := local.Up(t.Context(), sandbox.UpOptions{Listen: listen, Answers: strings.NewReader("")})
-	checkErr(t, err, []error{sandbox.ErrDocker}, "Is Docker running?")
-	want := leftHeader +
-		"  go run ./cmd/sandbox bootstrap\n" +
-		"  go run ./cmd/sandbox mirror --listen 127.0.0.1:8480    # in another terminal\n" +
-		"  go run ./cmd/sandbox check-issuer\n" +
-		"  go run ./cmd/sandbox run\n"
-	if !strings.HasSuffix(out.String(), want) {
-		t.Fatalf("output = %q, want it to end with %q", out, want)
+	const (
+		cmd    = "  go run ./cmd/sandbox "
+		tunnel = cmd + "tunnel --listen LISTEN    # in a terminal of its own\n"
+		rest   = cmd + "mirror --listen LISTEN    # in another terminal\n" +
+			cmd + "check-issuer\n" +
+			cmd + "run\n"
+	)
+	tests := []struct {
+		name     string
+		settings sandbox.Settings
+		tool     string
+		// holdPort listens on the mirror's address before Up starts.
+		holdPort bool
+		want     []error
+		wantText string
+		wantLeft string
+	}{
+		{
+			name:     "Docker is down",
+			settings: sandbox.Settings{sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer},
+			tool:     clusterTool("FAIL", "", ""),
+			want:     []error{sandbox.ErrDocker},
+			wantText: "Is Docker running?",
+			wantLeft: cmd + "bootstrap\n" + rest,
+		},
+		{
+			name:     "named tunnel without an issuer",
+			settings: sandbox.Settings{sandbox.KeyCluster: cluster, sandbox.KeyTunnel: namedTunnel},
+			want:     []error{sandbox.ErrIssuer},
+			wantText: "the named tunnel " + namedTunnel + " needs KEYCARD_LOCAL_ISSUER",
+			wantLeft: tunnel + cmd + "bootstrap\n" + rest,
+		},
+		{
+			name:     "mirror's port taken",
+			settings: sandbox.Settings{sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer},
+			tool:     clusterTool(present, testIssuer, testIssuer),
+			holdPort: true,
+			want:     []error{sandbox.ErrService},
+			wantText: "address already in use",
+			wantLeft: rest,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			local, calls := newLocal(t, tc.settings, tc.tool)
+			out := &bytes.Buffer{}
+			local.Out = out
+			addr := listen
+			if tc.holdPort {
+				held, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = held.Close() }()
+				addr = held.Addr().String()
+			}
+			err := local.Up(t.Context(), sandbox.UpOptions{Listen: addr, Answers: strings.NewReader("")})
+			checkErr(t, err, tc.want, tc.wantText)
+			want := leftHeader + strings.ReplaceAll(tc.wantLeft, "LISTEN", addr)
+			if !strings.HasSuffix(out.String(), want) {
+				t.Fatalf("output = %q, want it to end with %q", out, want)
+			}
+			if tc.tool == "" {
+				if got := readCalls(t, calls); got != "" {
+					t.Fatalf("calls = %q, want none", got)
+				}
+			}
+		})
 	}
 }
 
 // TestUpRecreates checks that Up asks before it deletes a cluster with
-// another issuer. Enter or y recreates the cluster. n or EOF keeps it. The
-// issuer is a closed port, so check-issuer fails at once and the commands
-// left include the mirror.
+// another issuer, and deletes it only on y. Ctrl-C at the prompt cancels the
+// context while the read is still blocked, and Up must return without
+// deleting. The issuer is a closed port, so after a recreate check-issuer
+// fails at once and the commands left include the mirror.
 func TestUpRecreates(t *testing.T) {
 	t.Parallel()
 	const closed = "https://127.0.0.1:1"
-	type outcome struct {
-		want      []error
-		wantText  string
-		wantCalls []string
-		wantOut   string
-	}
-	recreated := outcome{
-		want:     []error{sandbox.ErrIssuer},
-		wantText: "discovery refused",
-		wantCalls: []string{
-			"k3d KUBERC= cluster delete asp\n",
-			"k3d KUBERC= cluster create asp ",
-			"kubectl KUBERC=off --context k3d-asp get --raw /openid/v1/jwks\n",
-		},
-		wantOut: leftHeader + "  go run ./cmd/sandbox mirror --listen 127.0.0.1:", /* port follows */
-	}
-	kept := outcome{
-		want:     []error{sandbox.ErrConfirm},
-		wantText: "the cluster has another issuer",
-		wantOut:  "Delete the cluster and create it again with the new issuer? [Y/n] ",
-	}
 	tests := []struct {
-		outcome
-
 		name, answer string
+		interrupt    bool
+		recreate     bool
+		want         []error
+		wantText     string
 	}{
-		{name: "pressed Enter", answer: "\n", outcome: recreated},
-		{name: "answered y", answer: "y\n", outcome: recreated},
-		{name: "answered n", answer: "n\n", outcome: kept},
-		{name: "no answer", answer: "", outcome: kept},
+		{
+			name: "answered y", answer: "y\n", recreate: true,
+			want: []error{sandbox.ErrIssuer}, wantText: "discovery refused",
+		},
+		{name: "pressed Enter", answer: "\n", want: []error{sandbox.ErrConfirm}, wantText: nothingDeleted},
+		{name: "answered keep", answer: "keep\n", want: []error{sandbox.ErrConfirm}, wantText: nothingDeleted},
+		{name: "answered n", answer: "n\n", want: []error{sandbox.ErrConfirm}, wantText: nothingDeleted},
+		{name: "end of input", want: []error{sandbox.ErrConfirm}, wantText: "no answer. Pass --yes"},
+		{name: "Ctrl-C", interrupt: true, want: []error{context.Canceled}, wantText: "interrupted: context canceled"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -152,19 +197,34 @@ func TestUpRecreates(t *testing.T) {
 				recreateTool(closed))
 			out := &bytes.Buffer{}
 			local.Out = out
-			err := local.Up(t.Context(), sandbox.UpOptions{Listen: freeAddr(t), Answers: strings.NewReader(tc.answer)})
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var answers io.Reader = strings.NewReader(tc.answer)
+			if tc.interrupt {
+				release := make(chan struct{})
+				defer close(release)
+				answers = interruptingReader{cancel: cancel, release: release}
+			}
+			err := local.Up(ctx, sandbox.UpOptions{Listen: freeAddr(t), Answers: answers})
 			checkErr(t, err, tc.want, tc.wantText)
 			got := readCalls(t, calls)
-			for _, want := range tc.wantCalls {
-				if !strings.Contains(got, want) {
-					t.Errorf("calls lack %q\n%s", want, got)
+			wantOut := "Delete the k3d cluster asp? [y/N] "
+			if tc.recreate {
+				for _, want := range []string{
+					"k3d KUBERC= cluster delete asp\n",
+					"k3d KUBERC= cluster create asp ",
+					"kubectl KUBERC=off --context k3d-asp get --raw /openid/v1/jwks\n",
+				} {
+					if !strings.Contains(got, want) {
+						t.Errorf("calls lack %q\n%s", want, got)
+					}
 				}
-			}
-			if len(tc.wantCalls) == 0 && strings.Contains(got, "cluster delete") {
+				wantOut = leftHeader + "  go run ./cmd/sandbox mirror --listen 127.0.0.1:" /* port follows */
+			} else if strings.Contains(got, "cluster delete") {
 				t.Errorf("calls = %q, want no delete", got)
 			}
-			if !strings.Contains(out.String(), tc.wantOut) {
-				t.Errorf("output lacks %q\n%s", tc.wantOut, out)
+			if !strings.Contains(out.String(), wantOut) {
+				t.Errorf("output lacks %q\n%s", wantOut, out)
 			}
 		})
 	}

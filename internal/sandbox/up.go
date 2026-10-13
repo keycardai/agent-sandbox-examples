@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,8 +42,9 @@ type UpOptions struct {
 	Print bool
 	// IssuerWait is how long Up retries check-issuer.
 	IssuerWait time.Duration
-	// Answers is the operator's input: y or n when the cluster has another
-	// issuer, and an empty line to run the checks again.
+	// Answers is the operator's input: y to delete a cluster that has
+	// another issuer, and an empty line to run the checks again. It must not
+	// be nil.
 	Answers io.Reader
 }
 
@@ -70,7 +72,7 @@ type upRun struct {
 // Up runs every step in one process: tunnel, bootstrap, mirror, check-issuer
 // and run. The tunnel and the mirror run in the background. Before each step,
 // Up prints the command that runs the step by hand. When a step fails or ctx
-// ends, it prints the commands that are left.
+// ends, it prints the commands that are left and returns an error.
 //
 // After run, Up keeps the tunnel and the mirror running until ctx ends. An
 // empty line on opts.Answers runs the checks again. Up does not delete the
@@ -98,12 +100,12 @@ func (l *Local) Up(ctx context.Context, opts UpOptions) error {
 			stopServices()
 			l.printLeft(steps, i, state)
 			if ctx.Err() != nil {
-				return nil
+				return fmt.Errorf("interrupted: %w", ctx.Err())
 			}
 			return err
 		}
 	}
-	return l.serve(ctx, state)
+	return l.serve(ctx, steps, state)
 }
 
 // upSteps returns Up's steps for the settings.
@@ -159,6 +161,9 @@ func (l *Local) needsTunnel() bool {
 }
 
 func (l *Local) upTunnel(ctx context.Context, state *upRun) error {
+	if err := l.checkTunnel(state.opts.Listen); err != nil {
+		return err
+	}
 	state.quickTunnel = l.Settings[KeyTunnel] == ""
 	l.startService(ctx, state, "tunnel", func(ctx context.Context, service *Local) error {
 		return service.Tunnel(ctx, state.opts.Listen)
@@ -172,39 +177,44 @@ func (l *Local) upTunnel(ctx context.Context, state *upRun) error {
 	})
 }
 
-// upBootstrap runs bootstrap. If the cluster has another issuer, it asks,
-// then deletes and recreates the cluster unless the answer starts with n. At
-// EOF without an answer, it keeps the cluster.
+// upBootstrap runs bootstrap. If the cluster has another issuer, it asks to
+// delete the cluster as down does, and creates it again on y.
 func (l *Local) upBootstrap(ctx context.Context, state *upRun) error {
 	err := l.Bootstrap(ctx, "", "", false)
-	if !errors.Is(err, ErrOtherIssuer) {
-		state.bootstrapped = err == nil
-		return err
+	if errors.Is(err, ErrOtherIssuer) {
+		_, _ = fmt.Fprintf(l.Out, "%v\n\n", err)
+		if err = l.Down(ctx, "", false, state.answers); err != nil {
+			return err
+		}
+		err = l.Bootstrap(ctx, "", "", false)
 	}
-	_, _ = fmt.Fprintf(l.Out, "%v\n\nDelete the cluster and create it again with the new issuer? [Y/n] ", err)
-	answer, readErr := state.answers.ReadString('\n')
-	declined := strings.HasPrefix(strings.ToLower(strings.TrimSpace(answer)), "n")
-	if declined || (answer == "" && readErr != nil) {
-		return fmt.Errorf("%w: the cluster has another issuer", ErrConfirm)
-	}
-	if err = l.Down(ctx, "", true, nil); err != nil {
-		return err
-	}
-	err = l.Bootstrap(ctx, "", "", false)
 	state.bootstrapped = err == nil
 	return err
 }
 
+// upMirror listens on opts.Listen before it starts the mirror, so a port
+// that another process holds fails the step.
 func (l *Local) upMirror(ctx context.Context, state *upRun) error {
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", state.opts.Listen)
+	if err != nil {
+		return fmt.Errorf("%w: mirror: %w", ErrService, err)
+	}
 	l.startService(ctx, state, "mirror", func(ctx context.Context, service *Local) error {
-		return service.Mirror(ctx, "", "", state.opts.Listen)
+		return service.mirror(ctx, "", "", listener)
 	})
+	// The listener accepts connections before the mirror serves. Any HTTP
+	// response means the mirror serves.
+	client := &http.Client{Transport: &http.Transport{}, Timeout: pollEvery}
 	return waitFor(ctx, state, "the mirror on "+state.opts.Listen, func() bool {
-		conn, err := (&net.Dialer{Timeout: pollEvery}).DialContext(ctx, "tcp", state.opts.Listen)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+state.opts.Listen+"/", nil)
 		if err != nil {
 			return false
 		}
-		_ = conn.Close()
+		resp, err := client.Do(req)
+		if err != nil {
+			return false
+		}
+		_ = resp.Body.Close()
 		return true
 	})
 }
@@ -283,7 +293,7 @@ func waitFor(ctx context.Context, state *upRun, what string, ready func() bool) 
 
 // serve keeps the background steps running until ctx ends or one stops.
 // An empty line on the answers runs the checks again.
-func (l *Local) serve(ctx context.Context, state *upRun) error {
+func (l *Local) serve(ctx context.Context, steps []upStep, state *upRun) error {
 	_, _ = fmt.Fprintln(l.Out, "\nThe sandbox is up. Leave this running so the zone can read the cluster's issuer\n"+
 		"through the tunnel and the mirror.\n"+
 		"Press Enter to run the checks again, or Ctrl-C to stop. Stopping does not delete the cluster.")
@@ -301,6 +311,7 @@ func (l *Local) serve(ctx context.Context, state *upRun) error {
 		case <-ctx.Done():
 			return nil
 		case err := <-state.services:
+			l.printLeft(steps, len(steps), state)
 			return err
 		case <-lines:
 			target, err := l.CheckTargetFor("", "", "", "")

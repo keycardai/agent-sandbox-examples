@@ -50,24 +50,12 @@ var (
 // removes the file when it returns. The issuer is fixed when the cluster is
 // created, so a new URL needs a new cluster.
 func (l *Local) Tunnel(ctx context.Context, listen string) error {
-	if !listenAddr.MatchString(listen) {
-		return fmt.Errorf("%w: --listen must be HOST:PORT (got %q)", ErrTunnel, listen)
+	if err := l.checkTunnel(listen); err != nil {
+		return err
 	}
 	name, issuerURL := l.Settings[KeyTunnel], l.Settings[KeyIssuer]
 	if name == "" {
-		if issuerURL != "" {
-			return fmt.Errorf("%w: %s is set, but a quick tunnel picks its own URL. "+
-				"Clear %s, or set %s to the name of your Cloudflare tunnel", ErrIssuer, KeyIssuer, KeyIssuer, KeyTunnel)
-		}
 		return l.quickTunnel(ctx, listen)
-	}
-	if !hostIssuer.MatchString(issuerURL) {
-		return fmt.Errorf("%w: the named tunnel %s needs %s set to https://<hostname>, with no port or path (got %q)",
-			ErrIssuer, name, KeyIssuer, issuerURL)
-	}
-	if !tunnelName.MatchString(name) {
-		return fmt.Errorf("%w: %s must be a tunnel name of letters, digits, dots, dashes and underscores (got %q)",
-			ErrTunnel, KeyTunnel, name)
 	}
 	cmd, err := l.cloudflared(ctx, "tunnel", "--no-autoupdate", "run", "--url", "http://"+listen, name)
 	if err != nil {
@@ -76,6 +64,28 @@ func (l *Local) Tunnel(ctx context.Context, listen string) error {
 	cmd.Stdout, cmd.Stderr = l.Out, l.Out
 	_, _ = fmt.Fprintf(l.Out, "running the named tunnel %s for %s, forwarding to http://%s\n", name, issuerURL, listen)
 	return stopped(ctx, cmd.Run())
+}
+
+// checkTunnel checks listen and the tunnel settings that Tunnel needs.
+func (l *Local) checkTunnel(listen string) error {
+	if !listenAddr.MatchString(listen) {
+		return fmt.Errorf("%w: --listen must be HOST:PORT (got %q)", ErrTunnel, listen)
+	}
+	name, issuerURL := l.Settings[KeyTunnel], l.Settings[KeyIssuer]
+	switch {
+	case name == "" && issuerURL != "":
+		return fmt.Errorf("%w: %s is set, but a quick tunnel picks its own URL. "+
+			"Clear %s, or set %s to the name of your Cloudflare tunnel", ErrIssuer, KeyIssuer, KeyIssuer, KeyTunnel)
+	case name == "":
+		return nil
+	case !hostIssuer.MatchString(issuerURL):
+		return fmt.Errorf("%w: the named tunnel %s needs %s set to https://<hostname>, with no port or path (got %q)",
+			ErrIssuer, name, KeyIssuer, issuerURL)
+	case !tunnelName.MatchString(name):
+		return fmt.Errorf("%w: %s must be a tunnel name of letters, digits, dots, dashes and underscores (got %q)",
+			ErrTunnel, KeyTunnel, name)
+	}
+	return nil
 }
 
 // quickTunnel runs a quick tunnel and keeps its URL in QuickIssuerFile while
