@@ -121,16 +121,8 @@ func (l *Local) Down(ctx context.Context, cluster string, yes bool, answers io.R
 		return nil
 	}
 	if !yes {
-		_, _ = fmt.Fprintf(l.Out, "Delete the k3d cluster %s? [y/N] ", cluster)
-		answer, readErr := readLine(ctx, answers)
-		switch {
-		case ctx.Err() != nil:
-			_, _ = fmt.Fprintln(l.Out)
-			return fmt.Errorf("%w: interrupted, nothing deleted: %w", ErrConfirm, ctx.Err())
-		case answer == "" && readErr != nil:
-			return fmt.Errorf("%w: no answer. Pass --yes to delete without asking", ErrConfirm)
-		case !strings.HasPrefix(answer, "y") && !strings.HasPrefix(answer, "Y"):
-			return fmt.Errorf("%w: nothing deleted", ErrConfirm)
+		if err = l.confirmDelete(ctx, cluster, answers); err != nil {
+			return err
 		}
 	}
 	if err = l.k3d(ctx, l.Out, "cluster", "delete", cluster); err != nil {
@@ -138,6 +130,23 @@ func (l *Local) Down(ctx context.Context, cluster string, yes bool, answers io.R
 	}
 	_, _ = fmt.Fprintf(l.Out, "Deleted the k3d cluster %s, and removed the context k3d-%s from your kubeconfig.\n",
 		cluster, cluster)
+	return nil
+}
+
+// confirmDelete asks whether to delete cluster and reads the answer. It
+// returns ErrConfirm unless the answer starts with y or Y.
+func (l *Local) confirmDelete(ctx context.Context, cluster string, answers io.Reader) error {
+	_, _ = fmt.Fprintf(l.Out, "Delete the k3d cluster %s? [y/N] ", cluster)
+	answer, err := readLine(ctx, answers)
+	switch {
+	case ctx.Err() != nil:
+		_, _ = fmt.Fprintln(l.Out)
+		return fmt.Errorf("%w: interrupted, nothing deleted: %w", ErrConfirm, ctx.Err())
+	case answer == "" && err != nil:
+		return fmt.Errorf("%w: no answer. Pass --yes to delete without asking", ErrConfirm)
+	case !strings.HasPrefix(answer, "y") && !strings.HasPrefix(answer, "Y"):
+		return fmt.Errorf("%w: nothing deleted", ErrConfirm)
+	}
 	return nil
 }
 
