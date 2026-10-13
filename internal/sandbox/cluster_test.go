@@ -2,8 +2,10 @@ package sandbox_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -158,7 +160,9 @@ const (
 )
 
 // TestDown checks that Down deletes the cluster only when it exists and the
-// operator confirms with --yes or an answer that starts with y.
+// operator confirms with --yes or an answer that starts with y. Ctrl-C at the
+// prompt cancels the context while the read is still blocked, and Down must
+// return without deleting.
 func TestDown(t *testing.T) {
 	t.Parallel()
 
@@ -166,6 +170,7 @@ func TestDown(t *testing.T) {
 		name, list string
 		yes        bool
 		answer     string
+		interrupt  bool
 		want       []error
 		wantText   string
 		wantOut    string
@@ -187,6 +192,11 @@ func TestDown(t *testing.T) {
 			want: []error{sandbox.ErrConfirm}, wantText: "no answer. Pass --yes", wantCalls: listCall,
 		},
 		{
+			name: "interrupted", list: present, interrupt: true,
+			want: []error{sandbox.ErrConfirm, context.Canceled}, wantText: "interrupted, nothing deleted",
+			wantCalls: listCall,
+		},
+		{
 			name: "cannot list", list: "FAIL", yes: true,
 			want: []error{sandbox.ErrDocker}, wantText: "Is Docker running?", wantCalls: listCall,
 		},
@@ -197,7 +207,15 @@ func TestDown(t *testing.T) {
 			local, calls := newLocal(t, sandbox.Settings{sandbox.KeyCluster: cluster}, clusterTool(tc.list, "", ""))
 			out := &bytes.Buffer{}
 			local.Out = out
-			err := local.Down(t.Context(), "", tc.yes, strings.NewReader(tc.answer))
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var answers io.Reader = strings.NewReader(tc.answer)
+			if tc.interrupt {
+				release := make(chan struct{})
+				defer close(release)
+				answers = interruptingReader{cancel: cancel, release: release}
+			}
+			err := local.Down(ctx, "", tc.yes, answers)
 			checkErr(t, err, tc.want, tc.wantText)
 			if !strings.Contains(out.String(), tc.wantOut) {
 				t.Errorf("output = %q, want it to contain %q", out, tc.wantOut)
@@ -207,4 +225,17 @@ func TestDown(t *testing.T) {
 			}
 		})
 	}
+}
+
+// interruptingReader cancels the context when Down reads the answer, then
+// blocks until release closes, as a terminal does while it waits for input.
+type interruptingReader struct {
+	cancel  context.CancelFunc
+	release chan struct{}
+}
+
+func (r interruptingReader) Read([]byte) (int, error) {
+	r.cancel()
+	<-r.release
+	return 0, io.EOF
 }

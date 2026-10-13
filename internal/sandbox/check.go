@@ -12,17 +12,22 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 const (
 	// allowedURL is an endpoint in sandbox/values.example.yaml without a
 	// credential.
 	allowedURL = "https://pypi.org/simple/"
-	// githubUserURL is the endpoint the proxy injects the user's GitHub
-	// credential into.
-	githubUserURL = "https://api.github.com/user"
+	// githubHost and githubUserURL are the endpoint the proxy injects the
+	// user's GitHub credential into.
+	githubHost    = "api.github.com"
+	githubUserURL = "https://" + githubHost + "/user"
 	// deniedHost is a host that sandbox/values.example.yaml does not list.
 	deniedHost = "example.com"
+	// deniedReason is the reason the proxy logs for a host no endpoint lists.
+	deniedReason = "no_matching_endpoint"
 	// statusMarker separates the body curl prints from the status code.
 	statusMarker = "\n__sandbox_status__:"
 	// tlsRetries and tlsRetryDelay bound the wait for the agent container
@@ -30,16 +35,26 @@ const (
 	// sandbox-base installs the proxy's CA after that.
 	tlsRetries    = 10
 	tlsRetryDelay = 2 * time.Second
-	// curlSSLConnect and curlPeerFailedCA are curl's exit codes for a failed
-	// TLS handshake and an untrusted certificate.
-	curlSSLConnect   = 35
-	curlPeerFailedCA = 60
+	// curlCouldNotResolve, curlSSLConnect and curlPeerFailedCA are curl's
+	// exit codes for a failed name lookup, a failed TLS handshake and an
+	// untrusted certificate.
+	curlCouldNotResolve = 6
+	curlSSLConnect      = 35
+	curlPeerFailedCA    = 60
 	// proxyLogLines is how many lines of the proxy's log a check reads.
 	proxyLogLines = "--tail=500"
+	// clockSkew is how far the cluster's clock may run behind this host's.
+	// A check reads only the audit records stamped after the checks started,
+	// less clockSkew.
+	clockSkew = 2 * time.Second
 )
 
-// ErrCheck is a check that did not pass.
-var ErrCheck = errors.New("checks failed")
+var (
+	// ErrCheck is a check that did not pass.
+	ErrCheck = errors.New("checks failed")
+	// ErrTarget is a namespace, pod or user id that is not a Kubernetes name.
+	ErrTarget = errors.New("check target")
+)
 
 // CheckTarget is the sandbox the checks run against.
 type CheckTarget struct {
@@ -48,6 +63,7 @@ type CheckTarget struct {
 
 // proxyRecord is the part of the proxy's JSON audit record the checks read.
 type proxyRecord struct {
+	TS          time.Time `json:"ts"`
 	Destination struct {
 		Host string `json:"host"`
 	} `json:"destination"`
@@ -77,9 +93,10 @@ func (l *Local) Check(ctx context.Context, target CheckTarget) error {
 		}
 		_, _ = fmt.Fprintf(l.Out, "  %s  %s\n", mark, line)
 	}
+	since := time.Now().Add(-clockSkew)
 	report(l.checkAllowed(ctx, target))
-	report(l.checkCredentialed(ctx, target))
-	report(l.checkDenied(ctx, target))
+	report(l.checkCredentialed(ctx, target, since))
+	report(l.checkDenied(ctx, target, since))
 	report(l.checkServiceAccount(ctx, target))
 	_, _ = fmt.Fprintf(l.Out, `
   MANUAL  Open the zone's event log. Expect one credentials:issue event for
@@ -101,7 +118,9 @@ func (l *Local) Check(ctx context.Context, target CheckTarget) error {
 // CheckTargetFor returns the sandbox an earlier Run created for
 // KEYCARD_LOCAL_USER_EMAIL, from local/out/zone-setup.yaml. A non-empty
 // argument overrides the value from the file. The pod name defaults to the
-// user id.
+// user id. Each value goes to kubectl as an argument, so CheckTargetFor
+// returns ErrTarget unless the namespace and user id are DNS labels and the
+// pod name is a DNS subdomain.
 func (l *Local) CheckTargetFor(cluster, namespace, pod, userID string) (CheckTarget, error) {
 	var err error
 	target := CheckTarget{Namespace: namespace, Pod: pod, UserID: userID}
@@ -121,6 +140,19 @@ func (l *Local) CheckTargetFor(cluster, namespace, pod, userID string) (CheckTar
 		target.Namespace = cmp.Or(target.Namespace, out.K8sSandbox.Namespace)
 	}
 	target.Pod = cmp.Or(target.Pod, target.UserID)
+	for _, name := range []struct {
+		field, value string
+		problems     []string
+	}{
+		{"namespace", target.Namespace, validation.IsDNS1123Label(target.Namespace)},
+		{"user id", target.UserID, validation.IsDNS1123Label(target.UserID)},
+		{"pod", target.Pod, validation.IsDNS1123Subdomain(target.Pod)},
+	} {
+		if len(name.problems) > 0 {
+			return target, fmt.Errorf("%w: the %s %q is not valid: %s",
+				ErrTarget, name.field, name.value, strings.Join(name.problems, "; "))
+		}
+	}
 	return target, nil
 }
 
@@ -148,7 +180,7 @@ func (l *Local) checkAllowed(ctx context.Context, target CheckTarget) (bool, str
 // checkCredentialed sends the placeholder in $GITHUB_TOKEN from the agent.
 // The proxy replaces it with the credential the zone issued for the
 // impersonated user.
-func (l *Local) checkCredentialed(ctx context.Context, target CheckTarget) (bool, string) {
+func (l *Local) checkCredentialed(ctx context.Context, target CheckTarget, since time.Time) (bool, string) {
 	const name = "credentialed: " + githubUserURL
 	status, body, err := l.fetch(ctx, target, "sh", "-c",
 		`curl -sS -w '`+statusMarker+`%{http_code}' -H "Authorization: Bearer $GITHUB_TOKEN" `+githubUserURL)
@@ -156,7 +188,7 @@ func (l *Local) checkCredentialed(ctx context.Context, target CheckTarget) (bool
 		return false, fmt.Sprintf("%s failed: %v", name, err)
 	}
 	if status != http.StatusOK {
-		return false, fmt.Sprintf("%s returned %d%s", name, status, l.refusal(ctx, target))
+		return false, fmt.Sprintf("%s returned %d%s", name, status, l.refusal(ctx, target, since))
 	}
 	var user struct {
 		Login string `json:"login"`
@@ -171,21 +203,27 @@ func (l *Local) checkCredentialed(ctx context.Context, target CheckTarget) (bool
 }
 
 // checkDenied fetches a destination that no endpoint lists. The proxy's
-// resolver answers NXDOMAIN for it, so curl fails at name resolution. The
-// resolver logs an audit record with the reason.
-func (l *Local) checkDenied(ctx context.Context, target CheckTarget) (bool, string) {
+// resolver answers NXDOMAIN for it, so curl must fail at name resolution.
+// The resolver must also log a deny record with deniedReason since the
+// checks started.
+func (l *Local) checkDenied(ctx context.Context, target CheckTarget, since time.Time) (bool, string) {
 	const name = "denied: https://" + deniedHost + "/"
-	if _, _, err := l.fetch(ctx, target, "curl", "-sS", "-o", "/dev/null", "-w", statusMarker+"%{http_code}",
-		"https://"+deniedHost+"/"); err == nil {
+	_, _, err := l.fetch(ctx, target, "curl", "-sS", "-o", "/dev/null", "-w", statusMarker+"%{http_code}",
+		"https://"+deniedHost+"/")
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
 		return false, name + " was reachable"
+	case !errors.As(err, &exit) || exit.ExitCode() != curlCouldNotResolve:
+		return false, fmt.Sprintf("%s did not fail at name resolution: %v", name, err)
 	}
-	record, ok := l.lastDeny(ctx, target, func(r proxyRecord) bool {
-		return strings.TrimSuffix(r.Destination.Host, ".") == deniedHost
+	_, ok := l.lastDeny(ctx, target, since, func(r proxyRecord) bool {
+		return strings.TrimSuffix(r.Destination.Host, ".") == deniedHost && r.Decision.Reason == deniedReason
 	})
 	if !ok {
-		return false, name + " was blocked, but the proxy did not log a deny record for it"
+		return false, name + " was blocked, but the proxy did not log " + deniedReason + " for it"
 	}
-	return true, fmt.Sprintf("%s was blocked: %s", name, record.Decision.Reason)
+	return true, name + " was blocked: " + deniedReason
 }
 
 func (l *Local) checkServiceAccount(ctx context.Context, target CheckTarget) (bool, string) {
@@ -228,11 +266,13 @@ func (l *Local) fetch(ctx context.Context, target CheckTarget, command ...string
 	return code, body, nil
 }
 
-// refusal returns why the proxy refused the last request it denied, as
+// refusal returns why the proxy last refused a request to githubHost, as
 // " (proxy: <reason>: <zone error>)", or "" when the log does not have a
-// deny record.
-func (l *Local) refusal(ctx context.Context, target CheckTarget) string {
-	record, ok := l.lastDeny(ctx, target, func(proxyRecord) bool { return true })
+// deny record for it.
+func (l *Local) refusal(ctx context.Context, target CheckTarget, since time.Time) string {
+	record, ok := l.lastDeny(ctx, target, since, func(r proxyRecord) bool {
+		return strings.TrimSuffix(r.Destination.Host, ".") == githubHost
+	})
 	if !ok {
 		return ""
 	}
@@ -242,9 +282,14 @@ func (l *Local) refusal(ctx context.Context, target CheckTarget) string {
 	return " (proxy: " + record.Decision.Reason + ": " + record.Decision.Error + ")"
 }
 
-// lastDeny returns the last deny record in the proxy's log that match
-// accepts.
-func (l *Local) lastDeny(ctx context.Context, target CheckTarget, match func(proxyRecord) bool) (proxyRecord, bool) {
+// lastDeny returns the last deny record in the proxy's log, stamped at or
+// after since, that match accepts.
+func (l *Local) lastDeny(
+	ctx context.Context,
+	target CheckTarget,
+	since time.Time,
+	match func(proxyRecord) bool,
+) (proxyRecord, bool) {
 	logs, err := l.kubectl(ctx, target.Cluster, nil, "--namespace", target.Namespace,
 		"logs", target.Pod, "-c", "egress-proxy", proxyLogLines)
 	if err != nil {
@@ -253,7 +298,8 @@ func (l *Local) lastDeny(ctx context.Context, target CheckTarget, match func(pro
 	lines := strings.Split(strings.TrimSpace(string(logs)), "\n")
 	for _, line := range slices.Backward(lines) {
 		var record proxyRecord
-		if json.Unmarshal([]byte(line), &record) == nil && record.Decision.Verdict == "deny" && match(record) {
+		if json.Unmarshal([]byte(line), &record) == nil && record.Decision.Verdict == "deny" &&
+			!record.TS.Before(since) && match(record) {
 			return record, true
 		}
 	}

@@ -94,6 +94,9 @@ func (l *Local) Run(ctx context.Context, opts RunOptions) error {
 	if err != nil {
 		return err
 	}
+	if err = l.checkDocker(ctx); err != nil {
+		return err
+	}
 	if err = os.MkdirAll(l.outDir(), dirMode); err != nil {
 		return fmt.Errorf("creating %s: %w", l.outDir(), err)
 	}
@@ -234,6 +237,19 @@ func (l *Local) runSettings() (runSettings, error) {
 	return cfg, nil
 }
 
+// checkDocker runs docker version. It fails when the docker CLI is not on
+// PATH or cannot connect to the Docker daemon.
+func (l *Local) checkDocker(ctx context.Context) error {
+	cmd, err := l.Tool(ctx, "docker", "version", "--format", "{{.Server.Version}}")
+	if err != nil {
+		return err
+	}
+	if _, err = pinned.Run(cmd, nil); err != nil {
+		return fmt.Errorf("%w: %w. Install Docker, and start OrbStack or Docker Desktop", ErrDocker, err)
+	}
+	return nil
+}
+
 // importImages imports the three images into the cluster. It fails before
 // the import if Docker does not have one of them.
 func (l *Local) importImages(ctx context.Context, cluster string) error {
@@ -298,7 +314,8 @@ func (l *Local) zoneSetup(ctx context.Context, cfg runSettings, opts RunOptions)
 	return out, nil
 }
 
-// readZoneSetup reads the zone-setup output an earlier run wrote.
+// readZoneSetup reads the zone-setup output an earlier run wrote. It refuses
+// a field it does not know and an empty field the sandbox needs.
 func (l *Local) readZoneSetup() (*zonesetup.Output, error) {
 	outFile := filepath.Join(l.outDir(), "zone-setup.yaml")
 	raw, err := os.ReadFile(outFile) //nolint:gosec // G304: the path is under this checkout's local/out.
@@ -309,7 +326,39 @@ func (l *Local) readZoneSetup() (*zonesetup.Output, error) {
 	if err = yaml.UnmarshalStrict(raw, &out); err != nil {
 		return nil, fmt.Errorf("%w: %s: %w", ErrZoneSetup, outFile, err)
 	}
+	if key := missingField(&out); key != "" {
+		return nil, fmt.Errorf("%w: %s has no %s. Run without --skip-zone-setup", ErrZoneSetup, outFile, key)
+	}
 	return &out, nil
+}
+
+// missingField returns the YAML key of the first empty field in out, or "".
+func missingField(out *zonesetup.Output) string {
+	type field struct{ key, value string }
+	for _, required := range []field{
+		{"k8s_sandbox.application_id", out.K8sSandbox.ApplicationID},
+		{"k8s_sandbox.application_identifier", out.K8sSandbox.ApplicationIdentifier},
+		{"k8s_sandbox.namespace", out.K8sSandbox.Namespace},
+		{"k8s_sandbox.provider_id", out.K8sSandbox.ProviderID},
+	} {
+		if required.value == "" {
+			return required.key
+		}
+	}
+	for i, access := range out.SandboxUserAccess {
+		for _, required := range []field{
+			{"user_email", access.UserEmail},
+			{"user_id", access.UserID},
+			{"service_account", access.ServiceAccount},
+			{"client_id", access.ClientID},
+			{"namespace", access.Namespace},
+		} {
+			if required.value == "" {
+				return fmt.Sprintf("sandbox_user_access[%d].%s", i, required.key)
+			}
+		}
+	}
+	return ""
 }
 
 // userAccess returns the zone-setup output for email.

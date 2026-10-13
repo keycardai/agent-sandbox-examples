@@ -44,7 +44,8 @@ func Output(ctx context.Context, stdin []byte, tool string, args ...string) ([]b
 }
 
 // Run runs cmd with stdin and returns its standard output. On failure, the
-// error has the program's base name, its arguments, and its standard error.
+// error has the program's base name, its arguments, and its standard error
+// when there is any.
 func Run(cmd *exec.Cmd, stdin []byte) ([]byte, error) {
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
@@ -53,8 +54,11 @@ func Run(cmd *exec.Cmd, stdin []byte) ([]byte, error) {
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		name := slices.Concat([]string{filepath.Base(cmd.Path)}, cmd.Args[1:])
-		return nil, fmt.Errorf("%s: %w: %s", strings.Join(name, " "), err, strings.TrimSpace(stderr.String()))
+		name := strings.Join(slices.Concat([]string{filepath.Base(cmd.Path)}, cmd.Args[1:]), " ")
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return nil, fmt.Errorf("%s: %w: %s", name, err, msg)
+		}
+		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 	return out, nil
 }

@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -32,6 +33,8 @@ import (
 )
 
 const defaultListen = "127.0.0.1:8480"
+
+var errUnexpectedArgument = errors.New("unexpected argument")
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
@@ -48,8 +51,6 @@ func newCommand() *cli.Command {
 		Name:            "sandbox",
 		Usage:           "run an AI agent in a Kubernetes sandbox behind the Keycard egress proxy",
 		HideHelpCommand: true,
-		// A values file path may hold a comma.
-		DisableSliceFlagSeparator: true,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "env", Usage: "settings file (default local/local.env)"},
 		},
@@ -176,6 +177,9 @@ func installCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "install",
 		Usage: "install the agent-sandbox controller, then the keycard-sandbox chart, into a cluster",
+		// A values file path may hold a comma. The command that owns a flag
+		// decides whether it splits.
+		DisableSliceFlagSeparator: true,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "context", Required: true, Usage: "the kube context to install into"},
 			&cli.StringSliceFlag{
@@ -186,6 +190,9 @@ func installCommand() *cli.Command {
 			&cli.StringFlag{Name: "namespace", Value: "agents", Usage: "the sandbox namespace"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if err := noArgs(cmd); err != nil {
+				return err
+			}
 			root, err := pinned.Root()
 			if err != nil {
 				return fmt.Errorf("finding the repository: %w", err)
@@ -229,12 +236,24 @@ func listenFlag() *cli.StringFlag {
 // repository and the settings file.
 func step(run func(context.Context, *cli.Command, *sandbox.Local) error) cli.ActionFunc {
 	return func(ctx context.Context, cmd *cli.Command) error {
+		if err := noArgs(cmd); err != nil {
+			return err
+		}
 		local, err := newLocal(cmd)
 		if err != nil {
 			return err
 		}
 		return run(ctx, cmd, local)
 	}
+}
+
+// noArgs refuses a positional argument. Every subcommand takes only flags,
+// so `down mycluster` must not act on the cluster from the settings.
+func noArgs(cmd *cli.Command) error {
+	if cmd.Args().Present() {
+		return fmt.Errorf("%w %q. %s takes only flags", errUnexpectedArgument, cmd.Args().First(), cmd.Name)
+	}
+	return nil
 }
 
 func newLocal(cmd *cli.Command) (*sandbox.Local, error) {

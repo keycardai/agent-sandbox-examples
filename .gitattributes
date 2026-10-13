@@ -1,2 +1,2 @@
-# The agent-sandbox release manifest, which internal/install/install_test.go downloads.
+# The agent-sandbox release manifest, which go generate ./internal/install downloads.
 install/agent-sandbox/sandbox-with-extensions.yaml linguist-generated=true

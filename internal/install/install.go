@@ -2,6 +2,10 @@
 // keycard-sandbox chart, into a cluster.
 package install
 
+// The agent-sandbox release whose controller manifest Run applies. Its
+// sha256 is in install_test.go.
+//go:generate go run download.go v1.0.4
+
 import (
 	"context"
 	"errors"
