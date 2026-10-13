@@ -4,9 +4,10 @@
 // docs/local.md describes the steps.
 //
 //	go run ./cmd/sandbox tunnel        # in a terminal of its own
-//	local/bootstrap.sh
+//	go run ./cmd/sandbox bootstrap
 //	go run ./cmd/sandbox mirror        # in another terminal
 //	go run ./cmd/sandbox check-issuer
+//	go run ./cmd/sandbox down
 package main
 
 import (
@@ -44,8 +45,10 @@ func newCommand() *cli.Command {
 		},
 		Commands: []*cli.Command{
 			tunnelCommand(),
+			bootstrapCommand(),
 			mirrorCommand(),
 			checkIssuerCommand(),
+			downCommand(),
 		},
 	}
 }
@@ -57,6 +60,20 @@ func tunnelCommand() *cli.Command {
 		Flags: []cli.Flag{listenFlag()},
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
 			return local.Tunnel(ctx, cmd.String("listen"))
+		}),
+	}
+}
+
+func bootstrapCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "bootstrap",
+		Usage: "create the local k3d cluster, or check the one you have",
+		Flags: []cli.Flag{
+			clusterFlag(), issuerFlag(),
+			&cli.BoolFlag{Name: "dry-run", Usage: "print the k3d command without running it"},
+		},
+		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
+			return local.Bootstrap(ctx, cmd.String("cluster"), cmd.String("issuer"), cmd.Bool("dry-run"))
 		}),
 	}
 }
@@ -79,6 +96,20 @@ func checkIssuerCommand() *cli.Command {
 		Flags: []cli.Flag{clusterFlag(), issuerFlag()},
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
 			return local.CheckIssuer(ctx, cmd.String("cluster"), cmd.String("issuer"))
+		}),
+	}
+}
+
+func downCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "down",
+		Usage: "delete the local k3d cluster. The Keycard zone is not changed",
+		Flags: []cli.Flag{
+			clusterFlag(),
+			&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "delete without asking"},
+		},
+		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
+			return local.Down(ctx, cmd.String("cluster"), cmd.Bool("yes"), cmd.Reader)
 		}),
 	}
 }
