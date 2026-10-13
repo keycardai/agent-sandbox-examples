@@ -9,6 +9,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -18,6 +19,12 @@ import (
 )
 
 const asset = "sandbox-with-extensions.yaml"
+
+// ControllerSHA256 is the sha256 GitHub publishes for the
+// sandbox-with-extensions.yaml asset of the release that the go:generate
+// directive in install.go names. To move to another release, change the
+// version there and this digest, then run go generate ./internal/install.
+const ControllerSHA256 = "8cbe7f4c252463667e2286993bd735cb33bb2e47d7f304b92aa2ca97f57052c0"
 
 func main() {
 	if len(os.Args) != 2 {
@@ -37,9 +44,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("%s: %v", url, err)
 	}
+	digest := sha256.Sum256(manifest)
+	if got := hex.EncodeToString(digest[:]); got != ControllerSHA256 {
+		log.Fatalf("controller manifest sha256 = %s, want %s", got, ControllerSHA256)
+	}
 	path := filepath.Join("..", "..", "install", "agent-sandbox", asset)
 	if err = os.WriteFile(path, manifest, 0o644); err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("wrote %s (%s, sha256 %x)\n", path, version, sha256.Sum256(manifest))
+	fmt.Printf("wrote %s (%s, sha256 %x)\n", path, version, digest)
 }

@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"os"
 	"os/exec"
@@ -15,27 +13,6 @@ import (
 
 	"github.com/keycardai/agent-sandbox-examples/internal/install"
 )
-
-// controllerSHA256 is the sha256 GitHub publishes for the
-// sandbox-with-extensions.yaml asset of the release that the go:generate
-// directive in install.go names. To move to another release, change the
-// version there and this digest, then run go generate ./internal/install.
-const controllerSHA256 = "8cbe7f4c252463667e2286993bd735cb33bb2e47d7f304b92aa2ca97f57052c0"
-
-// TestControllerManifest fails when the committed controller manifest does
-// not match controllerSHA256.
-func TestControllerManifest(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(repoRoot(t), "install", "agent-sandbox", "sandbox-with-extensions.yaml")
-	manifest, err := os.ReadFile(path) //nolint:gosec // G304: the path is the committed manifest.
-	if err != nil {
-		t.Fatal(err)
-	}
-	sum := sha256.Sum256(manifest)
-	if got := hex.EncodeToString(sum[:]); got != controllerSHA256 {
-		t.Errorf("controller manifest sha256 = %s, want %s", got, controllerSHA256)
-	}
-}
 
 // fakeTool is kubectl and helm. Each call appends the tool and its arguments
 // to $CALLS, and fails unless KUBERC is off. helm also appends every HELM_
@@ -259,13 +236,4 @@ func checkRun(t *testing.T, err error, out, wantErr, wantOut string) {
 	if wantErr != "" && strings.Contains(out, "Installed") {
 		t.Errorf("output reports success\n%s", out)
 	}
-}
-
-func repoRoot(t *testing.T) string {
-	t.Helper()
-	root, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return root
 }
