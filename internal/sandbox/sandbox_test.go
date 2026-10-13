@@ -122,6 +122,11 @@ func TestLoadSettings(t *testing.T) {
 			want: sandbox.Settings{sandbox.KeyCluster: "from-file"},
 		},
 		{
+			name: "first non-empty value for a repeated key",
+			file: "KEYCARD_LOCAL_CLUSTER=\nKEYCARD_LOCAL_CLUSTER=first\nKEYCARD_LOCAL_CLUSTER=last\n",
+			want: sandbox.Settings{sandbox.KeyCluster: "first"},
+		},
+		{
 			name:   "missing default file",
 			noFile: true,
 			env:    map[string]string{sandbox.KeyIssuer: "https://oidc.example.com"},

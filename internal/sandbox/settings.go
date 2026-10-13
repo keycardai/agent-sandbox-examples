@@ -109,7 +109,7 @@ func (s Settings) parse(file string, raw []byte) error {
 		if !ok || !slices.Contains(settingKeys(), key) {
 			return fmt.Errorf("%w: %s line %d is not KEY=value for a key local.env.example lists", ErrSettings, file, lineNo)
 		}
-		s[key] = value
+		s[key] = cmp.Or(s[key], value)
 	}
 	if err := lines.Err(); err != nil {
 		return fmt.Errorf("%w: reading %s: %w", ErrSettings, file, err)
