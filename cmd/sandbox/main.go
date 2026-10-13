@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -32,6 +33,8 @@ import (
 )
 
 const defaultListen = "127.0.0.1:8480"
+
+var errUnexpectedArgument = errors.New("unexpected argument")
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
@@ -187,6 +190,9 @@ func installCommand() *cli.Command {
 			&cli.StringFlag{Name: "namespace", Value: "agents", Usage: "the sandbox namespace"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if err := noArgs(cmd); err != nil {
+				return err
+			}
 			root, err := pinned.Root()
 			if err != nil {
 				return fmt.Errorf("finding the repository: %w", err)
@@ -230,12 +236,24 @@ func listenFlag() *cli.StringFlag {
 // repository and the settings file.
 func step(run func(context.Context, *cli.Command, *sandbox.Local) error) cli.ActionFunc {
 	return func(ctx context.Context, cmd *cli.Command) error {
+		if err := noArgs(cmd); err != nil {
+			return err
+		}
 		local, err := newLocal(cmd)
 		if err != nil {
 			return err
 		}
 		return run(ctx, cmd, local)
 	}
+}
+
+// noArgs refuses a positional argument. Every subcommand takes only flags,
+// so `down mycluster` must not act on the cluster from the settings.
+func noArgs(cmd *cli.Command) error {
+	if cmd.Args().Present() {
+		return fmt.Errorf("%w %q. %s takes only flags", errUnexpectedArgument, cmd.Args().First(), cmd.Name)
+	}
+	return nil
 }
 
 func newLocal(cmd *cli.Command) (*sandbox.Local, error) {
