@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -95,6 +97,9 @@ func (l *Local) quickTunnel(ctx context.Context, listen string) error {
 	if err != nil {
 		return err
 	}
+	// cloudflared reads its flags from TUNNEL_* variables. TUNNEL_NAME turns
+	// a quick tunnel into a named tunnel in the operator's Cloudflare account.
+	cmd.Env = slices.DeleteFunc(cmd.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "TUNNEL_") })
 	logs, logWriter := io.Pipe()
 	cmd.Stdout, cmd.Stderr = logWriter, logWriter
 	if err = cmd.Start(); err != nil {
@@ -112,7 +117,7 @@ func (l *Local) quickTunnel(ctx context.Context, listen string) error {
 		scanQuickURL(logs, out, found)
 		close(scanned)
 	}()
-	published := false
+	published := ""
 	// Every return below waits for cloudflared to exit, which ends the scan.
 	defer func() { forgetQuickURL(issuerFile, published, out, scanned) }()
 
@@ -125,7 +130,7 @@ func (l *Local) quickTunnel(ctx context.Context, listen string) error {
 			<-exited
 			return err
 		}
-		published = true
+		published = url
 		_, _ = fmt.Fprintf(out, "the issuer is %s. The other steps read it from %s while this tunnel runs.\n",
 			url, issuerFile)
 	case err = <-exited:
@@ -141,8 +146,7 @@ func (l *Local) quickTunnel(ctx context.Context, listen string) error {
 // writeQuickConfig writes a cloudflared config file for a quick tunnel and
 // returns its path. With its own config file, cloudflared does not read
 // ~/.cloudflared/config.yml. That file's keys would apply to the quick tunnel,
-// and its ingress rules would replace --url
-// (https://github.com/cloudflare/cloudflared/blob/2026.9.3/ingress/ingress.go#L98-L103).
+// and its ingress rules would replace --url.
 func writeQuickConfig() (string, error) {
 	config, err := os.CreateTemp("", "cloudflared-*.yml")
 	if err != nil {
@@ -187,11 +191,18 @@ func exitedEarly(ctx context.Context, err error) error {
 	return fmt.Errorf("%w: cloudflared exited before it printed a trycloudflare.com URL: %w", ErrTunnel, err)
 }
 
-// forgetQuickURL waits for the log scan to end, then deletes issuerFile if
-// published is true.
-func forgetQuickURL(issuerFile string, published bool, out io.Writer, scanned <-chan struct{}) {
+// forgetQuickURL waits for the log scan to end, then deletes issuerFile if it
+// still holds the URL published. It does nothing when published is empty.
+func forgetQuickURL(issuerFile, published string, out io.Writer, scanned <-chan struct{}) {
 	<-scanned
-	if published && os.Remove(issuerFile) == nil {
+	if published == "" {
+		return
+	}
+	//nolint:gosec // G304: issuerFile is the step's own file.
+	if raw, err := os.ReadFile(issuerFile); err != nil || string(raw) != published+"\n" {
+		return
+	}
+	if os.Remove(issuerFile) == nil {
 		_, _ = fmt.Fprintf(out, "Deleted %s. The quick tunnel's URL has stopped working.\n", issuerFile)
 	}
 }
@@ -237,8 +248,7 @@ func scanQuickURL(logs io.Reader, out io.Writer, found chan<- string) {
 }
 
 // cloudflared returns a cloudflared command that gets SIGTERM when ctx ends,
-// so that it can close its connections to Cloudflare. It gets SIGKILL if it
-// has not exited after stopTimeout.
+// and SIGKILL if it has not exited stopTimeout later.
 func (l *Local) cloudflared(ctx context.Context, args ...string) (*exec.Cmd, error) {
 	cmd, err := l.Tool(ctx, "cloudflared", args...)
 	if err != nil {

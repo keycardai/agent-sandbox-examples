@@ -40,6 +40,8 @@ type issuerCase struct {
 	httpIssuer bool
 	// httpJWKS publishes a jwks_uri with an http scheme.
 	httpJWKS bool
+	// emptyAudience leaves Expect.Audience empty.
+	emptyAudience bool
 	// emptySubject leaves Expect.Subject empty.
 	emptySubject bool
 	// padDiscovery grows the discovery document past issuer.MaxBody.
@@ -128,6 +130,10 @@ func TestVerify(t *testing.T) {
 			want: issuer.ErrToken, wantText: "non-https URL refused",
 		},
 		{
+			name: "empty audience", emptyAudience: true, signer: cluster, claims: validClaims,
+			want: issuer.ErrExpect, wantText: "the audience is empty",
+		},
+		{
 			name:         "empty subject",
 			emptySubject: true,
 			signer:       cluster,
@@ -211,14 +217,17 @@ func runCase(t *testing.T, published *rsa.PrivateKey, tc issuerCase) error {
 	if tc.httpIssuer {
 		issuerURL = "http://" + strings.TrimPrefix(issuerURL, "https://")
 	}
-	subject := testSubject
+	audience, subject := testAudience, testSubject
+	if tc.emptyAudience {
+		audience = ""
+	}
 	if tc.emptySubject {
 		subject = ""
 	}
 	//nolint:wrapcheck // The test compares the error Verify returns.
 	return issuer.Verify(
 		t.Context(),
-		issuer.Expect{Issuer: issuerURL, Audience: testAudience, Subject: subject, CAFile: caFile},
+		issuer.Expect{Issuer: issuerURL, Audience: audience, Subject: subject, CAFile: caFile},
 		token,
 	)
 }
