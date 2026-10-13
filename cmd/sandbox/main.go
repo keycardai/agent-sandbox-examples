@@ -25,7 +25,7 @@ import (
 const defaultListen = "127.0.0.1:8480"
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	err := newCommand().Run(ctx, os.Args)
 	stop()
 	if err != nil {
