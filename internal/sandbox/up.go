@@ -314,11 +314,7 @@ func (l *Local) serve(ctx context.Context, steps []upStep, state *upRun) error {
 			l.printLeft(steps, len(steps), state)
 			return err
 		case <-lines:
-			target, err := l.CheckTargetFor("", "", "", "")
-			if err == nil {
-				err = l.Check(ctx, target)
-			}
-			if err != nil {
+			if err := l.CheckSandbox(ctx, "", "", "", ""); err != nil {
 				_, _ = fmt.Fprintf(l.Out, "%v\n", err)
 			}
 		}

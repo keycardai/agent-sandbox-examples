@@ -80,7 +80,7 @@ func upCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "up",
 		Usage: "set up and run the whole demo, and print the command for each step",
-		Flags: []cli.Flag{
+		Flags: append([]cli.Flag{
 			listenFlag(),
 			&cli.BoolFlag{Name: "print", Usage: "print the commands and do not run them"},
 			&cli.DurationFlag{
@@ -88,21 +88,10 @@ func upCommand() *cli.Command {
 				Value: defaultIssuerWait,
 				Usage: "how long to wait for the cluster's issuer to answer",
 			},
-			&cli.BoolFlag{
-				Name:  "skip-zone-setup",
-				Usage: "reuse the Keycard setup of the last run, in local/out/zone-setup.yaml",
-			},
-			&cli.BoolFlag{
-				Name:  zonesetup.ReplaceActiveFlag,
-				Usage: "make the sandbox policy set active, replacing the zone's active policy set",
-			},
-		},
+		}, runFlags()...),
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
 			return local.Up(ctx, sandbox.UpOptions{
-				Run: sandbox.RunOptions{
-					SkipZoneSetup: cmd.Bool("skip-zone-setup"),
-					ReplaceActive: cmd.Bool(zonesetup.ReplaceActiveFlag),
-				},
+				Run:        runOptions(cmd),
 				Listen:     cmd.String("listen"),
 				EnvFile:    cmd.String("env"),
 				Print:      cmd.Bool("print"),
@@ -164,21 +153,9 @@ func runCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "run",
 		Usage: "set up the cluster and Keycard, install the sandbox and the egress proxy, and run the checks",
-		Flags: []cli.Flag{
-			&cli.BoolFlag{
-				Name:  "skip-zone-setup",
-				Usage: "reuse the Keycard setup of the last run, in local/out/zone-setup.yaml",
-			},
-			&cli.BoolFlag{
-				Name:  zonesetup.ReplaceActiveFlag,
-				Usage: "make the sandbox policy set active, replacing the zone's active policy set",
-			},
-		},
+		Flags: runFlags(),
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
-			return local.Run(ctx, sandbox.RunOptions{
-				SkipZoneSetup: cmd.Bool("skip-zone-setup"),
-				ReplaceActive: cmd.Bool(zonesetup.ReplaceActiveFlag),
-			})
+			return local.Run(ctx, runOptions(cmd))
 		}),
 	}
 }
@@ -194,13 +171,8 @@ func checkCommand() *cli.Command {
 			&cli.StringFlag{Name: "user-id", Usage: "the user's Keycard id (default from the last run)"},
 		},
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
-			target, err := local.CheckTargetFor(
-				cmd.String("cluster"), cmd.String("namespace"), cmd.String("pod"), cmd.String("user-id"),
-			)
-			if err != nil {
-				return fmt.Errorf("finding the sandbox: %w", err)
-			}
-			return local.Check(ctx, target)
+			return local.CheckSandbox(ctx,
+				cmd.String("cluster"), cmd.String("namespace"), cmd.String("pod"), cmd.String("user-id"))
 		}),
 	}
 }
@@ -275,6 +247,27 @@ func listenFlag() *cli.StringFlag {
 		Name:  "listen",
 		Value: defaultListen,
 		Usage: "address the mirror serves on and the tunnel forwards to",
+	}
+}
+
+// runFlags are the flags of run, which up passes to run.
+func runFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.BoolFlag{
+			Name:  "skip-zone-setup",
+			Usage: "reuse the Keycard setup of the last run, in local/out/zone-setup.yaml",
+		},
+		&cli.BoolFlag{
+			Name:  zonesetup.ReplaceActiveFlag,
+			Usage: "make the sandbox policy set active, replacing the zone's active policy set",
+		},
+	}
+}
+
+func runOptions(cmd *cli.Command) sandbox.RunOptions {
+	return sandbox.RunOptions{
+		SkipZoneSetup: cmd.Bool("skip-zone-setup"),
+		ReplaceActive: cmd.Bool(zonesetup.ReplaceActiveFlag),
 	}
 }
 
