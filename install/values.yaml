@@ -25,14 +25,15 @@ hostAliases: []
 #  - ip: 192.168.97.1
 #    hostnames: [acme.example.com]
 
-# The sandbox pod's images. Nothing publishes these tags. Build the images
-# from the egress-proxy repository and set them here.
+# The sandbox pod's images. Each egress-proxy release publishes them under
+# its version tag (docs/containers.md in egress-proxy). The proxy reads
+# listen.dns_port, which the sandbox chart writes, from v0.2.0 on.
 images:
-  netsetup: ghcr.io/keycardai/egress-netsetup:0.1.0
-  proxy: ghcr.io/keycardai/egress-proxy:0.1.0
+  netsetup: ghcr.io/keycardai/egress-netsetup:v0.2.0
+  proxy: ghcr.io/keycardai/egress-proxy:v0.2.0
   # The agent image, built FROM ghcr.io/keycardai/sandbox-base. The default
   # is the base image itself, as a placeholder agent.
-  agent: ghcr.io/keycardai/sandbox-base:0.1.0
+  agent: ghcr.io/keycardai/sandbox-base:v0.2.0
 
 proxy:
   # The proxy's uid. The redirect and the DROP exempt it, so the proxy's own
@@ -80,7 +81,7 @@ netsetup:
   # Arguments of the egress-netsetup init container. It redirects tcp/80 and
   # tcp/443 from every uid except the proxy's to the redirect port, and
   # udp/53 and tcp/53 to the proxy's resolver on --dns-port. The sandbox
-  # chart sets listen.dns to :53, so --dns-port must be 53. It drops all
+  # chart sets listen.dns_port to 53, so --dns-port must be 53. It drops all
   # other traffic except the proxy's, loopback and established connections.
   # It writes a receipt of the rules it programmed to --receipt, on the
   # volume the proxy reads it from.

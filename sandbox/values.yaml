@@ -53,9 +53,9 @@ endpoints: []
 # as in install/values.yaml, which documents them. The tests in
 # internal/chart check that the two charts render the same pod.
 images:
-  netsetup: ghcr.io/keycardai/egress-netsetup:0.1.0
-  proxy: ghcr.io/keycardai/egress-proxy:0.1.0
-  agent: ghcr.io/keycardai/sandbox-base:0.1.0
+  netsetup: ghcr.io/keycardai/egress-netsetup:v0.2.0
+  proxy: ghcr.io/keycardai/egress-proxy:v0.2.0
+  agent: ghcr.io/keycardai/sandbox-base:v0.2.0
 
 proxy:
   uid: 1337

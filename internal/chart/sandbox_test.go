@@ -240,7 +240,7 @@ func TestSandboxDocumentValid(t *testing.T) {
 }
 
 // TestSandboxDocument checks the proxy's document. listen.transparent_port
-// and the port of listen.dns must equal the --redirect-port and --dns-port
+// and listen.dns_port must equal the --redirect-port and --dns-port
 // that TestInstallSandboxTemplate checks. The proxy refuses to start when
 // either pair differs.
 func TestSandboxDocument(t *testing.T) {
@@ -261,7 +261,7 @@ func TestSandboxDocument(t *testing.T) {
 	want := document{
 		Version: 1,
 		Sandbox: sandboxID{ID: sandboxUserID},
-		Listen:  listenDoc{TransparentPort: 1015, DNS: ":53"},
+		Listen:  listenDoc{TransparentPort: 1015, DNSPort: 53},
 		//nolint:gosec // G101: a public client id and a file path, not a secret.
 		Identity: &identity{
 			ZoneURL:           "https://acme.keycard.cloud",

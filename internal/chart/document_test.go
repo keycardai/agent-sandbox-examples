@@ -22,8 +22,8 @@ import (
 //
 // The decode is strict. A key the proxy does not read is an error. The copy
 // leaves out the sections the chart does not set (ca, limits, credentials and
-// netsetup) and every key of listen except transparent_port. Add a section or
-// key here when the chart sets it.
+// netsetup) and every key of listen except transparent_port and dns_port. Add
+// a section or key here when the chart sets it.
 
 // document is the proxy's configuration document.
 type document struct {
@@ -43,8 +43,8 @@ type sandboxID struct {
 // listenDoc holds the listeners the capture redirects to: the transparent
 // frontend and the resolver.
 type listenDoc struct {
-	TransparentPort int    `json:"transparent_port"`
-	DNS             string `json:"dns"`
+	TransparentPort int `json:"transparent_port"`
+	DNSPort         int `json:"dns_port"`
 }
 
 type identity struct {
@@ -211,7 +211,7 @@ func (id identity) clientAuthProblems() []string {
 	return found
 }
 
-// problems requires listen.transparent_port and listen.dns. The proxy
+// problems requires listen.transparent_port and listen.dns_port. The proxy
 // accepts a document without them and then does not run a transparent
 // frontend or a resolver. A sandbox pod always captures traffic, so the
 // chart must set both.
@@ -220,24 +220,10 @@ func (l listenDoc) problems() []string {
 	if l.TransparentPort < 1 || l.TransparentPort > maxPort {
 		found = append(found, fmt.Sprintf("listen.transparent_port is %d, outside 1-%d", l.TransparentPort, maxPort))
 	}
-	if l.dnsPort() == 0 {
-		found = append(found, fmt.Sprintf("listen.dns %q is not host:port with a port in 1-%d", l.DNS, maxPort))
+	if l.DNSPort < 1 || l.DNSPort > maxPort {
+		found = append(found, fmt.Sprintf("listen.dns_port is %d, outside 1-%d", l.DNSPort, maxPort))
 	}
 	return found
-}
-
-// dnsPort returns the port of listen.dns. It returns 0 when listen.dns does
-// not have a port in 1-maxPort.
-func (l listenDoc) dnsPort() int {
-	_, text, err := net.SplitHostPort(l.DNS)
-	if err != nil {
-		return 0
-	}
-	port, err := strconv.Atoi(text)
-	if err != nil || port < 1 || port > maxPort {
-		return 0
-	}
-	return port
 }
 
 func (p policyDoc) problems() []string {
@@ -444,7 +430,7 @@ identity:
     user: igmua2g0
 listen:
   transparent_port: 1015
-  dns: ":53"
+  dns_port: 53
 policy:
   cluster_cidrs: ["10.0.0.0/16"]
   deny_list_exceptions: []
@@ -489,13 +475,13 @@ func TestDocumentMirrorRefuses(t *testing.T) {
 		},
 		{
 			"no resolver",
-			strings.Replace(validDocument, "  dns: \":53\"\n", "", 1),
-			`listen.dns "" is not host:port with a port in 1-65535`,
+			strings.Replace(validDocument, "  dns_port: 53\n", "", 1),
+			"listen.dns_port is 0, outside 1-65535",
 		},
 		{
-			"resolver without a port",
-			strings.Replace(validDocument, `dns: ":53"`, `dns: "127.0.0.1"`, 1),
-			`listen.dns "127.0.0.1" is not host:port`,
+			"resolver port out of range",
+			strings.Replace(validDocument, "dns_port: 53", "dns_port: 65536", 1),
+			"listen.dns_port is 65536, outside 1-65535",
 		},
 		{
 			"exception uncovering the metadata address",

@@ -321,9 +321,8 @@ func assertProxyTakesDefaults(t *testing.T, report settings, proxy corev1.Contai
 	}
 }
 
-// TestSettingsTransparentPort checks that listen.transparent_port and the
-// port of listen.dns in the document are the ports the capture redirects
-// to. Only the sandbox chart renders a document.
+// TestSettingsTransparentPort checks that listen.transparent_port and
+// listen.dns_port in the document are the ports the capture redirects to. Only the sandbox chart renders a document.
 func TestSettingsTransparentPort(t *testing.T) {
 	t.Parallel()
 	report := readSettings(t)
@@ -342,9 +341,8 @@ func TestSettingsTransparentPort(t *testing.T) {
 				t.Errorf("listen.transparent_port is %d, want redirect_port %d",
 					doc.Listen.TransparentPort, report.Netsetup.RedirectPort)
 			}
-			if doc.Listen.dnsPort() != report.Netsetup.DNSPort {
-				t.Errorf("listen.dns %q has port %d, want dns_port %d",
-					doc.Listen.DNS, doc.Listen.dnsPort(), report.Netsetup.DNSPort)
+			if doc.Listen.DNSPort != report.Netsetup.DNSPort {
+				t.Errorf("listen.dns_port is %d, want dns_port %d", doc.Listen.DNSPort, report.Netsetup.DNSPort)
 			}
 		})
 	}
