@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -275,8 +276,9 @@ exec sleep 60
 		!slices.EqualFunc(call, want, func(got, want string) bool { return want == "*" || got == want }) {
 		t.Fatalf("call = %q, want %q", call, want)
 	}
-	if want := "Deleted local/out/issuer. The quick tunnel's URL has stopped working.\n"; !strings.Contains(
-		out.String(), want,
+	if want := "Deleted " + local.QuickIssuerFile() + ". The quick tunnel's URL has stopped working.\n"; !strings.Contains(
+		out.String(),
+		want,
 	) {
 		t.Errorf("output lacks %q\n%s", want, out)
 	}
@@ -308,15 +310,74 @@ func writeFile(t *testing.T, path, body string) {
 	}
 }
 
-// TestQuickTunnelExits checks that Tunnel fails when cloudflared exits before
-// it prints a URL, and does not leave an issuer file.
-func TestQuickTunnelExits(t *testing.T) {
+// TestQuickTunnelRefused checks that a quick tunnel fails when cloudflared
+// exits before it prints a URL, or when another tunnel's issuer file exists.
+// A failed tunnel must leave the issuer file as it found it, so it does not
+// delete a running tunnel's URL.
+func TestQuickTunnelRefused(t *testing.T) {
 	t.Parallel()
-	local, _ := newLocal(t, sandbox.Settings{}, "echo 'ERR failed to request quick Tunnel' >&2\nexit 1\n")
-	err := local.Tunnel(t.Context(), "127.0.0.1:8480")
-	checkErr(t, err, []error{sandbox.ErrTunnel}, "cloudflared exited before it printed a trycloudflare.com URL")
-	if _, err := os.Stat(local.QuickIssuerFile()); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("issuer file: %v, want none", err)
+	const other = "https://other-tunnel.trycloudflare.com\n"
+	tests := []struct {
+		name string
+		// body is the fake cloudflared. It is not run when file is set.
+		body string
+		// file is the issuer file that exists before Tunnel starts.
+		file     string
+		want     []error
+		wantText string
+		// wantFile is the issuer file after Tunnel returns, or "" for none.
+		wantFile string
+	}{
+		{
+			name:     "cloudflared fails",
+			body:     "echo 'ERR failed to request quick Tunnel' >&2\nexit 1\n",
+			want:     []error{sandbox.ErrTunnel},
+			wantText: "cloudflared exited before it printed a trycloudflare.com URL: exit status 1",
+		},
+		{
+			name:     "cloudflared exits 0",
+			body:     "exit 0\n",
+			want:     []error{sandbox.ErrTunnel},
+			wantText: "cloudflared exited with status 0 before it printed a trycloudflare.com URL",
+		},
+		{
+			name:     "issuer file exists",
+			file:     other,
+			want:     []error{sandbox.ErrTunnel},
+			wantText: "local/out/issuer exists. Another quick tunnel is running, or one was killed",
+			wantFile: other,
+		},
+		{
+			name: "another tunnel writes the issuer file first",
+			body: `printf '%s' '` + other + `' >"$(dirname "$0")/local/out/issuer"
+echo "INF |  https://quick-brown-fox.trycloudflare.com  |" >&2
+exec sleep 60
+`,
+			want:     []error{sandbox.ErrTunnel, fs.ErrExist},
+			wantText: "writing ",
+			wantFile: other,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			local, calls := newLocal(t, sandbox.Settings{}, tc.body)
+			if tc.file != "" {
+				writeFile(t, local.QuickIssuerFile(), tc.file)
+			}
+			err := local.Tunnel(t.Context(), "127.0.0.1:8480")
+			checkErr(t, err, tc.want, tc.wantText)
+			raw, err := os.ReadFile(local.QuickIssuerFile())
+			switch {
+			case tc.wantFile == "" && !errors.Is(err, fs.ErrNotExist):
+				t.Fatalf("issuer file = %q, %v, want none", raw, err)
+			case tc.wantFile != "" && string(raw) != tc.wantFile:
+				t.Fatalf("issuer file = %q, %v, want %q", raw, err, tc.wantFile)
+			}
+			if ran := readCalls(t, calls) != ""; ran == (tc.file != "") {
+				t.Fatalf("cloudflared ran = %t, want %t", ran, tc.file == "")
+			}
+		})
 	}
 }
 

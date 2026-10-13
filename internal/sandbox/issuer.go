@@ -18,8 +18,10 @@ const (
 // operator's own TLS-terminating proxy, publishes listen at the issuer's
 // https URL. Mirror only reads from the cluster.
 //
-// k3s keeps one signing key for the life of the cluster. Restart Mirror after
-// you recreate the cluster.
+// k3s creates the service-account signing key with the cluster. Restarts and
+// `k3s certificate rotate` keep it. Only `k3s certificate rotate-ca` installs
+// a new one (https://docs.k3s.io/cli/certificate). Restart Mirror after you
+// recreate the cluster or rotate the key.
 //
 // Empty cluster and issuerURL default to the settings, as Local.cluster and
 // Local.issuer describe.

@@ -17,7 +17,7 @@ import (
 const (
 	// fetchTimeout bounds one HTTP request, redirects included.
 	fetchTimeout = 15 * time.Second
-	// MaxBody bounds a token, a fetched discovery document and a JWKS.
+	// MaxBody bounds a fetched discovery document and a JWKS.
 	MaxBody = 1 << 20
 	// maxRedirects matches the net/http default limit.
 	maxRedirects = 10
@@ -26,7 +26,7 @@ const (
 
 // Every error from Verify wraps ErrInsecure or one of these.
 var (
-	ErrCA        = errors.New("ca file refused")
+	ErrCA        = errors.New("trust roots refused")
 	ErrFetch     = errors.New("discovery refused")
 	ErrExpect    = errors.New("expectation refused")
 	ErrSubject   = errors.New("subject refused")

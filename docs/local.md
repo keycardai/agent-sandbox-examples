@@ -56,7 +56,9 @@ and development
 ([Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/)).
 The tunnel gets a new `https://<name>.trycloudflare.com` URL every time it
 starts. `sandbox tunnel` writes it to `local/out/issuer` and deletes the
-file when it exits. The other steps read the issuer from that file. The
+file when it exits. It refuses to start while that file exists. If a killed
+tunnel left the file behind, delete it. The other steps read the issuer from
+that file. The
 issuer is fixed when the cluster is created, so start `sandbox tunnel`
 before `bootstrap.sh`. After a restart, run `down.sh` and `bootstrap.sh`
 again. zone-setup then creates a new Provider for the new issuer. It does
@@ -75,7 +77,13 @@ and forwards it to the mirror. It does not need a cloudflared config file.
 
 To publish the issuer another way, set `KEYCARD_LOCAL_ISSUER` and do not run
 `sandbox tunnel`. Forward the issuer's https URL to the mirror, for example
-with a reverse proxy that terminates TLS for the issuer host.
+with a reverse proxy that terminates TLS for the issuer host. A proxy in a
+container reaches the host at `host.docker.internal`
+([OrbStack](https://docs.orbstack.dev/docker/network)). In testing on
+OrbStack, that address also reaches the mirror's default `127.0.0.1`
+listener, but OrbStack does not document it. Docker Desktop is untested. If
+the proxy cannot connect to the mirror, pass `--listen 0.0.0.0:8480`. The
+mirror serves only the two public documents.
 
 `sandbox check-issuer` fetches the issuer at its https URL, as the zone
 does, and verifies a new token against it. `run.sh` does not publish the
