@@ -3,12 +3,15 @@ package sandbox
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -40,9 +43,10 @@ var (
 //
 // With KEYCARD_LOCAL_TUNNEL empty, it starts a quick tunnel, and
 // KEYCARD_LOCAL_ISSUER must be empty. A quick tunnel gets a new
-// https://<name>.trycloudflare.com URL on every start. Tunnel writes the URL
-// to QuickIssuerFile and removes the file when it returns. The issuer is
-// fixed when the cluster is created, so a new URL needs a new cluster.
+// https://<name>.trycloudflare.com URL on every start. Tunnel refuses to
+// start while QuickIssuerFile exists. It writes the URL to that file and
+// removes the file when it returns. The issuer is fixed when the cluster is
+// created, so a new URL needs a new cluster.
 func (l *Local) Tunnel(ctx context.Context, listen string) error {
 	if !listenAddr.MatchString(listen) {
 		return fmt.Errorf("%w: --listen must be HOST:PORT (got %q)", ErrTunnel, listen)
@@ -73,11 +77,11 @@ func (l *Local) Tunnel(ctx context.Context, listen string) error {
 }
 
 // quickTunnel runs a quick tunnel and keeps its URL in QuickIssuerFile while
-// cloudflared runs.
+// cloudflared runs. It removes only a file it wrote.
 func (l *Local) quickTunnel(ctx context.Context, listen string) error {
 	issuerFile := l.QuickIssuerFile()
-	if err := os.MkdirAll(filepath.Dir(issuerFile), dirMode); err != nil {
-		return fmt.Errorf("creating %s: %w", filepath.Dir(issuerFile), err)
+	if err := checkNoQuickURL(issuerFile); err != nil {
+		return err
 	}
 	config, err := writeQuickConfig()
 	if err != nil {
@@ -108,25 +112,24 @@ func (l *Local) quickTunnel(ctx context.Context, listen string) error {
 		scanQuickURL(logs, out, found)
 		close(scanned)
 	}()
+	published := false
 	// Every return below waits for cloudflared to exit, which ends the scan.
-	defer forgetQuickURL(issuerFile, out, scanned)
+	defer func() { forgetQuickURL(issuerFile, published, out, scanned) }()
 
 	timer := time.NewTimer(quickURLTimeout)
 	defer timer.Stop()
 	select {
 	case url := <-found:
-		if err = os.WriteFile(issuerFile, []byte(url+"\n"), fileMode); err != nil {
+		if err = publishQuickURL(issuerFile, url); err != nil {
 			stop()
 			<-exited
-			return fmt.Errorf("writing %s: %w", issuerFile, err)
+			return err
 		}
+		published = true
 		_, _ = fmt.Fprintf(out, "the issuer is %s. The other steps read it from %s while this tunnel runs.\n",
 			url, issuerFile)
 	case err = <-exited:
-		if ctx.Err() != nil {
-			return nil
-		}
-		return fmt.Errorf("%w: cloudflared exited before it printed a trycloudflare.com URL: %w", ErrTunnel, err)
+		return exitedEarly(ctx, err)
 	case <-timer.C:
 		stop()
 		<-exited
@@ -137,7 +140,9 @@ func (l *Local) quickTunnel(ctx context.Context, listen string) error {
 
 // writeQuickConfig writes a cloudflared config file for a quick tunnel and
 // returns its path. With its own config file, cloudflared does not read
-// ~/.cloudflared/config.yml, which could make the quick tunnel a named one.
+// ~/.cloudflared/config.yml. That file's keys would apply to the quick tunnel,
+// and its ingress rules would replace --url
+// (https://github.com/cloudflare/cloudflared/blob/2026.9.3/ingress/ingress.go#L98-L103).
 func writeQuickConfig() (string, error) {
 	config, err := os.CreateTemp("", "cloudflared-*.yml")
 	if err != nil {
@@ -154,13 +159,64 @@ func writeQuickConfig() (string, error) {
 	return config.Name(), nil
 }
 
-// forgetQuickURL waits for the log scan to end, then deletes the file that
-// holds the quick tunnel's URL.
-func forgetQuickURL(issuerFile string, out io.Writer, scanned <-chan struct{}) {
-	<-scanned
-	if os.Remove(issuerFile) == nil {
-		_, _ = fmt.Fprintln(out, "Deleted local/out/issuer. The quick tunnel's URL has stopped working.")
+// checkNoQuickURL creates the directory of issuerFile, and refuses an
+// issuerFile that exists.
+func checkNoQuickURL(issuerFile string) error {
+	if err := os.MkdirAll(filepath.Dir(issuerFile), dirMode); err != nil {
+		return fmt.Errorf("creating %s: %w", filepath.Dir(issuerFile), err)
 	}
+	switch _, err := os.Lstat(issuerFile); {
+	case err == nil:
+		return fmt.Errorf("%w: %s exists. Another quick tunnel is running, or one was killed. "+
+			"Stop the other tunnel, or delete the file", ErrTunnel, issuerFile)
+	case !errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("%w: %w", ErrTunnel, err)
+	}
+	return nil
+}
+
+// exitedEarly returns the error for a cloudflared that exited with err before
+// it printed a URL. It returns nil once ctx has ended.
+func exitedEarly(ctx context.Context, err error) error {
+	switch {
+	case ctx.Err() != nil:
+		return nil //nolint:nilerr // The operator stopped cloudflared, so its exit status does not matter.
+	case err == nil:
+		return fmt.Errorf("%w: cloudflared exited with status 0 before it printed a trycloudflare.com URL", ErrTunnel)
+	}
+	return fmt.Errorf("%w: cloudflared exited before it printed a trycloudflare.com URL: %w", ErrTunnel, err)
+}
+
+// forgetQuickURL waits for the log scan to end, then deletes issuerFile if
+// published is true.
+func forgetQuickURL(issuerFile string, published bool, out io.Writer, scanned <-chan struct{}) {
+	<-scanned
+	if published && os.Remove(issuerFile) == nil {
+		_, _ = fmt.Fprintf(out, "Deleted %s. The quick tunnel's URL has stopped working.\n", issuerFile)
+	}
+}
+
+// publishQuickURL writes url to issuerFile through a hard link, so the file
+// appears whole or not at all. It fails if issuerFile exists.
+func publishQuickURL(issuerFile, url string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(issuerFile), ".issuer-*")
+	if err != nil {
+		return fmt.Errorf("%w: writing %s: %w", ErrTunnel, issuerFile, err)
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if err = tmp.Chmod(fileMode); err == nil {
+		_, err = tmp.WriteString(url + "\n")
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Link(tmp.Name(), issuerFile)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: writing %s: %w", ErrTunnel, issuerFile, err)
+	}
+	return nil
 }
 
 // scanQuickURL copies cloudflared's log lines to out, and sends the first
@@ -203,4 +259,20 @@ func stopped(ctx context.Context, err error) error {
 		return nil //nolint:nilerr // The operator stopped cloudflared, so its exit status does not matter.
 	}
 	return fmt.Errorf("%w: cloudflared: %w", ErrTunnel, err)
+}
+
+// lockedWriter serializes writes from the goroutines of one step.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (w *lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n, err := w.w.Write(p)
+	if err != nil {
+		return n, fmt.Errorf("writing output: %w", err)
+	}
+	return n, nil
 }

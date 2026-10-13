@@ -17,7 +17,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/pinned"
 )
@@ -54,8 +53,9 @@ var (
 	// ErrCAFile is a KEYCARD_LOCAL_CA_FILE that is not an absolute path to a
 	// readable PEM file.
 	ErrCAFile = errors.New("ca file refused")
-	// ErrTunnel is a tunnel setting that cloudflared cannot run, or a
-	// cloudflared that stopped.
+	// ErrTunnel is a tunnel setting that cloudflared cannot run, a quick
+	// tunnel's issuer file that exists or cannot be written, or a cloudflared
+	// that stopped.
 	ErrTunnel = errors.New("tunnel refused")
 )
 
@@ -199,20 +199,4 @@ func (l *Local) kubectl(ctx context.Context, cluster string, args ...string) ([]
 		return nil, fmt.Errorf("kubectl: %w", err)
 	}
 	return out, nil
-}
-
-// lockedWriter serializes writes from the goroutines of one step.
-type lockedWriter struct {
-	mu sync.Mutex
-	w  io.Writer
-}
-
-func (w *lockedWriter) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	n, err := w.w.Write(p)
-	if err != nil {
-		return n, fmt.Errorf("writing output: %w", err)
-	}
-	return n, nil
 }
