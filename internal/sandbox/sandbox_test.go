@@ -233,57 +233,83 @@ func TestTunnel(t *testing.T) {
 }
 
 // TestQuickTunnel runs a fake cloudflared that prints a quick tunnel URL and
-// then waits. The URL is in QuickIssuerFile while cloudflared runs, and gone
-// once Tunnel returns.
+// then waits. The URL is in QuickIssuerFile while cloudflared runs. Once
+// Tunnel returns, the file is gone, unless another tunnel's URL replaced it.
+// The environment has TUNNEL_NAME, which cloudflared must not see.
 func TestQuickTunnel(t *testing.T) {
 	t.Parallel()
-	const url = "https://quick-brown-fox.trycloudflare.com"
-	local, calls := newLocal(t, sandbox.Settings{}, `
+	const (
+		url   = "https://quick-brown-fox.trycloudflare.com"
+		other = "https://other-tunnel.trycloudflare.com\n"
+	)
+	tests := []struct {
+		name string
+		// replace is what another tunnel writes to the issuer file while this one runs.
+		replace string
+		// wantFile is the issuer file after Tunnel returns, or "" for none.
+		wantFile string
+	}{
+		{name: "deletes its URL"},
+		{name: "keeps another tunnel's URL", replace: other, wantFile: other},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			local, calls := newLocal(t, sandbox.Settings{}, `env | grep '^TUNNEL_' >>"$CALLS"
 echo "INF Requesting new quick Tunnel on api.trycloudflare.com..." >&2
 echo "INF |  `+url+`  |" >&2
 exec sleep 60
 `)
-	out := &bytes.Buffer{}
-	local.Out = out
-	ctx, stop := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { done <- local.Tunnel(ctx, "127.0.0.1:8480") }()
+			tool := local.Tool
+			local.Tool = func(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
+				cmd, err := tool(ctx, name, args...)
+				cmd.Env = append(cmd.Env, "TUNNEL_NAME=asp")
+				return cmd, err
+			}
+			out := &bytes.Buffer{}
+			local.Out = out
+			ctx, stop := context.WithCancel(t.Context())
+			done := make(chan error, 1)
+			go func() { done <- local.Tunnel(ctx, "127.0.0.1:8480") }()
 
-	published := waitForFile(t, local.QuickIssuerFile())
-	stop()
-	if err := <-done; err != nil {
-		t.Fatalf("Tunnel() = %v, want nil once stopped", err)
-	}
-	if published != url+"\n" {
-		t.Fatalf("issuer file = %q, want %q", published, url+"\n")
-	}
-	if _, err := os.Stat(local.QuickIssuerFile()); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("issuer file after Tunnel returned: %v, want it removed", err)
-	}
-	// The config path is a new temporary file on every run.
-	call := strings.Fields(readCalls(t, calls))
-	want := []string{
-		"cloudflared",
-		"KUBERC=",
-		"tunnel",
-		"--no-autoupdate",
-		"--config",
-		"*",
-		"--url",
-		"http://127.0.0.1:8480",
-	}
-	if len(call) != len(want) ||
-		!slices.EqualFunc(call, want, func(got, want string) bool { return want == "*" || got == want }) {
-		t.Fatalf("call = %q, want %q", call, want)
-	}
-	if want := "Deleted " + local.QuickIssuerFile() + ". The quick tunnel's URL has stopped working.\n"; !strings.Contains(
-		out.String(),
-		want,
-	) {
-		t.Errorf("output lacks %q\n%s", want, out)
-	}
-	if !strings.Contains(out.String(), "api.trycloudflare.com") {
-		t.Errorf("output = %q, want cloudflared's log lines", out)
+			published := waitForFile(t, local.QuickIssuerFile())
+			if tc.replace != "" {
+				if err := os.Remove(local.QuickIssuerFile()); err != nil {
+					t.Fatal(err)
+				}
+				writeFile(t, local.QuickIssuerFile(), tc.replace)
+			}
+			stop()
+			if err := <-done; err != nil {
+				t.Fatalf("Tunnel() = %v, want nil once stopped", err)
+			}
+			if published != url+"\n" {
+				t.Fatalf("issuer file = %q, want %q", published, url+"\n")
+			}
+			checkIssuerFile(t, local.QuickIssuerFile(), tc.wantFile)
+			// The config path is a new temporary file on every run.
+			call := strings.Fields(readCalls(t, calls))
+			want := []string{
+				"cloudflared",
+				"KUBERC=",
+				"tunnel",
+				"--no-autoupdate",
+				"--config",
+				"*",
+				"--url",
+				"http://127.0.0.1:8480",
+			}
+			if !slices.EqualFunc(call, want, func(got, want string) bool { return want == "*" || got == want }) {
+				t.Fatalf("call = %q, want %q", call, want)
+			}
+			deleted := "Deleted " + local.QuickIssuerFile() + ". The quick tunnel's URL has stopped working.\n"
+			if got := strings.Contains(out.String(), deleted); got != (tc.wantFile == "") {
+				t.Errorf("output has %q = %t, want %t\n%s", deleted, got, tc.wantFile == "", out)
+			}
+			if !strings.Contains(out.String(), "api.trycloudflare.com") {
+				t.Errorf("output = %q, want cloudflared's log lines", out)
+			}
+		})
 	}
 }
 
@@ -298,6 +324,19 @@ func waitForFile(t *testing.T, path string) string {
 	}
 	t.Fatalf("%s did not appear within 10 seconds", path)
 	return ""
+}
+
+// checkIssuerFile fails the test unless path holds want, or does not exist
+// when want is "".
+func checkIssuerFile(t *testing.T, path, want string) {
+	t.Helper()
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: the path is the test's own file.
+	switch {
+	case want == "" && !errors.Is(err, fs.ErrNotExist):
+		t.Fatalf("issuer file = %q, %v, want none", raw, err)
+	case want != "" && string(raw) != want:
+		t.Fatalf("issuer file = %q, %v, want %q", raw, err, want)
+	}
 }
 
 func writeFile(t *testing.T, path, body string) {
@@ -367,13 +406,7 @@ exec sleep 60
 			}
 			err := local.Tunnel(t.Context(), "127.0.0.1:8480")
 			checkErr(t, err, tc.want, tc.wantText)
-			raw, err := os.ReadFile(local.QuickIssuerFile())
-			switch {
-			case tc.wantFile == "" && !errors.Is(err, fs.ErrNotExist):
-				t.Fatalf("issuer file = %q, %v, want none", raw, err)
-			case tc.wantFile != "" && string(raw) != tc.wantFile:
-				t.Fatalf("issuer file = %q, %v, want %q", raw, err, tc.wantFile)
-			}
+			checkIssuerFile(t, local.QuickIssuerFile(), tc.wantFile)
 			if ran := readCalls(t, calls) != ""; ran == (tc.file != "") {
 				t.Fatalf("cloudflared ran = %t, want %t", ran, tc.file == "")
 			}
