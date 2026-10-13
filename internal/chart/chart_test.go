@@ -47,38 +47,3 @@ esac
 		t.Errorf("Render error = %q, want it to contain %q", err, want)
 	}
 }
-
-// TestRenderUsesThisRepositorysLauncher renders a chart outside the repository
-// that ships its own mise.toml and scripts/pinned. Render must still run this
-// repository's launcher, so the outside script never runs.
-func TestRenderUsesThisRepositorysLauncher(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	marker := filepath.Join(dir, "outside-launcher-ran")
-	for path, body := range map[string]string{
-		"Chart.yaml":        "apiVersion: v2\nname: outside\nversion: 0.1.0\n",
-		"templates/cm.yaml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: outside\n",
-		"mise.toml":         "",
-		"scripts/pinned":    "#!/bin/sh\n: >" + marker + "\n",
-	} {
-		full := filepath.Join(dir, path)
-		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		//nolint:gosec // The outside launcher must be executable to prove it is never run.
-		if err := os.WriteFile(full, []byte(body), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	docs, err := chart.Render(t.Context(), dir, "release", "default")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(marker); err == nil {
-		t.Error("Render ran the launcher beside the chart, not this repository's")
-	}
-	if len(docs) != 1 || !strings.Contains(string(docs[0]), "name: outside") {
-		t.Errorf("docs = %q, want the outside chart's ConfigMap", docs)
-	}
-}

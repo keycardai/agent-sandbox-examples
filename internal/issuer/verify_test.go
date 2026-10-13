@@ -1,7 +1,6 @@
-package main
+package issuer_test
 
 import (
-	"bytes"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -18,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/keycardai/agent-sandbox-examples/internal/issuer"
 )
 
 const (
@@ -35,13 +36,15 @@ type issuerCase struct {
 	jwksPath string
 	// redirect sends discovery to a plain http URL.
 	redirect bool
-	// httpIssuer passes the issuer to the command with an http scheme.
+	// httpIssuer gives Expect an issuer URL with an http scheme.
 	httpIssuer bool
 	// httpJWKS publishes a jwks_uri with an http scheme.
 	httpJWKS bool
-	// emptySubject passes an empty --subject.
+	// emptyAudience leaves Expect.Audience empty.
+	emptyAudience bool
+	// emptySubject leaves Expect.Subject empty.
 	emptySubject bool
-	// padDiscovery grows the discovery document past maxBody.
+	// padDiscovery grows the discovery document past issuer.MaxBody.
 	padDiscovery bool
 	signer       *rsa.PrivateKey
 	claims       func(issuer string, now time.Time) map[string]any
@@ -49,7 +52,7 @@ type issuerCase struct {
 	wantText     string
 }
 
-func TestCheck(t *testing.T) {
+func TestVerify(t *testing.T) {
 	t.Parallel()
 	cluster := newKey(t)
 	other := newKey(t)
@@ -58,20 +61,20 @@ func TestCheck(t *testing.T) {
 		{name: "jwks_uri at /keys", jwksPath: "/keys", signer: cluster, claims: validClaims},
 		{
 			name: "signed by another key", signer: other, claims: validClaims,
-			want: errToken, wantText: "failed to verify signature",
+			want: issuer.ErrToken, wantText: "failed to verify signature",
 		},
 		{
 			name: "issuer mismatch", discoveredIssuer: "https://other.example", signer: cluster, claims: validClaims,
-			want: errDiscovery, wantText: "did not match the issuer URL returned by provider",
+			want: issuer.ErrFetch, wantText: "did not match the issuer URL returned by provider",
 		},
 		{
-			name: "iss differs from --issuer", signer: cluster, want: errToken, wantText: "iss is",
+			name: "iss differs from Expect.Issuer", signer: cluster, want: issuer.ErrToken, wantText: "iss is",
 			claims: func(issuer string, now time.Time) map[string]any {
 				return validClaims(issuer+"/", now)
 			},
 		},
 		{
-			name: "another audience", signer: cluster, want: errToken, wantText: "expected audience",
+			name: "another audience", signer: cluster, want: issuer.ErrToken, wantText: "expected audience",
 			claims: func(issuer string, now time.Time) map[string]any {
 				claims := validClaims(issuer, now)
 				claims["aud"] = []string{"https://other.example"}
@@ -79,7 +82,7 @@ func TestCheck(t *testing.T) {
 			},
 		},
 		{
-			name: "another subject", signer: cluster, want: errSubject, wantText: "sub is",
+			name: "another subject", signer: cluster, want: issuer.ErrSubject, wantText: "sub is",
 			claims: func(issuer string, now time.Time) map[string]any {
 				claims := validClaims(issuer, now)
 				claims["sub"] = "system:serviceaccount:agents:other"
@@ -87,7 +90,7 @@ func TestCheck(t *testing.T) {
 			},
 		},
 		{
-			name: "missing sub", signer: cluster, want: errSubject, wantText: `sub is ""`,
+			name: "missing sub", signer: cluster, want: issuer.ErrSubject, wantText: `sub is ""`,
 			claims: func(issuer string, now time.Time) map[string]any {
 				claims := validClaims(issuer, now)
 				delete(claims, "sub")
@@ -96,10 +99,10 @@ func TestCheck(t *testing.T) {
 		},
 		{
 			name: "oversized discovery", padDiscovery: true, signer: cluster, claims: validClaims,
-			want: errDiscovery, wantText: "request body too large",
+			want: issuer.ErrFetch, wantText: "request body too large",
 		},
 		{
-			name: "missing exp", signer: cluster, want: errToken, wantText: "token is expired",
+			name: "missing exp", signer: cluster, want: issuer.ErrToken, wantText: "token is expired",
 			claims: func(issuer string, now time.Time) map[string]any {
 				claims := validClaims(issuer, now)
 				delete(claims, "exp")
@@ -107,7 +110,7 @@ func TestCheck(t *testing.T) {
 			},
 		},
 		{
-			name: "future nbf", signer: cluster, want: errToken, wantText: "before the nbf",
+			name: "future nbf", signer: cluster, want: issuer.ErrToken, wantText: "before the nbf",
 			claims: func(issuer string, now time.Time) map[string]any {
 				claims := validClaims(issuer, now)
 				claims["nbf"] = now.Add(time.Hour).Unix()
@@ -116,18 +119,26 @@ func TestCheck(t *testing.T) {
 		},
 		{
 			name: "redirect to http", redirect: true, signer: cluster, claims: validClaims,
-			want: errInsecure, wantText: "redirect to http://",
+			want: issuer.ErrInsecure, wantText: "redirect to http://",
 		},
 		{
 			name: "http issuer", httpIssuer: true, signer: cluster, claims: validClaims,
-			want: errInsecure, wantText: `issuer "http://`,
+			want: issuer.ErrInsecure, wantText: `issuer "http://`,
 		},
 		{
 			name: "http jwks_uri", httpJWKS: true, signer: cluster, claims: validClaims,
-			want: errToken, wantText: "non-https URL refused",
+			want: issuer.ErrToken, wantText: "non-https URL refused",
 		},
 		{
-			name: "empty subject", emptySubject: true, signer: cluster, want: errFlag, wantText: "--subject is empty",
+			name: "empty audience", emptyAudience: true, signer: cluster, claims: validClaims,
+			want: issuer.ErrExpect, wantText: "the audience is empty",
+		},
+		{
+			name:         "empty subject",
+			emptySubject: true,
+			signer:       cluster,
+			want:         issuer.ErrExpect,
+			wantText:     "the subject is empty",
 			claims: func(issuer string, now time.Time) map[string]any {
 				claims := validClaims(issuer, now)
 				delete(claims, "sub")
@@ -138,13 +149,10 @@ func TestCheck(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			out, err := runCase(t, cluster, tc)
+			err := runCase(t, cluster, tc)
 			if tc.want == nil {
 				if err != nil {
 					t.Fatalf("err = %v, want none", err)
-				}
-				if !strings.Contains(out, "token for "+testSubject+" verifies") {
-					t.Fatalf("stdout = %q, want the success line", out)
 				}
 				return
 			}
@@ -158,31 +166,32 @@ func TestCheck(t *testing.T) {
 	}
 }
 
-// runCase serves an issuer over TLS whose JWKS holds published, and runs
-// the command against it with the server's certificate as --ca-file.
-func runCase(t *testing.T, published *rsa.PrivateKey, tc issuerCase) (string, error) {
+// runCase serves an issuer over TLS with published's public key in its JWKS.
+// It verifies the case's token against that issuer, with the server's
+// certificate as the CA file.
+func runCase(t *testing.T, published *rsa.PrivateKey, tc issuerCase) error {
 	t.Helper()
 	jwksPath := tc.jwksPath
 	if jwksPath == "" {
-		jwksPath = "/openid/v1/jwks"
+		jwksPath = keysPath
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(wellKnownPath, func(w http.ResponseWriter, r *http.Request) {
 		if tc.redirect {
 			http.Redirect(w, r, "http://issuer.example/.well-known/openid-configuration", http.StatusFound)
 			return
 		}
-		issuer := "https://" + r.Host
+		discovered := "https://" + r.Host
 		if tc.discoveredIssuer != "" {
-			issuer = tc.discoveredIssuer
+			discovered = tc.discoveredIssuer
 		}
 		scheme := "https://"
 		if tc.httpJWKS {
 			scheme = "http://"
 		}
-		doc := map[string]string{"issuer": issuer, "jwks_uri": scheme + r.Host + jwksPath}
+		doc := map[string]string{"issuer": discovered, "jwks_uri": scheme + r.Host + jwksPath}
 		if tc.padDiscovery {
-			doc["padding"] = strings.Repeat("a", maxBody)
+			doc["padding"] = strings.Repeat("a", issuer.MaxBody)
 		}
 		writeJSON(t, w, doc)
 	})
@@ -199,53 +208,28 @@ func runCase(t *testing.T, published *rsa.PrivateKey, tc issuerCase) (string, er
 	dir := t.TempDir()
 	caFile := filepath.Join(dir, "ca.pem")
 	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
-	tokenFile := filepath.Join(dir, "token")
 	token := sign(t, tc.signer, tc.claims(server.URL, time.Now()))
 	if err := os.WriteFile(caFile, caPEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(tokenFile, []byte(token+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 
-	issuer := server.URL
+	issuerURL := server.URL
 	if tc.httpIssuer {
-		issuer = "http://" + strings.TrimPrefix(issuer, "https://")
+		issuerURL = "http://" + strings.TrimPrefix(issuerURL, "https://")
 	}
-	subject := testSubject
+	audience, subject := testAudience, testSubject
+	if tc.emptyAudience {
+		audience = ""
+	}
 	if tc.emptySubject {
 		subject = ""
 	}
-	var out bytes.Buffer
-	cmd := newCommand()
-	cmd.Writer = &out
-	err := cmd.Run(t.Context(), []string{
-		"oidc-check", "--issuer", issuer, "--token-file", tokenFile, "--ca-file", caFile,
-		"--audience", testAudience, "--subject", subject,
-	})
-	return out.String(), err
-}
-
-// A token larger than the cap is refused, from stdin or from a file, so
-// nothing past the cap is silently dropped.
-func TestOversizedToken(t *testing.T) {
-	t.Parallel()
-	oversized := bytes.Repeat([]byte("a"), maxBody+1)
-	tokenFile := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(tokenFile, oversized, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{"-", tokenFile} {
-		cmd := newCommand()
-		cmd.Reader = bytes.NewReader(oversized)
-		err := cmd.Run(t.Context(), []string{
-			"oidc-check", "--issuer", "https://issuer.example", "--token-file", path,
-			"--audience", testAudience, "--subject", testSubject,
-		})
-		if !errors.Is(err, errToken) || !strings.Contains(err.Error(), "holds more than") {
-			t.Fatalf("--token-file %s: err = %v, want errToken naming the size cap", path, err)
-		}
-	}
+	//nolint:wrapcheck // The test compares the error Verify returns.
+	return issuer.Verify(
+		t.Context(),
+		issuer.Expect{Issuer: issuerURL, Audience: audience, Subject: subject, CAFile: caFile},
+		token,
+	)
 }
 
 func validClaims(issuer string, now time.Time) map[string]any {

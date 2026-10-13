@@ -1,12 +1,12 @@
 # Running the sandbox locally
 
-The scripts under `local/` run the sandbox flow on a workstation against a
-real Keycard zone, a real user and real upstreams. Only the Kubernetes
-cluster is local. It is a k3d cluster that `bootstrap.sh` creates, named by
-`KEYCARD_LOCAL_CLUSTER`. The scripts write only to that cluster and to the
-zone.
+The steps under `local/` and `cmd/sandbox` run the sandbox flow on a
+workstation against a real Keycard zone, a real user and real upstreams.
+Only the Kubernetes cluster is local. It is a k3d cluster that
+`bootstrap.sh` creates, named by `KEYCARD_LOCAL_CLUSTER`. The steps write
+only to that cluster and to the zone.
 
-The scripts create their own cluster because of the ServiceAccount issuer. A
+The steps create their own cluster because of the ServiceAccount issuer. A
 zone fetches `<issuer>/.well-known/openid-configuration` and compares its
 `issuer` with the `iss` of each token, byte for byte. k3s mints
 `https://kubernetes.default.svc.cluster.local` unless told otherwise, and
@@ -15,7 +15,7 @@ zone fetches `<issuer>/.well-known/openid-configuration` and compares its
 ## Before you start
 
 - Docker, and the tools in `mise.toml` (`mise install`).
-- A Keycard zone with an enrolled user. The scripts do not create a zone.
+- A Keycard zone with an enrolled user. The steps do not create a zone.
 - The three images, built in the egress-proxy repository and tagged
   `ghcr.io/keycardai/egress-netsetup:local`,
   `ghcr.io/keycardai/egress-proxy:local` and
@@ -27,11 +27,11 @@ zone fetches `<issuer>/.well-known/openid-configuration` and compares its
 Then:
 
     cp local/local.env.example local/local.env
-    $EDITOR local/local.env      # the zone URL and the user's email
-    ./local/tunnel.sh            # in a terminal of its own. It runs until interrupted.
+    $EDITOR local/local.env            # the zone URL and the user's email
+    go run ./cmd/sandbox tunnel        # in its own terminal, until you stop it
     ./local/bootstrap.sh
-    ./local/mirror.sh            # in another terminal. It serves until interrupted.
-    ./local/check-issuer.sh
+    go run ./cmd/sandbox mirror        # in another terminal, until you stop it
+    go run ./cmd/sandbox check-issuer
     ./local/run.sh
 
 zone-setup stops if another policy set is active. Run `run.sh` with
@@ -43,23 +43,26 @@ stay.
 ## Publishing the issuer
 
 The zone fetches `<issuer>/.well-known/openid-configuration` and
-`<issuer>/openid/v1/jwks` for every exchange. `mirror.sh` serves a snapshot of
-both over plain HTTP on a local address, `127.0.0.1:8480` unless `--listen`
-names another. `tunnel.sh` gives that address a public https URL through a
+`<issuer>/openid/v1/jwks` for every exchange. `sandbox mirror` serves both
+over plain HTTP on a local address, `127.0.0.1:8480` unless `--listen` names
+another. `sandbox tunnel` gives that address a public https URL through a
 Cloudflare tunnel. Every exchange fails while the mirror or the tunnel is
 down.
 
-With `KEYCARD_LOCAL_TUNNEL` and `KEYCARD_LOCAL_ISSUER` empty, `tunnel.sh`
-starts a quick tunnel. It needs no Cloudflare account. Cloudflare says quick
-tunnels have no uptime guarantee and are for testing and development
+With `KEYCARD_LOCAL_TUNNEL` and `KEYCARD_LOCAL_ISSUER` empty,
+`sandbox tunnel` starts a quick tunnel. It doesn't need a Cloudflare account.
+Cloudflare says quick tunnels have no uptime guarantee and are for testing
+and development
 ([Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/)).
 The tunnel gets a new `https://<name>.trycloudflare.com` URL every time it
-starts. `tunnel.sh` writes it to `local/out/issuer` and removes the file when
-it exits. The other scripts read the issuer from that file. The issuer is
-fixed when the cluster is created, so start `tunnel.sh` before
-`bootstrap.sh`. After a restart, run `down.sh` and `bootstrap.sh` again.
-zone-setup then creates a new Provider for the new issuer. It does not
-delete the old one.
+starts. `sandbox tunnel` writes it to `local/out/issuer` and deletes the
+file when it exits. It refuses to start while that file exists. If a killed
+tunnel left the file behind, delete it. The other steps read the issuer from
+that file. The
+issuer is fixed when the cluster is created, so start `sandbox tunnel`
+before `bootstrap.sh`. After a restart, run `down.sh` and `bootstrap.sh`
+again. zone-setup then creates a new Provider for the new issuer. It does
+not delete the old one.
 
 To keep one URL, use a named tunnel in your Cloudflare account. Its
 hostname must be in a zone whose DNS Cloudflare serves. Set it up once:
@@ -69,35 +72,41 @@ hostname must be in a zone whose DNS Cloudflare serves. Set it up once:
     cloudflared tunnel route dns <name> <hostname>
 
 Then set `KEYCARD_LOCAL_TUNNEL=<name>` and
-`KEYCARD_LOCAL_ISSUER=https://<hostname>`. `tunnel.sh` runs the tunnel and
-forwards it to the mirror. It does not need a cloudflared config file.
+`KEYCARD_LOCAL_ISSUER=https://<hostname>`. `sandbox tunnel` runs the tunnel
+and forwards it to the mirror. It does not need a cloudflared config file.
 
 To publish the issuer another way, set `KEYCARD_LOCAL_ISSUER` and do not run
-`tunnel.sh`. Forward the issuer's https URL to the mirror, for example with a
-reverse proxy that terminates TLS for the issuer host.
+`sandbox tunnel`. Forward the issuer's https URL to the mirror, for example
+with a reverse proxy that terminates TLS for the issuer host. A proxy in a
+container reaches the host at `host.docker.internal`
+([OrbStack](https://docs.orbstack.dev/docker/network)). In testing on
+OrbStack, that address also reaches the mirror's default `127.0.0.1`
+listener, but OrbStack does not document it. Docker Desktop is untested. If
+the proxy cannot connect to the mirror, pass `--listen 0.0.0.0:8480`. The
+mirror serves only the two public documents.
 
-`check-issuer.sh` fetches the issuer at its https URL, as the zone does, and
-verifies a new token against it. `run.sh` does not publish the issuer. The
-mirror serves a snapshot of the cluster's signing key, so rerun `mirror.sh`
+`sandbox check-issuer` fetches the issuer at its https URL, as the zone
+does, and verifies a new token against it. `run.sh` does not publish the
+issuer. `sandbox mirror` reads the signing key once, at start. Run it again
 after you recreate the cluster.
 
 ## Extra trusted roots
 
 Set `KEYCARD_LOCAL_CA_FILE` when no public CA signed the zone's or the
 issuer's certificate. It is an absolute path to a PEM file of the roots that
-did. `check-issuer.sh` passes it to `oidc-check`, and `run.sh` gives it to
-the proxy through `zoneTrust`. Both add these roots to the system roots. When
-it is empty, they trust only the system roots.
+did. `sandbox check-issuer` trusts them, and `run.sh` gives them to the
+proxy through `zoneTrust`. Both add these roots to the system roots. When it
+is empty, they trust only the system roots.
 
-## The scripts
+## The steps
 
-| Script | What it does |
+| Step | What it does |
 |---|---|
-| `common.sh` | the settings, the checks, the Docker gateway and the CA file. Sourced, never run. |
-| `bootstrap.sh` | creates the cluster with the issuer, or checks that an existing one has it |
-| `tunnel.sh` | publishes the mirror at the issuer's https URL through a Cloudflare tunnel |
-| `mirror.sh` | snapshots the cluster's discovery document and JWKS and serves them with `cmd/oidc-mirror` |
-| `check-issuer.sh` | mints a token and verifies it against the published issuer, as the zone does |
+| `local/common.sh` | the settings, the checks, the Docker gateway and the CA file. Sourced, never run. |
+| `local/bootstrap.sh` | creates the cluster with the issuer, or checks that an existing one has it |
+| `sandbox tunnel` | publishes the mirror at the issuer's https URL through a Cloudflare tunnel |
+| `sandbox mirror` | reads the cluster's discovery document and JWKS and serves them |
+| `sandbox check-issuer` | mints a token and verifies it against the published issuer, as the zone does |
 | `run.sh` | `bootstrap.sh`, the images, `zone-setup`, `install.sh`, `new-sandbox`, then `checks.sh` |
 | `checks.sh` | the end-to-end checks against a running sandbox. It does not write to any cluster. |
 | `down.sh` | deletes the cluster, after asking unless `--yes` |
