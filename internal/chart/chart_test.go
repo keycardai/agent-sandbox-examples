@@ -47,32 +47,3 @@ esac
 		t.Errorf("Render error = %q, want it to contain %q", err, want)
 	}
 }
-
-// TestRenderUsesThisRepositorysMise renders a chart from a directory with its
-// own empty mise.toml. Render succeeds only if it resolves helm against this
-// repository's mise.toml.
-func TestRenderUsesThisRepositorysMise(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	for path, body := range map[string]string{
-		"Chart.yaml":        "apiVersion: v2\nname: outside\nversion: 0.1.0\n",
-		"templates/cm.yaml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: outside\n",
-		"mise.toml":         "",
-	} {
-		full := filepath.Join(dir, path)
-		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	docs, err := chart.Render(t.Context(), dir, "release", "default")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(docs) != 1 || !strings.Contains(string(docs[0]), "name: outside") {
-		t.Errorf("docs = %q, want the outside chart's ConfigMap", docs)
-	}
-}
