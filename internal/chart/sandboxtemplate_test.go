@@ -87,7 +87,7 @@ func TestInstallSandboxTemplate(t *testing.T) {
 	wantInit := []corev1.Container{
 		{
 			Name:  "egress-netsetup",
-			Image: "ghcr.io/keycardai/egress-netsetup:0.1.0",
+			Image: "ghcr.io/keycardai/egress-netsetup:v0.2.0",
 			Args: []string{
 				"--proxy-uid=1337", "--redirect-port=1015", "--dns-port=53", "--capture-ports=80,443",
 				"--ipv6=auto", "--receipt=/run/egress/netsetup/netsetup.json",
@@ -109,7 +109,7 @@ func TestInstallSandboxTemplate(t *testing.T) {
 		},
 		{
 			Name:          "egress-proxy",
-			Image:         "ghcr.io/keycardai/egress-proxy:0.1.0",
+			Image:         "ghcr.io/keycardai/egress-proxy:v0.2.0",
 			RestartPolicy: new(corev1.ContainerRestartPolicyAlways),
 			Args:          []string{"--config=/etc/egress/config.yaml"},
 			SecurityContext: &corev1.SecurityContext{
@@ -148,7 +148,7 @@ func TestInstallSandboxTemplate(t *testing.T) {
 	wantContainers := []corev1.Container{
 		{
 			Name:  "agent",
-			Image: "ghcr.io/keycardai/sandbox-base:0.1.0",
+			Image: "ghcr.io/keycardai/sandbox-base:v0.2.0",
 			Args:  []string{"sleep", "infinity"},
 			SecurityContext: &corev1.SecurityContext{
 				RunAsNonRoot:             new(true),

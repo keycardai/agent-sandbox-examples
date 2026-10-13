@@ -56,7 +56,7 @@ is a chart value.
 | Containers | `egress-netsetup`, `egress-proxy` as a native sidecar, `agent` |
 | Proxy uid, agent uid | 1337, 1000 |
 | Redirect port | 1015 (`proxy.redirectPort` and `--redirect-port` in `netsetup.args`). The sandbox chart writes it into `listen.transparent_port`. |
-| Resolver port | 53 (`--dns-port` in `netsetup.args`). The sandbox chart writes `:53` into `listen.dns`. |
+| Resolver port | 53 (`--dns-port` in `netsetup.args`). The sandbox chart writes it into `listen.dns_port`. |
 | `net.ipv4.ip_unprivileged_port_start` | 1024 (`proxy.unprivilegedPortStart`), a pod sysctl. The proxy refuses to start when it is at or below the higher of the redirect port and the resolver port. |
 | Agent command | `agent.args`, `["sleep", "infinity"]` by default. The `sandbox-base` entrypoint exits 64 when there are no args. |
 | Netsetup receipt | `/run/egress/netsetup/netsetup.json`, on the memory-backed `egress-run` volume that both proxy-side containers mount |
@@ -71,7 +71,7 @@ Each default path is a directory inside a volume, never the mount point,
 so the proxy creates and owns it. `internal/chart/settings_test.go` runs
 `egress-proxy settings` and checks both charts against what it prints: the
 netsetup arguments, the proxy uid, the sysctl, the probe routes, the
-default paths, `listen.transparent_port` and `listen.dns`. It runs when
+default paths, `listen.transparent_port` and `listen.dns_port`. It runs when
 `EGRESS_PROXY` names an `egress-proxy` binary and skips otherwise.
 
 ## The sandbox-admin Role is effectively node admin

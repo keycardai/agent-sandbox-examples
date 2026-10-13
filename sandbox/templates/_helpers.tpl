@@ -48,16 +48,16 @@ listen.transparent_port must be the port egress-netsetup redirects to. When
 it is unset, the proxy does not run a transparent frontend, and the agent's
 TCP connections go to a port that nothing listens on.
 
-The port of listen.dns must equal the --dns-port egress-netsetup redirects
-DNS to. The empty host binds 127.0.0.1 and ::1, where the redirect sends
-each query.
+listen.dns_port must equal the --dns-port egress-netsetup redirects DNS to.
+The proxy binds it on 127.0.0.1 and ::1, where the redirect sends each
+query.
 */}}
 {{- define "keycard-sandbox-user.document" -}}
 {{- $root := . -}}
 {{- $doc := dict
       "version" 1
       "sandbox" (dict "id" $root.Release.Name)
-      "listen" (dict "transparent_port" (int $root.Values.proxy.redirectPort) "dns" ":53")
+      "listen" (dict "transparent_port" (int $root.Values.proxy.redirectPort) "dns_port" 53)
       "policy" (dict
         "cluster_cidrs" (default (list) $root.Values.policy.clusterCIDRs)
         "deny_list_exceptions" (default (list) $root.Values.policy.denyListExceptions))
