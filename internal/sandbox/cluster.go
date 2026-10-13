@@ -20,9 +20,9 @@ import (
 const k3sImage = "rancher/k3s:v1.36.4-k3s1"
 
 var (
-	// ErrDocker means k3d could not list its clusters. Usually Docker is not
-	// running.
-	ErrDocker = errors.New("k3d unavailable")
+	// ErrDocker means docker or k3d could not connect to Docker. Usually Docker
+	// is not installed or not running.
+	ErrDocker = errors.New("docker unavailable")
 	// ErrConfirm means the operator did not confirm a deletion.
 	ErrConfirm = errors.New("not confirmed")
 )
@@ -121,13 +121,8 @@ func (l *Local) Down(ctx context.Context, cluster string, yes bool, answers io.R
 		return nil
 	}
 	if !yes {
-		_, _ = fmt.Fprintf(l.Out, "Delete the k3d cluster %s? [y/N] ", cluster)
-		answer, readErr := bufio.NewReader(answers).ReadString('\n')
-		if answer == "" && readErr != nil {
-			return fmt.Errorf("%w: no answer. Pass --yes to delete without asking", ErrConfirm)
-		}
-		if !strings.HasPrefix(answer, "y") && !strings.HasPrefix(answer, "Y") {
-			return fmt.Errorf("%w: nothing deleted", ErrConfirm)
+		if err = l.confirmDelete(ctx, cluster, answers); err != nil {
+			return err
 		}
 	}
 	if err = l.k3d(ctx, l.Out, "cluster", "delete", cluster); err != nil {
@@ -136,6 +131,44 @@ func (l *Local) Down(ctx context.Context, cluster string, yes bool, answers io.R
 	_, _ = fmt.Fprintf(l.Out, "Deleted the k3d cluster %s, and removed the context k3d-%s from your kubeconfig.\n",
 		cluster, cluster)
 	return nil
+}
+
+// confirmDelete asks whether to delete cluster and reads the answer. It
+// returns ErrConfirm unless the answer starts with y or Y.
+func (l *Local) confirmDelete(ctx context.Context, cluster string, answers io.Reader) error {
+	_, _ = fmt.Fprintf(l.Out, "Delete the k3d cluster %s? [y/N] ", cluster)
+	answer, err := readLine(ctx, answers)
+	switch {
+	case ctx.Err() != nil:
+		_, _ = fmt.Fprintln(l.Out)
+		return fmt.Errorf("%w: interrupted, nothing deleted: %w", ErrConfirm, ctx.Err())
+	case answer == "" && err != nil:
+		return fmt.Errorf("%w: no answer. Pass --yes to delete without asking", ErrConfirm)
+	case !strings.HasPrefix(answer, "y") && !strings.HasPrefix(answer, "Y"):
+		return fmt.Errorf("%w: nothing deleted", ErrConfirm)
+	}
+	return nil
+}
+
+// readLine returns the first line of r. It returns early when ctx is done,
+// such as on Ctrl-C. A read that is still blocked then keeps its goroutine
+// until r returns.
+func readLine(ctx context.Context, r io.Reader) (string, error) {
+	type result struct {
+		line string
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		line, err := bufio.NewReader(r).ReadString('\n')
+		done <- result{line, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", fmt.Errorf("waiting for an answer: %w", ctx.Err())
+	case read := <-done:
+		return read.line, read.err
+	}
 }
 
 // checkClusterIssuer accepts an https URL with a host of lowercase ASCII DNS
@@ -199,7 +232,7 @@ func (l *Local) clusterExists(ctx context.Context, cluster string) (bool, error)
 // checkDiscovery returns ErrIssuer when the cluster's discovery document has
 // an issuer other than issuerURL or a jwks_uri other than jwksURI.
 func (l *Local) checkDiscovery(ctx context.Context, cluster, issuerURL, jwksURI string) error {
-	raw, err := l.kubectl(ctx, cluster, "get", "--raw", "/.well-known/openid-configuration")
+	raw, err := l.kubectl(ctx, cluster, nil, "get", "--raw", "/.well-known/openid-configuration")
 	if err != nil {
 		return fmt.Errorf("reading the cluster's discovery document to check its issuer: %w", err)
 	}
@@ -224,12 +257,23 @@ func (l *Local) checkDiscovery(ctx context.Context, cluster, issuerURL, jwksURI 
 // checkTokenIssuer mints a token for the default ServiceAccount and returns
 // ErrIssuer when its iss is not issuerURL.
 func (l *Local) checkTokenIssuer(ctx context.Context, cluster, issuerURL string) error {
-	_, err := l.kubectl(ctx, cluster, "--namespace", "default",
+	_, err := l.kubectl(ctx, cluster, nil, "--namespace", "default",
 		"wait", "--for=create", "serviceaccount/default", "--timeout=120s")
 	if err != nil {
 		return err
 	}
-	token, err := l.kubectl(ctx, cluster, "--namespace", "default", "create", "token", "default", "--duration", "10m")
+	token, err := l.kubectl(
+		ctx,
+		cluster,
+		nil,
+		"--namespace",
+		"default",
+		"create",
+		"token",
+		"default",
+		"--duration",
+		"10m",
+	)
 	if err != nil {
 		return err
 	}

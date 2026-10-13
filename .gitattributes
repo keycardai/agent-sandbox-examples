@@ -1,2 +1,2 @@
-# The agent-sandbox release manifest, which install/agent-sandbox/refresh.sh writes.
+# The agent-sandbox release manifest, which go generate ./internal/install downloads.
 install/agent-sandbox/sandbox-with-extensions.yaml linguist-generated=true

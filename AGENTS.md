@@ -12,9 +12,8 @@ outbound HTTPS the Keycard egress proxy mediates.
 - Every other tool except Docker is pinned in `mise.toml`, with its checksums
   in `mise.lock`. Run `mise install`. Docker comes from OrbStack or Docker
   Desktop. Add a new tool to `mise.toml`, never as a requirement on `$PATH`.
-- Go code runs those tools through `internal/pinned`, and shell scripts
-  through `scripts/pinned`. Both stop when mise does not provide the pinned
-  version.
+- Go code runs those tools through `internal/pinned`, which stops when mise
+  does not provide the pinned version.
 
 ## Git
 

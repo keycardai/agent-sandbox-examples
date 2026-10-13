@@ -185,16 +185,16 @@ func (l *Local) caFile() (string, error) {
 	return file, nil
 }
 
-// kubectl runs kubectl in the cluster's k3d context and returns its standard
-// output. It sets KUBERC=off, so a kuberc default for --server, --cluster,
-// --user or --token cannot override the context.
-func (l *Local) kubectl(ctx context.Context, cluster string, args ...string) ([]byte, error) {
+// kubectl runs kubectl in the cluster's k3d context with stdin and returns
+// its standard output. It sets KUBERC=off, so a kuberc default for --server,
+// --cluster, --user or --token cannot override the context.
+func (l *Local) kubectl(ctx context.Context, cluster string, stdin []byte, args ...string) ([]byte, error) {
 	cmd, err := l.Tool(ctx, "kubectl", slices.Concat([]string{"--context", "k3d-" + cluster}, args)...)
 	if err != nil {
 		return nil, err
 	}
 	cmd.Env = append(cmd.Environ(), "KUBERC=off")
-	out, err := pinned.Run(cmd, nil)
+	out, err := pinned.Run(cmd, stdin)
 	if err != nil {
 		return nil, fmt.Errorf("kubectl: %w", err)
 	}
