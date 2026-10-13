@@ -122,11 +122,14 @@ func (l *Local) Down(ctx context.Context, cluster string, yes bool, answers io.R
 	}
 	if !yes {
 		_, _ = fmt.Fprintf(l.Out, "Delete the k3d cluster %s? [y/N] ", cluster)
-		answer, readErr := bufio.NewReader(answers).ReadString('\n')
-		if answer == "" && readErr != nil {
+		answer, readErr := readLine(ctx, answers)
+		switch {
+		case ctx.Err() != nil:
+			_, _ = fmt.Fprintln(l.Out)
+			return fmt.Errorf("%w: interrupted, nothing deleted: %w", ErrConfirm, ctx.Err())
+		case answer == "" && readErr != nil:
 			return fmt.Errorf("%w: no answer. Pass --yes to delete without asking", ErrConfirm)
-		}
-		if !strings.HasPrefix(answer, "y") && !strings.HasPrefix(answer, "Y") {
+		case !strings.HasPrefix(answer, "y") && !strings.HasPrefix(answer, "Y"):
 			return fmt.Errorf("%w: nothing deleted", ErrConfirm)
 		}
 	}
@@ -136,6 +139,27 @@ func (l *Local) Down(ctx context.Context, cluster string, yes bool, answers io.R
 	_, _ = fmt.Fprintf(l.Out, "Deleted the k3d cluster %s, and removed the context k3d-%s from your kubeconfig.\n",
 		cluster, cluster)
 	return nil
+}
+
+// readLine returns the first line of r. It returns early when ctx is done,
+// such as on Ctrl-C. A read that is still blocked then keeps its goroutine
+// until r returns.
+func readLine(ctx context.Context, r io.Reader) (string, error) {
+	type result struct {
+		line string
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		line, err := bufio.NewReader(r).ReadString('\n')
+		done <- result{line, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", fmt.Errorf("waiting for an answer: %w", ctx.Err())
+	case read := <-done:
+		return read.line, read.err
+	}
 }
 
 // checkClusterIssuer accepts an https URL with a host of lowercase ASCII DNS
