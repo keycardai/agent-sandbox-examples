@@ -6,44 +6,27 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"flag"
-	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/install"
 )
 
-//nolint:gochecknoglobals // go test reads flags from package variables.
-var update = flag.Bool("update", false, "download the controller manifest of controllerVersion")
-
-// The agent-sandbox release that install applies, and the sha256 GitHub
-// publishes for its sandbox-with-extensions.yaml. To move to another
-// release, change both, then run:
-//
-//	go test ./internal/install -run TestControllerManifest -update
-const (
-	controllerRepo    = "kubernetes-sigs/agent-sandbox"
-	controllerVersion = "v1.0.4"
-	controllerAsset   = "sandbox-with-extensions.yaml"
-	controllerSHA256  = "8cbe7f4c252463667e2286993bd735cb33bb2e47d7f304b92aa2ca97f57052c0"
-)
+// controllerSHA256 is the sha256 GitHub publishes for the
+// sandbox-with-extensions.yaml asset of the release that the go:generate
+// directive in install.go names. To move to another release, change the
+// version there and this digest, then run go generate ./internal/install.
+const controllerSHA256 = "8cbe7f4c252463667e2286993bd735cb33bb2e47d7f304b92aa2ca97f57052c0"
 
 // TestControllerManifest fails when the committed controller manifest does
 // not match controllerSHA256.
 func TestControllerManifest(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(repoRoot(t), "install", "agent-sandbox", controllerAsset)
-	if *update {
-		downloadManifest(t, path)
-	}
+	path := filepath.Join(repoRoot(t), "install", "agent-sandbox", "sandbox-with-extensions.yaml")
 	manifest, err := os.ReadFile(path) //nolint:gosec // G304: the path is the committed manifest.
 	if err != nil {
 		t.Fatal(err)
@@ -276,76 +259,6 @@ func checkRun(t *testing.T, err error, out, wantErr, wantOut string) {
 	if wantErr != "" && strings.Contains(out, "Installed") {
 		t.Errorf("output reports success\n%s", out)
 	}
-}
-
-// downloadManifest writes the controller manifest of controllerVersion to
-// path. It refuses the download unless its sha256 equals the digest GitHub
-// publishes for the release asset, and the manifest runs the controller
-// image of that version.
-func downloadManifest(t *testing.T, path string) {
-	t.Helper()
-	var release struct {
-		TagName string `json:"tag_name"`
-		Assets  []struct {
-			Name   string `json:"name"`
-			Digest string `json:"digest"`
-		} `json:"assets"`
-	}
-	raw := fetch(t, "https://api.github.com/repos/"+controllerRepo+"/releases/tags/"+controllerVersion)
-	if err := json.Unmarshal(raw, &release); err != nil {
-		t.Fatalf("decoding release %s: %v", controllerVersion, err)
-	}
-	if release.TagName != controllerVersion {
-		t.Fatalf("GitHub returned release %q, want %s", release.TagName, controllerVersion)
-	}
-	var digests []string
-	for _, asset := range release.Assets {
-		if asset.Name == controllerAsset {
-			digests = append(digests, asset.Digest)
-		}
-	}
-	if len(digests) != 1 || !regexp.MustCompile(`^sha256:[0-9a-f]{64}$`).MatchString(digests[0]) {
-		t.Fatalf(
-			"release %s does not publish one sha256 digest for %s (got %q)",
-			controllerVersion,
-			controllerAsset,
-			digests,
-		)
-	}
-
-	manifest := fetch(t, "https://github.com/"+controllerRepo+"/releases/download/"+controllerVersion+"/"+controllerAsset)
-	sum := sha256.Sum256(manifest)
-	if got := "sha256:" + hex.EncodeToString(sum[:]); got != digests[0] {
-		t.Fatalf("%s has %s, but GitHub publishes %s", controllerAsset, got, digests[0])
-	}
-	image := regexp.MustCompile(`(?m)image: registry\.k8s\.io/agent-sandbox/agent-sandbox-controller:` +
-		regexp.QuoteMeta(controllerVersion) + `$`)
-	if !image.Match(manifest) {
-		t.Fatalf("%s does not run the controller image %s", controllerAsset, controllerVersion)
-	}
-	//nolint:gosec // G306: the manifest is committed and world-readable.
-	if err := os.WriteFile(path, manifest, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("wrote %s (%s, %s)", path, controllerVersion, digests[0])
-}
-
-func fetch(t *testing.T, url string) []byte {
-	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("fetching %s: %v", url, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-	if err != nil || resp.StatusCode != http.StatusOK {
-		t.Fatalf("fetching %s: %s %v", url, resp.Status, err)
-	}
-	return body
 }
 
 func repoRoot(t *testing.T) string {
