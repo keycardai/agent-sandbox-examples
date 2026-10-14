@@ -3,6 +3,7 @@ package zonesetup
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,7 +15,6 @@ import (
 	"time"
 
 	"github.com/keycardai/keycard-go"
-	"github.com/keycardai/keycard-go/option"
 	"github.com/keycardai/keycard-go/packages/param"
 )
 
@@ -33,31 +33,21 @@ type Session struct {
 }
 
 // Connect authenticates as the organization service account and resolves the
-// zone the values file names by zone_url, zone_id or both. It writes nothing
-// to the zone. Every error wraps ErrAuth, ErrAPI, ErrZoneNotFound,
-// ErrZoneAmbiguous or ErrZoneMismatch.
-func Connect(ctx context.Context, values *Values, secrets *Secrets) (*Session, error) {
-	httpClient := &http.Client{Timeout: requestTimeout, CheckRedirect: refuseRedirect}
-	token, err := serviceAccountToken(ctx, httpClient, values, secrets.ManagementClientSecret)
+// zone the values file names by zone_url, zone_id or both. It trusts roots,
+// or the system roots if roots is nil. It writes nothing to the zone. Every
+// error wraps ErrAuth, ErrAPI, ErrZoneNotFound, ErrZoneAmbiguous or
+// ErrZoneMismatch.
+func Connect(ctx context.Context, values *Values, secrets *Secrets, roots *x509.CertPool) (*Session, error) {
+	org, err := Login(ctx, values.ManagementAPIURL, values.ManagementServiceAccount.ClientID,
+		secrets.ManagementClientSecret, roots)
 	if err != nil {
 		return nil, err
 	}
-	// NewZoneService reads no KEYCARD_API_* variable, unlike keycard.NewClient.
-	session := &Session{zones: keycard.NewZoneService(
-		option.WithBaseURL(values.ManagementAPIURL),
-		option.WithHTTPClient(httpClient),
-		option.WithAPIKey(token),
-		option.WithMaxRetries(0),
-	)}
-	if values.ZoneID != "" {
-		session.Zone, err = zoneByID(ctx, &session.zones, values)
-	} else {
-		session.Zone, err = zoneByURL(ctx, &session.zones, values.ZoneURL)
-	}
+	zone, err := org.Zone(ctx, values)
 	if err != nil {
 		return nil, err
 	}
-	return session, nil
+	return org.Session(zone), nil
 }
 
 // FindProvider returns the id of the zone's provider whose OAuth issuer is
@@ -199,7 +189,7 @@ func (s *Session) SetApplicationConsentImplicit(ctx context.Context, application
 
 // ResourceProvider returns the id of the provider that serves the resource's
 // credential: the provider whose identifier is credential_provider, or the
-// zone's keycard-vault provider for a secret_env. Every error wraps ErrAPI,
+// zone's keycard-vault provider for a static token. Every error wraps ErrAPI,
 // ErrProviderAmbiguous or ErrProviderNotFound.
 func (s *Session) ResourceProvider(ctx context.Context, resource ResourceValues) (string, error) {
 	if resource.CredentialProvider == "" {
@@ -662,10 +652,9 @@ var (
 func serviceAccountToken(
 	ctx context.Context,
 	httpClient *http.Client,
-	values *Values,
-	secret string,
+	managementAPIURL, clientID, secret string,
 ) (string, error) {
-	base, err := url.Parse(values.ManagementAPIURL)
+	base, err := url.Parse(managementAPIURL)
 	if err != nil {
 		return "", fmt.Errorf("%w: management_api_url: %w", ErrAuth, err)
 	}
@@ -676,7 +665,7 @@ func serviceAccountToken(
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", ErrAuth, err)
 	}
-	req.SetBasicAuth(values.ManagementServiceAccount.ClientID, secret)
+	req.SetBasicAuth(clientID, secret)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	res, err := httpClient.Do(req)
@@ -685,9 +674,16 @@ func serviceAccountToken(
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%w: the token endpoint returned HTTP %d for client %s. "+
+		err = fmt.Errorf("%w: the token endpoint returned HTTP %d for client %s. "+
 			"The client must be an organization service account",
-			ErrAuth, res.StatusCode, values.ManagementServiceAccount.ClientID)
+			ErrAuth, res.StatusCode, clientID)
+		// RFC 6749 section 5.2: a token endpoint refuses a request with 400.
+		// When client authentication fails, it may answer 401, and must when
+		// the client used the Authorization header.
+		if res.StatusCode == http.StatusBadRequest || res.StatusCode == http.StatusUnauthorized {
+			err = fmt.Errorf("%w: %w", ErrRefused, err)
+		}
+		return "", err
 	}
 	return tokenFromResponse(res.Body)
 }

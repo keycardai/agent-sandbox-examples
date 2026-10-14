@@ -13,17 +13,41 @@ import (
 // terminalAsker asks questions on the terminal with huh.
 type terminalAsker struct{}
 
-func (terminalAsker) Confirm(ctx context.Context, question string, value bool) (bool, error) {
-	err := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title(question).Value(&value))).
-		WithShowHelp(false).
-		RunWithContext(ctx)
-	return value, asked(ctx, err)
+func (terminalAsker) Input(ctx context.Context, question, value string, check func(string) error) (string, error) {
+	err := ask(ctx, huh.NewInput().Title(question).Value(&value).Validate(check))
+	return value, err
 }
 
-// asked returns the error for a huh form that returned err. When ctx has
-// ended, it returns ctx's error, because huh reports that case as
-// huh.ErrTimeout. On Ctrl-C it returns sandbox.ErrInterrupted.
-func asked(ctx context.Context, err error) error {
+func (terminalAsker) Secret(ctx context.Context, question string, check func(string) error) (string, error) {
+	var value string
+	err := ask(ctx, huh.NewInput().Title(question).EchoMode(huh.EchoModePassword).Value(&value).Validate(check))
+	return value, err
+}
+
+func (terminalAsker) Choose(
+	ctx context.Context,
+	question string,
+	options []sandbox.Option,
+	value string,
+) (string, error) {
+	choices := make([]huh.Option[string], 0, len(options))
+	for _, option := range options {
+		choices = append(choices, huh.NewOption(option.Label, option.Value))
+	}
+	err := ask(ctx, huh.NewSelect[string]().Title(question).Options(choices...).Value(&value))
+	return value, err
+}
+
+func (terminalAsker) Confirm(ctx context.Context, question string, value bool) (bool, error) {
+	err := ask(ctx, huh.NewConfirm().Title(question).Value(&value))
+	return value, err
+}
+
+// ask runs a form with one field until the operator answers or ctx ends.
+// When ctx has ended, it returns ctx's error, because huh reports that case
+// as huh.ErrTimeout. On Ctrl-C it returns sandbox.ErrInterrupted.
+func ask(ctx context.Context, field huh.Field) error {
+	err := huh.NewForm(huh.NewGroup(field)).WithShowHelp(false).RunWithContext(ctx)
 	switch {
 	case err == nil:
 		return nil

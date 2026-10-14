@@ -1,6 +1,7 @@
 package zonesetup_test
 
 import (
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"io"
@@ -79,6 +80,9 @@ type fakeAPI struct {
 	failPath          string
 	failStatus        int
 	handlers          map[string]http.HandlerFunc
+	// tls makes serve start a TLS server and set roots to its certificate.
+	tls   bool
+	roots *x509.CertPool
 
 	mu    sync.Mutex
 	calls map[string]int
@@ -123,7 +127,7 @@ func (f *fakeAPI) serve(t *testing.T) string {
 		f.patches = append(f.patches, readBody(w, r))
 		writeJSON(w, fakeApp{id: r.PathValue("appID"), consent: implicit}.toJSON())
 	}))
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.calls[r.Method+" "+r.URL.Path]++
 		f.mu.Unlock()
@@ -137,6 +141,13 @@ func (f *fakeAPI) serve(t *testing.T) string {
 		}
 		mux.ServeHTTP(w, r)
 	}))
+	if f.tls {
+		server.StartTLS()
+		f.roots = x509.NewCertPool()
+		f.roots.AddCert(server.Certificate())
+	} else {
+		server.Start()
+	}
 	t.Cleanup(server.Close)
 	return server.URL
 }
@@ -475,6 +486,7 @@ func TestConnect(t *testing.T) {
 		failPath   string
 		failStatus int
 		handlers   map[string]http.HandlerFunc
+		tls        bool
 		wantZone   string
 		wantErr    error
 		wantCalls  map[string]int
@@ -485,6 +497,7 @@ func TestConnect(t *testing.T) {
 		},
 		{name: "a trailing slash on zone_url still matches", zoneURL: "https://c.keycard.cloud/", wantZone: "zone-c"},
 		{name: "by id", zoneID: zoneD, wantZone: zoneD},
+		{name: "an API with a private CA", zoneID: zoneD, tls: true, wantZone: zoneD},
 		{name: "by id and url that match", zoneID: zoneB, zoneURL: issuerB, wantZone: zoneB},
 		{
 			name: "by url", zoneURL: issuerA, wantZone: zoneA,
@@ -518,7 +531,7 @@ func TestConnect(t *testing.T) {
 			wantCalls: map[string]int{getACall: 1},
 		},
 		{
-			name: "wrong secret", zoneID: zoneA, secret: "wrong", wantErr: zonesetup.ErrAuth,
+			name: "wrong secret", zoneID: zoneA, secret: "wrong", wantErr: zonesetup.ErrRefused,
 			wantCalls: map[string]int{exchangeCall: 1, getACall: 0},
 		},
 		{
@@ -618,7 +631,9 @@ func TestConnect(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			fake := &fakeAPI{zones: zones, failPath: tc.failPath, failStatus: tc.failStatus, handlers: tc.handlers}
+			fake := &fakeAPI{
+				zones: zones, failPath: tc.failPath, failStatus: tc.failStatus, handlers: tc.handlers, tls: tc.tls,
+			}
 			if tc.zones != nil {
 				fake.zones = tc.zones
 			}
@@ -632,7 +647,8 @@ func TestConnect(t *testing.T) {
 			if tc.secret != "" {
 				secret = tc.secret
 			}
-			session, err := zonesetup.Connect(t.Context(), values, &zonesetup.Secrets{ManagementClientSecret: secret})
+			session, err := zonesetup.Connect(t.Context(), values,
+				&zonesetup.Secrets{ManagementClientSecret: secret}, fake.roots)
 			refuseLeaks(t, err)
 			switch {
 			case tc.wantErr != nil:
@@ -660,7 +676,7 @@ func connectZoneA(t *testing.T, fake *fakeAPI) *zonesetup.Session {
 		ZoneID:                   zoneA,
 		ManagementServiceAccount: zonesetup.ManagementServiceAccountValues{ClientID: fakeClientID},
 	}
-	session, err := zonesetup.Connect(t.Context(), values, &zonesetup.Secrets{ManagementClientSecret: fakeSecret})
+	session, err := zonesetup.Connect(t.Context(), values, &zonesetup.Secrets{ManagementClientSecret: fakeSecret}, nil)
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -783,7 +799,7 @@ func TestCreateProviderConflictFindsTheConcurrentProvider(t *testing.T) {
 		ZoneID:                   zoneA,
 		ManagementServiceAccount: zonesetup.ManagementServiceAccountValues{ClientID: fakeClientID},
 	}
-	session, err := zonesetup.Connect(t.Context(), values, &zonesetup.Secrets{ManagementClientSecret: fakeSecret})
+	session, err := zonesetup.Connect(t.Context(), values, &zonesetup.Secrets{ManagementClientSecret: fakeSecret}, nil)
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}

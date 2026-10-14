@@ -299,7 +299,13 @@ func (l *Local) zoneSetup(ctx context.Context, cfg runSettings, opts RunOptions)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s: %w", ErrZoneSetup, valuesFile, err)
 	}
-	out, err := zonesetup.Run(ctx, values, secrets, &zonesetup.Options{ReplaceActive: opts.ReplaceActive, Log: l.Out})
+	roots, err := rootsFrom(cfg.caFile)
+	if err != nil {
+		return nil, err
+	}
+	out, err := zonesetup.Run(ctx, values, secrets, &zonesetup.Options{
+		ReplaceActive: opts.ReplaceActive, Log: l.Out, Roots: roots,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrZoneSetup, err)
 	}

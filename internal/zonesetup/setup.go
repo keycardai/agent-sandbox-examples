@@ -2,6 +2,7 @@ package zonesetup
 
 import (
 	"context"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"maps"
@@ -23,6 +24,9 @@ type Options struct {
 	ReplaceActive bool
 	// Log gets one line per entity Run finds, creates or changes.
 	Log io.Writer
+	// Roots are the CA certificates Run trusts for the management API. If
+	// Roots is nil, Run trusts the system roots.
+	Roots *x509.CertPool
 }
 
 // Output holds the k8s_sandbox and sandbox_user_access values a sandbox
@@ -61,7 +65,7 @@ type UserAccess struct {
 // With opts.DryRun it does not change the zone. The Output then has an empty
 // id for each entity that does not exist yet.
 func Run(ctx context.Context, values *Values, secrets *Secrets, opts *Options) (*Output, error) {
-	session, err := Connect(ctx, values, secrets)
+	session, err := Connect(ctx, values, secrets, opts.Roots)
 	if err != nil {
 		return nil, fmt.Errorf("resolving the zone: %w", err)
 	}
@@ -98,21 +102,17 @@ func Run(ctx context.Context, values *Values, secrets *Secrets, opts *Options) (
 }
 
 // ReadValuesFile parses the values file at path. A non-empty issuerURL
-// replaces its issuer_url. Errors name source as where issuerURL came from.
+// replaces its issuer_url before the checks, so the file may leave it out.
+// Errors name source as where issuerURL came from.
 func ReadValuesFile(path, issuerURL, source string) (*Values, error) {
 	file, err := os.Open(path) //nolint:gosec // G304: the path is the values file the operator named.
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrValues, err)
 	}
 	defer func() { _ = file.Close() }()
-	values, err := ParseValues(file)
+	values, err := parseValues(file, issuerURL, source)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	if issuerURL != "" {
-		if err = values.SetIssuerURL(source, issuerURL); err != nil {
-			return nil, fmt.Errorf("replacing issuer_url: %w", err)
-		}
 	}
 	return values, nil
 }
@@ -196,12 +196,12 @@ func ensureResources(
 			return err
 		}
 		ids = append(ids, resourceID)
-		if resource.SecretEnv == "" {
+		if !resource.Static() {
 			continue
 		}
-		token, ok := tokens[resource.SecretEnv]
+		token, ok := tokens[resource.Identifier]
 		if !ok {
-			return fmt.Errorf("%w: %s", ErrMissingSecret, resource.SecretEnv)
+			return fmt.Errorf("%w: %s", ErrMissingSecret, resource.SecretName())
 		}
 		if err = ensureSecret(ctx, opts, session, resource, resourceID, token); err != nil {
 			return err
@@ -253,7 +253,7 @@ func ensureSecret(
 	resourceID, token string,
 ) error {
 	if resourceID == "" {
-		opts.sayf("would store the %s credential for %s", resource.SecretEnv, resource.Identifier)
+		opts.sayf("would store the %s credential for %s", resource.SecretName(), resource.Identifier)
 		return nil
 	}
 	secretID, err := session.FindSecret(ctx, resourceID)
@@ -261,19 +261,19 @@ func ensureSecret(
 	case err != nil:
 		return fmt.Errorf("finding the credential for %s: %w", resource.Identifier, err)
 	case secretID == "" && opts.DryRun:
-		opts.sayf("would store the %s credential for %s", resource.SecretEnv, resource.Identifier)
+		opts.sayf("would store the %s credential for %s", resource.SecretName(), resource.Identifier)
 	case secretID == "":
-		if err := session.CreateSecret(ctx, resourceID, resource.SecretEnv, token); err != nil {
+		if err := session.CreateSecret(ctx, resourceID, resource.SecretName(), token); err != nil {
 			return fmt.Errorf("storing the credential for %s: %w", resource.Identifier, err)
 		}
-		opts.sayf("stored the %s credential for %s", resource.SecretEnv, resource.Identifier)
+		opts.sayf("stored the %s credential for %s", resource.SecretName(), resource.Identifier)
 	case opts.DryRun:
-		opts.sayf("would update the %s credential for %s", resource.SecretEnv, resource.Identifier)
+		opts.sayf("would update the %s credential for %s", resource.SecretName(), resource.Identifier)
 	default:
 		if err := session.UpdateSecret(ctx, secretID, token); err != nil {
 			return fmt.Errorf("updating the credential for %s: %w", resource.Identifier, err)
 		}
-		opts.sayf("updated the %s credential for %s", resource.SecretEnv, resource.Identifier)
+		opts.sayf("updated the %s credential for %s", resource.SecretName(), resource.Identifier)
 	}
 	return nil
 }

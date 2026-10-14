@@ -123,6 +123,9 @@ type Local struct {
 	Root string
 	// Settings are the values of local.env, with the environment applied.
 	Settings Settings
+	// SettingsFile is the settings file that Settings came from, and the
+	// file Init writes. If it is empty, the file is local/local.env.
+	SettingsFile string
 	// Tool returns a command that runs a tool mise.toml pins.
 	Tool func(ctx context.Context, name string, args ...string) (*exec.Cmd, error)
 	// Out receives progress lines and the output of long-running tools.
@@ -130,6 +133,9 @@ type Local struct {
 	// Ask asks the operator questions. When stdin is not a terminal, Ask is
 	// nil and every question returns ErrNoTerminal.
 	Ask Asker
+	// Getenv reads the environment for Init. If it is nil, Init does not
+	// read the environment.
+	Getenv func(string) string
 }
 
 // QuickIssuerFile is where the tunnel step writes a quick tunnel's URL while

@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"net/mail"
 	"net/url"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -26,6 +27,9 @@ var (
 	ErrAPI = errors.New("management API")
 	// ErrAuth is a service account the token endpoint did not accept.
 	ErrAuth = errors.New("service account token")
+	// ErrRefused is a client ID and secret the token endpoint refused with
+	// HTTP 400 or 401. An error that wraps ErrRefused also wraps ErrAuth.
+	ErrRefused = errors.New("refused")
 	// ErrApplicationAmbiguous is an application identifier more than one
 	// application in the zone has.
 	ErrApplicationAmbiguous = errors.New("application ambiguous")
@@ -102,28 +106,29 @@ var (
 )
 
 // Values is the values file. It holds no credential. Every secret is named by
-// the environment variable or file that holds it.
+// the environment variable or file that holds it. Marshal leaves out the empty
+// optional keys.
 type Values struct {
 	// ManagementAPIURL is the management API, a separate host from the zone.
 	ManagementAPIURL string `yaml:"management_api_url"`
 	// ZoneURL is the zone's issuer URL.
-	ZoneURL string `yaml:"zone_url"`
+	ZoneURL string `yaml:"zone_url,omitempty"`
 	// ZoneID names the zone directly.
-	ZoneID string `yaml:"zone_id"`
+	ZoneID string `yaml:"zone_id,omitempty"`
 	// ManagementServiceAccount is the organization service account zone-setup
 	// authenticates with. It is NEVER the sidecar's identity.
 	ManagementServiceAccount ManagementServiceAccountValues `yaml:"management_service_account"`
 	// IssuerURL is the cluster's OIDC issuer, kept byte for byte.
-	IssuerURL string `yaml:"issuer_url"`
+	IssuerURL string `yaml:"issuer_url,omitempty"`
 	// Namespace is the sandbox namespace. It defaults to DefaultNamespace.
-	Namespace string `yaml:"namespace"`
+	Namespace string `yaml:"namespace,omitempty"`
 	// PolicySet names the zone-wide policy set the per-user policies go in.
 	// It defaults to DefaultPolicySetName.
-	PolicySet string `yaml:"policy_set"`
+	PolicySet string `yaml:"policy_set,omitempty"`
 	// Users are the sandbox users, one per email.
 	Users []UserValues `yaml:"users"`
 	// Resources are the destinations the proxy mints credentials for.
-	Resources []ResourceValues `yaml:"resources"`
+	Resources []ResourceValues `yaml:"resources,omitempty"`
 }
 
 // ManagementServiceAccountValues is the organization service account.
@@ -131,10 +136,10 @@ type ManagementServiceAccountValues struct {
 	ClientID string `yaml:"client_id"`
 	// ClientSecretEnv names the environment variable holding the secret. It
 	// defaults to DefaultManagementSecretEnv when no file is named.
-	ClientSecretEnv string `yaml:"client_secret_env"`
+	ClientSecretEnv string `yaml:"client_secret_env,omitempty"`
 	// ClientSecretFile names a file holding the secret. When set, it is the
 	// only source read.
-	ClientSecretFile string `yaml:"client_secret_file"`
+	ClientSecretFile string `yaml:"client_secret_file,omitempty"`
 }
 
 // UserValues is one sandbox user.
@@ -142,27 +147,45 @@ type UserValues struct {
 	Email string `yaml:"email"`
 }
 
-// ResourceValues is one destination. Exactly one of CredentialProvider and
-// SecretEnv is set.
+// ResourceValues is one destination. Exactly one of CredentialProvider,
+// SecretEnv and SecretFile is set.
 type ResourceValues struct {
 	// Identifier must equal the canonical url the proxy sends as the
 	// exchange's `resource` parameter. The zone matches it exactly.
 	Identifier string `yaml:"identifier"`
 	// Name is the display name. It defaults to Identifier.
-	Name string `yaml:"name"`
+	Name string `yaml:"name,omitempty"`
 	// Prefix makes the identifier match every URL it is a prefix of.
 	Prefix bool `yaml:"prefix"`
 	// CredentialProvider is the identifier of an existing provider in the zone.
-	CredentialProvider string `yaml:"credential_provider"`
+	CredentialProvider string `yaml:"credential_provider,omitempty"`
 	// SecretEnv names the environment variable holding a static token for
 	// this resource.
-	SecretEnv string `yaml:"secret_env"`
+	SecretEnv string `yaml:"secret_env,omitempty"`
+	// SecretFile names a file holding a static token for this resource.
+	// LoadSecrets trims the whitespace around the token.
+	SecretFile string `yaml:"secret_file,omitempty"`
+}
+
+// Static reports whether the resource uses a static token stored in the
+// zone's vault.
+func (r ResourceValues) Static() bool {
+	return r.SecretEnv != "" || r.SecretFile != ""
+}
+
+// SecretName returns the name of the resource's static token in the zone's
+// vault: SecretEnv, or the base name of SecretFile.
+func (r ResourceValues) SecretName() string {
+	if r.SecretEnv != "" {
+		return r.SecretEnv
+	}
+	return filepath.Base(r.SecretFile)
 }
 
 // Secrets holds every credential value the values file names.
 type Secrets struct {
 	ManagementClientSecret string
-	// Resource maps a SecretEnv name to its value.
+	// Resource maps a static resource's identifier to its token.
 	Resource map[string]string
 }
 
@@ -170,6 +193,12 @@ type Secrets struct {
 // defaults. The file holds exactly one document. Unknown keys, duplicate keys and keys that differ from a field
 // name only in case are errors. Every error wraps ErrValues.
 func ParseValues(reader io.Reader) (*Values, error) {
+	return parseValues(reader, "", "")
+}
+
+// parseValues parses like ParseValues. When issuerURL is not empty, it sets
+// issuer_url to issuerURL. source names where issuerURL came from, for errors.
+func parseValues(reader io.Reader, issuerURL, source string) (*Values, error) {
 	raw, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, fmt.Errorf("%w: cannot read it", ErrValues)
@@ -185,6 +214,12 @@ func ParseValues(reader io.Reader) (*Values, error) {
 	decoder.KnownFields(true)
 	if err = decoder.Decode(&values); err != nil && !errors.Is(err, io.EOF) {
 		return nil, parseError(err)
+	}
+	if issuerURL != "" {
+		if err = checkIssuer(source, issuerURL); err != nil {
+			return nil, err
+		}
+		values.IssuerURL = issuerURL
 	}
 	steps := []func() error{
 		values.checkConnection,
@@ -383,16 +418,6 @@ func atLine(lineRE *regexp.Regexp, msg string) string {
 	return ""
 }
 
-// SetIssuerURL replaces IssuerURL with issuer, after the checks ParseValues
-// applies to issuer_url. key names the source of issuer in an error.
-func (v *Values) SetIssuerURL(key, issuer string) error {
-	if err := checkIssuer(key, issuer); err != nil {
-		return err
-	}
-	v.IssuerURL = issuer
-	return nil
-}
-
 func (v *Values) checkConnection() error {
 	if err := checkURL("management_api_url", v.ManagementAPIURL); err != nil {
 		return err
@@ -418,6 +443,15 @@ func (v *Values) checkManagementServiceAccount() error {
 	if v.ManagementServiceAccount.ClientSecretEnv != "" &&
 		!envNameRE.MatchString(v.ManagementServiceAccount.ClientSecretEnv) {
 		return fmt.Errorf("%w: management_service_account.client_secret_env is not an environment variable name", ErrValues)
+	}
+	return checkSecretFile("management_service_account.client_secret_file", v.ManagementServiceAccount.ClientSecretFile)
+}
+
+// checkSecretFile refuses a relative path. The commands that read a secret
+// file run from different directories, so each must find the same file.
+func checkSecretFile(key, path string) error {
+	if path != "" && !filepath.IsAbs(path) {
+		return fmt.Errorf("%w: %s must be an absolute path (got %q)", ErrValues, key, path)
 	}
 	return nil
 }
@@ -466,32 +500,50 @@ func (v *Values) checkResources() error {
 		if resource.Name == "" {
 			resource.Name = resource.Identifier
 		}
-		if (resource.CredentialProvider == "") == (resource.SecretEnv == "") {
-			return fmt.Errorf("%w: resources[%d]: set exactly one of credential_provider and secret_env", ErrValues, i)
-		}
-		if resource.SecretEnv != "" && !envNameRE.MatchString(resource.SecretEnv) {
-			return fmt.Errorf("%w: resources[%d].secret_env is not an environment variable name", ErrValues, i)
+		if err := checkSource(i, resource); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// checkIssuer applies checkURL and refuses a query or a fragment, which an
-// OAuth issuer must not have (RFC 8414 section 2).
+// checkSource checks where resources[i] gets its credential: exactly one of
+// a provider, an environment variable and an absolute file path.
+func checkSource(i int, resource *ResourceValues) error {
+	set := 0
+	for _, source := range []string{resource.CredentialProvider, resource.SecretEnv, resource.SecretFile} {
+		if source != "" {
+			set++
+		}
+	}
+	if set != 1 {
+		return fmt.Errorf("%w: resources[%d]: set exactly one of credential_provider, secret_env and secret_file",
+			ErrValues, i)
+	}
+	if resource.SecretEnv != "" && !envNameRE.MatchString(resource.SecretEnv) {
+		return fmt.Errorf("%w: resources[%d].secret_env is not an environment variable name", ErrValues, i)
+	}
+	return checkSecretFile(fmt.Sprintf("resources[%d].secret_file", i), resource.SecretFile)
+}
+
+// checkIssuer applies checkURL and refuses a port. It also refuses a query
+// or a fragment, which an OAuth issuer must not have (RFC 8414 section 2).
 func checkIssuer(key, value string) error {
 	if err := checkURL(key, value); err != nil {
 		return err
 	}
 	parsed, err := url.Parse(value)
+	if err == nil && (parsed.Port() != "" || strings.HasSuffix(parsed.Host, ":")) {
+		return fmt.Errorf("%w: %s must not set a port", ErrValues, key)
+	}
 	if err != nil || parsed.RawQuery != "" || parsed.ForceQuery || strings.Contains(value, "#") {
 		return fmt.Errorf("%w: %s must not have a query or a fragment", ErrValues, key)
 	}
 	return nil
 }
 
-// checkURL requires an absolute https URL with a host, no userinfo and no
-// port. NEVER put the value in an error, because a URL can carry a
-// credential.
+// checkURL requires an absolute https URL with a host and no userinfo.
+// NEVER put the value in an error, because a URL can include a credential.
 func checkURL(key, value string) error {
 	if value == "" {
 		return fmt.Errorf("%w: %s is required", ErrValues, key)
@@ -505,9 +557,6 @@ func checkURL(key, value string) error {
 	}
 	if parsed.Scheme != "https" {
 		return fmt.Errorf("%w: %s must use https", ErrValues, key)
-	}
-	if parsed.Port() != "" || strings.HasSuffix(parsed.Host, ":") {
-		return fmt.Errorf("%w: %s must not set a port", ErrValues, key)
 	}
 	return nil
 }
@@ -527,15 +576,23 @@ func LoadSecrets(
 	resources := map[string]string{}
 	var missing []string
 	for i, resource := range values.Resources {
-		if resource.SecretEnv == "" {
-			continue
+		switch {
+		case resource.SecretEnv != "":
+			value, ok := lookupEnv(resource.SecretEnv)
+			if !ok || value == "" {
+				missing = append(missing, fmt.Sprintf("%s (for resources[%d])", resource.SecretEnv, i))
+				continue
+			}
+			resources[resource.Identifier] = value
+		case resource.SecretFile != "":
+			raw, err := readFile(resource.SecretFile)
+			value := strings.TrimSpace(string(raw))
+			if err != nil || value == "" {
+				missing = append(missing, fmt.Sprintf("resources[%d].secret_file", i))
+				continue
+			}
+			resources[resource.Identifier] = value
 		}
-		value, ok := lookupEnv(resource.SecretEnv)
-		if !ok || value == "" {
-			missing = append(missing, fmt.Sprintf("%s (for resources[%d])", resource.SecretEnv, i))
-			continue
-		}
-		resources[resource.SecretEnv] = value
 	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("%w: unset: %s", ErrMissingSecret, strings.Join(missing, ", "))
