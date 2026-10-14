@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/pem"
+	"errors"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -395,6 +396,13 @@ func TestInitRerun(t *testing.T) {
 			check:    checkNamedTunnel,
 		},
 		{
+			name:     "cluster, in another values file",
+			prepare:  renameValues,
+			answers:  map[string][]string{changeQuestion: {changeCluster}},
+			notAsked: signInQuestions(),
+			check:    checkRenamedValues,
+		},
+		{
 			name:     "cluster, in a hand-written values file",
 			prepare:  handWritten,
 			answers:  map[string][]string{changeQuestion: {changeCluster}},
@@ -485,6 +493,44 @@ func checkHandWrittenKept(t *testing.T, run initRun) {
 		"# Written by `go run ./cmd/sandbox init`. zone-setup.example.yaml documents\n"+
 			"# each key. `sandbox run` sets issuer_url to the cluster's issuer.\n"+
 			"management_api_url: "+run.server.URL+"\n"+handWrittenValues)
+}
+
+// otherValuesFile is the values file renameValues names in local.env.
+const otherValuesFile = "zone-setup.staging.yaml"
+
+// renameValues moves the values file to otherValuesFile and names it in
+// local.env.
+func renameValues(t *testing.T, run initRun) {
+	t.Helper()
+	root := run.local.Root
+	if err := os.Rename(filepath.Join(root, "zone-setup.yaml"), filepath.Join(root, otherValuesFile)); err != nil {
+		t.Fatal(err)
+	}
+	env := filepath.Join(root, "local", "local.env")
+	raw, err := os.ReadFile(env) //nolint:gosec // G304: the path is the test's own file.
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, env, strings.Replace(string(raw),
+		sandbox.KeyZoneSetupValues+"=zone-setup.yaml", sandbox.KeyZoneSetupValues+"="+otherValuesFile, 1))
+	run.local.Settings[sandbox.KeyZoneSetupValues] = otherValuesFile
+}
+
+// checkRenamedValues requires Init to keep otherValuesFile as the first run
+// wrote it, to name it in local.env, and not to write zone-setup.yaml.
+func checkRenamedValues(t *testing.T, run initRun) {
+	t.Helper()
+	checkFile(t, filepath.Join(run.local.Root, otherValuesFile), run.values)
+	settings, err := sandbox.LoadSettings(run.local.Root, "", func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := settings[sandbox.KeyZoneSetupValues]; got != otherValuesFile {
+		t.Errorf("%s = %q, want %q", sandbox.KeyZoneSetupValues, got, otherValuesFile)
+	}
+	if _, err = os.Stat(filepath.Join(run.local.Root, "zone-setup.yaml")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("stat zone-setup.yaml: %v, want it not to exist", err)
+	}
 }
 
 // signInQuestions returns the questions that sign in and choose the zone.

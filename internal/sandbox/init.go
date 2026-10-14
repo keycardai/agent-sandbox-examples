@@ -752,7 +752,7 @@ func (w *wizard) write() error {
 	}
 	_, _ = fmt.Fprintf(w.l.Out, "Wrote %s.\n", w.l.valuesName())
 	w.env[KeyCluster] = cmp.Or(w.l.Settings[KeyCluster], defaultCluster)
-	w.env[KeyZoneSetupValues] = zoneSetupFile
+	w.env[KeyZoneSetupValues] = w.l.valuesName()
 	w.env[KeyGitHubLogin] = w.l.Settings[KeyGitHubLogin]
 	return w.l.writeSettings(w.env)
 }
