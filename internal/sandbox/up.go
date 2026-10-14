@@ -248,7 +248,11 @@ func (l *Local) startService(ctx context.Context, state *upRun, name string, run
 		service := *l
 		service.Out = log
 		err = run(ctx, &service)
-		if ctx.Err() == nil {
+		switch {
+		case ctx.Err() != nil:
+		case err == nil:
+			state.services <- fmt.Errorf("%w: %s stopped. Its log is %s", ErrService, name, logPath)
+		default:
 			state.services <- fmt.Errorf("%w: %s stopped: %w. Its log is %s", ErrService, name, err, logPath)
 		}
 	})
