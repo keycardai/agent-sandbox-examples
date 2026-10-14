@@ -331,6 +331,32 @@ exec sleep 60
 	}
 }
 
+// TestQuickTunnelLost checks that Tunnel stops a quick tunnel that Cloudflare
+// no longer knows, which cloudflared would retry forever, and removes its URL.
+func TestQuickTunnelLost(t *testing.T) {
+	t.Parallel()
+	notFound := `echo 'ERR Register tunnel error from server side error="Unauthorized: Tunnel not found"' >&2` + "\n"
+	local, _ := newLocal(t, sandbox.Settings{}, `
+echo "INF |  https://lost-brown-fox.trycloudflare.com  |" >&2
+`+strings.Repeat(notFound, 3)+`exec sleep 60
+`)
+	out := &bytes.Buffer{}
+	local.Out = out
+	err := local.Tunnel(t.Context(), "127.0.0.1:8480")
+	checkErr(
+		t,
+		err,
+		[]error{sandbox.ErrTunnel},
+		"Cloudflare deleted the quick tunnel https://lost-brown-fox.trycloudflare.com",
+	)
+	if _, err := os.Stat(local.QuickIssuerFile()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("issuer file: %v, want it removed", err)
+	}
+	if !strings.Contains(out.String(), "Start the tunnel again for a new URL") {
+		t.Errorf("output = %q, want it to say what to do", out)
+	}
+}
+
 // checkQuickCall fails the test unless calls is a single cloudflared call
 // that starts a quick tunnel, with no TUNNEL_ variables. The config path
 // changes on every run, so any path matches.

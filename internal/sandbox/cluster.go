@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -30,6 +32,12 @@ var (
 )
 
 var (
+	// k3dColor is a terminal color code. k3d colors its log lines even when
+	// its output is not a terminal.
+	k3dColor = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	// k3dFailure is a k3d log line at the error or fatal level, such as
+	// FATA[0000] followed by the message.
+	k3dFailure = regexp.MustCompile(`^(?:ERRO|FATA)\[\d+\]\s*(.+)$`)
 	// issuerHost matches https:// and a host of lowercase ASCII DNS labels.
 	issuerHost = regexp.MustCompile(`^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:|/|$)`)
 	// issuerShape also allows a port and a path of unreserved segments.
@@ -106,18 +114,52 @@ func (l *Local) bootstrap(ctx context.Context, cluster, issuerURL string, dryRun
 	}
 	if exists {
 		_, _ = fmt.Fprintf(l.Out, "The k3d cluster %s exists. Checking its issuer.\n", cluster)
-		if err = l.checkDiscovery(ctx, cluster, issuerURL, jwksURI); err != nil {
-			return err
-		}
+		err = l.checkDiscovery(ctx, cluster, issuerURL, jwksURI)
 	} else {
-		_, _ = fmt.Fprintf(l.Out, "Creating the k3d cluster %s (%s) with issuer %s.\n", cluster, k3sImage, issuerURL)
-		if err = l.k3d(ctx, l.Out, create...); err != nil {
-			return err
-		}
-		_, _ = fmt.Fprintf(l.Out, "Created the k3d cluster %s, and added the context k3d-%s to your kubeconfig.\n",
-			cluster, cluster)
+		err = l.createCluster(ctx, cluster, issuerURL, create)
+	}
+	if err != nil {
+		return err
 	}
 	return l.checkTokenIssuer(ctx, cluster, issuerURL)
+}
+
+// createCluster removes what an earlier cluster of the same name left behind,
+// then runs k3d with the create args.
+func (l *Local) createCluster(ctx context.Context, cluster, issuerURL string, create []string) error {
+	if err := l.removeLeftovers(ctx, cluster); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(l.Out, "Creating the k3d cluster %s (%s) with issuer %s.\n", cluster, k3sImage, issuerURL)
+	if err := l.k3d(ctx, l.Out, create...); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(l.Out, "Created the k3d cluster %s, and added the context k3d-%s to your kubeconfig.\n",
+		cluster, cluster)
+	return nil
+}
+
+// removeLeftovers deletes the containers of a k3d cluster that k3d does not
+// list. A create that stopped partway, or a delete that was cut short, can
+// leave the cluster's tools container on its own. k3d lists a cluster only
+// while it has a server, agent or load balancer container, but refuses to
+// create a cluster while any container has its k3d.cluster label.
+func (l *Local) removeLeftovers(ctx context.Context, cluster string) error {
+	cmd, err := l.Tool(ctx, "docker", "ps", "--all", "--filter", "label=k3d.cluster="+cluster, "--format", "{{.Names}}")
+	if err != nil {
+		return err
+	}
+	out, err := pinned.Run(cmd, nil)
+	if err != nil {
+		return fmt.Errorf("%w: cannot list the containers of the k3d cluster %s: %w", ErrDocker, cluster, err)
+	}
+	names := strings.Fields(string(out))
+	if len(names) == 0 {
+		return nil
+	}
+	_, _ = fmt.Fprintf(l.Out, "Removing %s, left over from an earlier k3d cluster %s.\n",
+		strings.Join(names, ", "), cluster)
+	return l.k3d(ctx, l.Out, "cluster", "delete", cluster)
 }
 
 // Down deletes the k3d cluster. Unless yes is set, it asks first, and it
@@ -299,15 +341,44 @@ func tokenIssuer(token string) string {
 	return claims.Iss
 }
 
-// k3d runs k3d with its output on out.
+// k3d runs k3d with its output on out. When k3d fails, the error names the
+// command and has the first error k3d logged.
 func (l *Local) k3d(ctx context.Context, out io.Writer, args ...string) error {
 	cmd, err := l.Tool(ctx, "k3d", args...)
 	if err != nil {
 		return err
 	}
-	cmd.Stdout, cmd.Stderr = out, out
+	var logged bytes.Buffer
+	both := io.MultiWriter(out, &logged)
+	cmd.Stdout, cmd.Stderr = both, both
 	if err = cmd.Run(); err != nil {
-		return fmt.Errorf("k3d %s: %w", strings.Join(args, " "), err)
+		if line := k3dError(logged.String()); line != "" {
+			return fmt.Errorf("k3d %s: %s: %w", k3dCommand(args), line, err)
+		}
+		return fmt.Errorf("k3d %s: %w", k3dCommand(args), err)
 	}
 	return nil
+}
+
+// k3dCommand returns the words of args before the first flag, such as
+// "cluster create asp".
+func k3dCommand(args []string) string {
+	end := slices.IndexFunc(args, func(arg string) bool { return strings.HasPrefix(arg, "-") })
+	if end < 0 {
+		end = len(args)
+	}
+	return strings.Join(args[:end], " ")
+}
+
+// k3dError returns the first error or fatal line in k3d's output, without its
+// colors and level, or "" when there is none. The first one names the cause.
+// After a failed create, k3d rolls back and then logs a fatal line without
+// the cause.
+func k3dError(logged string) string {
+	for line := range strings.Lines(k3dColor.ReplaceAllString(logged, "")) {
+		if match := k3dFailure.FindStringSubmatch(strings.TrimSpace(line)); match != nil {
+			return match[1]
+		}
+	}
+	return ""
 }
