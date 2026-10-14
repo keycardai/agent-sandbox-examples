@@ -26,8 +26,8 @@ const (
 	// user's GitHub credential into.
 	githubHost    = "api.github.com"
 	githubUserURL = "https://" + githubHost + "/user"
-	// openRouterKeyURL returns the details of the caller's OpenRouter key.
-	// openRouterHost is its host.
+	// openRouterKeyURL is OpenRouter's endpoint for the details of the
+	// caller's API key.
 	openRouterHost   = "openrouter.ai"
 	openRouterKeyURL = "https://" + openRouterHost + "/api/v1/key"
 	// deniedHost is a host that sandbox/values.example.yaml does not list.

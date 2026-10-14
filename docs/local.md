@@ -33,11 +33,11 @@ The first time, `up` runs `sandbox init`. It asks for your service account,
 the zone (or creates one), the user, where the GitHub token comes from, an
 optional OpenRouter API key, and how the zone reaches the cluster's issuer.
 It writes `local/local.env` and `zone-setup.yaml`. Secrets you type go in
-`local/out/secrets/`, readable only by you. If
-`KEYCARD_MANAGEMENT_CLIENT_SECRET` is set, `init` uses it and doesn't ask for
-the secret, unless `zone-setup.yaml` sets `client_secret_file`. If
-`zone-setup.yaml` sets `client_secret_env`, `init` reads that variable
-instead. To write the files by hand, start from
+`local/out/secrets/`, readable only by you. `init` doesn't ask for the
+service account secret when an environment variable holds it:
+`KEYCARD_MANAGEMENT_CLIENT_SECRET`, or the variable that `client_secret_env`
+in `zone-setup.yaml` names. A `client_secret_file` in `zone-setup.yaml`
+takes precedence over both. To write the files by hand, start from
 `local/local.env.example` and `zone-setup.example.yaml`.
 
 To change something, run `go run ./cmd/sandbox init` again. It shows your
@@ -152,10 +152,9 @@ after you recreate the cluster.
 Set `KEYCARD_LOCAL_CA_FILE` when no public CA signed the certificate of the
 management API, the zone or the issuer. Set it to the absolute path of a
 PEM file with the roots that signed them. `sandbox init` and `sandbox run`
-trust these roots for the management API, `sandbox check-issuer` for the
-issuer, and the proxy
-for the zone, through the chart's `zoneTrust` value. Each trusts them in
-addition to the system roots. `sandbox init` asks for this file only when
+trust these roots for the management API. `sandbox check-issuer` trusts them
+for the issuer. The proxy trusts them for the zone, through the chart's
+`zoneTrust` value. Each trusts them in addition to the system roots. `sandbox init` asks for this file only when
 the management API URL is not `https://api.keycard.ai`.
 
 ## The steps

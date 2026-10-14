@@ -29,8 +29,7 @@ const (
 	githubAPI            = "https://api.github.com"
 	githubGit            = "https://github.com"
 	openRouterAPI        = "https://openrouter.ai/api/v1"
-	// zonePoll and zoneWait bound the wait for a new zone. The policy
-	// engine caches a 404 for an unknown zone for about a minute.
+	// zonePoll and zoneWait bound the wait for a new zone to become ready.
 	zonePoll = 5 * time.Second
 	zoneWait = 2 * time.Minute
 	// Choice values that cannot match a zone ID, user email, provider
@@ -84,9 +83,9 @@ type previous struct {
 // to the value in the existing files. Init keeps the keys it does not ask
 // about, such as namespace and policy_set.
 //
-// Init reads zones, users and providers from the management API. Its only
-// write creates a zone, when the operator asks for one. It does not change
-// policies. It asks whether `sandbox run` may replace another active policy
+// Init reads zones, users and providers from the management API. It writes
+// to Keycard only to create a zone, when the operator asks for one. It does
+// not change policies. It asks whether `sandbox run` may replace another active policy
 // set, and returns the answer.
 //
 // Init asks with l.Ask, and returns ErrNoTerminal when l.Ask is nil. It
