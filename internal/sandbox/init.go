@@ -481,10 +481,26 @@ func (w *wizard) chooseZone(ctx context.Context) error {
 	w.out.ZoneID = zone.ID
 	w.out.ZoneURL = strings.TrimRight(zone.Protocols.Oauth2.Issuer, "/")
 	w.env[KeyZoneURL] = w.out.ZoneURL
-	if onHost(ctx, w.out.ZoneURL) {
+	return w.askOnHost(ctx)
+}
+
+// askOnHost sets KEYCARD_LOCAL_ZONE_ON_HOST when the zone answers on this
+// machine. A zone at a loopback address does. For a zone at a private
+// address, it asks, because the address can also be on another machine.
+func (w *wizard) askOnHost(ctx context.Context) error {
+	loopback, private := zoneAddresses(ctx, w.out.ZoneURL)
+	onHost := loopback
+	if private && !loopback {
+		var err error
+		onHost, err = w.confirm(ctx, "The zone has a private address. Does it answer on this machine?",
+			w.l.Settings[KeyZoneOnHost] != "")
+		if err != nil {
+			return err
+		}
+	}
+	if onHost {
 		w.env[KeyZoneOnHost] = "true"
-		_, _ = fmt.Fprintln(w.l.Out, "The zone is on this machine or a private network. "+
-			"The sandbox connects to it through the Docker host.")
+		_, _ = fmt.Fprintln(w.l.Out, "The sandbox connects to the zone through the Docker host.")
 	}
 	return nil
 }
@@ -865,24 +881,23 @@ func (l *Local) previousValues() previous {
 	return prev
 }
 
-// onHost reports whether every address of the zone's host is a loopback or
-// private address. The sandbox connects to such a zone through the Docker
-// host.
-func onHost(ctx context.Context, zoneURL string) bool {
+// zoneAddresses reports whether every address of the zone's host is a
+// loopback address, and whether every one is a loopback or private address.
+func zoneAddresses(ctx context.Context, zoneURL string) (bool, bool) {
 	parsed, err := url.Parse(zoneURL)
 	if err != nil {
-		return false
+		return false, false
 	}
 	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, parsed.Hostname())
 	if err != nil || len(addrs) == 0 {
-		return false
+		return false, false
 	}
+	loopback, private := true, true
 	for _, addr := range addrs {
-		if !addr.IP.IsLoopback() && !addr.IP.IsPrivate() {
-			return false
-		}
+		loopback = loopback && addr.IP.IsLoopback()
+		private = private && (addr.IP.IsLoopback() || addr.IP.IsPrivate())
 	}
-	return true
+	return loopback, private
 }
 
 func rootsFrom(caFile string) (*x509.CertPool, error) {
