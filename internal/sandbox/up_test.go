@@ -2,13 +2,12 @@ package sandbox_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -150,7 +149,7 @@ func TestUpStops(t *testing.T) {
 				defer func() { _ = held.Close() }()
 				addr = held.Addr().String()
 			}
-			err := local.Up(t.Context(), sandbox.UpOptions{Listen: addr, Answers: strings.NewReader("")})
+			err := local.Up(t.Context(), sandbox.UpOptions{Listen: addr})
 			checkErr(t, err, tc.want, tc.wantText)
 			want := leftHeader + strings.ReplaceAll(tc.wantLeft, "LISTEN", addr)
 			if !strings.HasSuffix(out.String(), want) {
@@ -166,29 +165,30 @@ func TestUpStops(t *testing.T) {
 }
 
 // TestUpRecreates checks that Up asks before it deletes a cluster with
-// another issuer, and deletes it only on y. Ctrl-C at the prompt cancels the
-// context while the read is still blocked, and Up must return without
-// deleting. The issuer is a closed port, so after a recreate check-issuer
-// fails at once and the commands left include the mirror.
+// another issuer, as down does, and deletes it only on yes. When it keeps
+// the cluster, the commands left start with bootstrap. The issuer is a closed
+// port, so after a recreate check-issuer fails at once and the commands left
+// include the mirror. A nil ask is a stdin that is not a terminal.
 func TestUpRecreates(t *testing.T) {
 	t.Parallel()
 	const closed = "https://127.0.0.1:1"
 	tests := []struct {
-		name, answer string
-		interrupt    bool
-		recreate     bool
-		want         []error
-		wantText     string
+		name     string
+		ask      *confirmAsker
+		recreate bool
+		want     []error
+		wantText string
 	}{
 		{
-			name: "answered y", answer: "y\n", recreate: true,
+			name: "answered yes", ask: &confirmAsker{answer: true}, recreate: true,
 			want: []error{sandbox.ErrIssuer}, wantText: "discovery refused",
 		},
-		{name: "pressed Enter", answer: "\n", want: []error{sandbox.ErrConfirm}, wantText: nothingDeleted},
-		{name: "answered keep", answer: "keep\n", want: []error{sandbox.ErrConfirm}, wantText: nothingDeleted},
-		{name: "answered n", answer: "n\n", want: []error{sandbox.ErrConfirm}, wantText: nothingDeleted},
-		{name: "end of input", want: []error{sandbox.ErrConfirm}, wantText: "no answer. Pass --yes"},
-		{name: "Ctrl-C", interrupt: true, want: []error{context.Canceled}, wantText: "interrupted: context canceled"},
+		{name: "answered no", ask: &confirmAsker{}, want: []error{sandbox.ErrConfirm}, wantText: nothingDeleted},
+		{name: "no terminal", want: []error{sandbox.ErrConfirm, sandbox.ErrNoTerminal}, wantText: noTerminal},
+		{
+			name: "Ctrl-C", ask: &confirmAsker{err: sandbox.ErrInterrupted},
+			want: []error{sandbox.ErrConfirm, sandbox.ErrInterrupted}, wantText: "nothing deleted: interrupted",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -197,18 +197,14 @@ func TestUpRecreates(t *testing.T) {
 				recreateTool(closed))
 			out := &bytes.Buffer{}
 			local.Out = out
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			var answers io.Reader = strings.NewReader(tc.answer)
-			if tc.interrupt {
-				release := make(chan struct{})
-				defer close(release)
-				answers = interruptingReader{cancel: cancel, release: release}
-			}
-			err := local.Up(ctx, sandbox.UpOptions{Listen: freeAddr(t), Answers: answers})
+			tc.ask.use(local)
+			err := local.Up(t.Context(), sandbox.UpOptions{Listen: freeAddr(t)})
 			checkErr(t, err, tc.want, tc.wantText)
+			if tc.ask != nil && !slices.Equal(tc.ask.asked, []string{deleteQuestion}) {
+				t.Errorf("asked %q, want %q", tc.ask.asked, deleteQuestion)
+			}
 			got := readCalls(t, calls)
-			wantOut := "Delete the k3d cluster asp? [y/N] "
+			wantOut := leftHeader + "  go run ./cmd/sandbox bootstrap\n"
 			if tc.recreate {
 				for _, want := range []string{
 					"k3d KUBERC= cluster delete asp\n",
@@ -276,7 +272,7 @@ fi
 `+clusterTool("FAIL", "", ""))
 	out := &bytes.Buffer{}
 	local.Out = out
-	err := local.Up(t.Context(), sandbox.UpOptions{Listen: listen, Answers: strings.NewReader("")})
+	err := local.Up(t.Context(), sandbox.UpOptions{Listen: listen})
 	checkErr(t, err, []error{sandbox.ErrDocker}, "Is Docker running?")
 	if _, statErr := os.Stat(local.QuickIssuerFile()); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("issuer file after Up returned: %v, want it removed", statErr)

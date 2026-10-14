@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -105,12 +104,12 @@ func (l *Local) Bootstrap(ctx context.Context, cluster, issuerURL string, dryRun
 	return l.checkTokenIssuer(ctx, cluster, issuerURL)
 }
 
-// Down deletes the k3d cluster. Unless yes is set, it asks first and reads
-// the answer from answers. It deletes only on an answer that starts with y
-// or Y. A missing cluster is not an error.
+// Down deletes the k3d cluster. Unless yes is set, it asks first, and it
+// deletes only when the operator answers yes. A missing cluster is not an
+// error.
 //
 // An empty cluster comes from the settings.
-func (l *Local) Down(ctx context.Context, cluster string, yes bool, answers io.Reader) error {
+func (l *Local) Down(ctx context.Context, cluster string, yes bool) error {
 	cluster, err := l.cluster(cluster)
 	if err != nil {
 		return err
@@ -124,7 +123,7 @@ func (l *Local) Down(ctx context.Context, cluster string, yes bool, answers io.R
 		return nil
 	}
 	if !yes {
-		if err = l.confirmDelete(ctx, cluster, answers); err != nil {
+		if err = l.confirmDelete(ctx, cluster); err != nil {
 			return err
 		}
 	}
@@ -136,42 +135,19 @@ func (l *Local) Down(ctx context.Context, cluster string, yes bool, answers io.R
 	return nil
 }
 
-// confirmDelete asks whether to delete cluster and reads the answer. It
-// returns ErrConfirm unless the answer starts with y or Y.
-func (l *Local) confirmDelete(ctx context.Context, cluster string, answers io.Reader) error {
-	_, _ = fmt.Fprintf(l.Out, "Delete the k3d cluster %s? [y/N] ", cluster)
-	answer, err := readLine(ctx, answers)
+// confirmDelete asks whether to delete cluster. The default answer is no. It
+// returns ErrConfirm unless the operator answers yes.
+func (l *Local) confirmDelete(ctx context.Context, cluster string) error {
+	yes, err := l.confirm(ctx, "Delete the k3d cluster "+cluster+"?", false)
 	switch {
-	case ctx.Err() != nil:
-		_, _ = fmt.Fprintln(l.Out)
-		return fmt.Errorf("%w: interrupted, nothing deleted: %w", ErrConfirm, ctx.Err())
-	case answer == "" && err != nil:
-		return fmt.Errorf("%w: no answer. Pass --yes to delete without asking", ErrConfirm)
-	case !strings.HasPrefix(answer, "y") && !strings.HasPrefix(answer, "Y"):
+	case errors.Is(err, ErrNoTerminal):
+		return fmt.Errorf("%w: %w. Pass --yes to delete without asking", ErrConfirm, err)
+	case err != nil:
+		return fmt.Errorf("%w: nothing deleted: %w", ErrConfirm, err)
+	case !yes:
 		return fmt.Errorf("%w: nothing deleted", ErrConfirm)
 	}
 	return nil
-}
-
-// readLine returns the first line of r. It returns early when ctx is done,
-// such as on Ctrl-C. A read that is still blocked then keeps its goroutine
-// until r returns.
-func readLine(ctx context.Context, r io.Reader) (string, error) {
-	type result struct {
-		line string
-		err  error
-	}
-	done := make(chan result, 1)
-	go func() {
-		line, err := bufio.NewReader(r).ReadString('\n')
-		done <- result{line, err}
-	}()
-	select {
-	case <-ctx.Done():
-		return "", fmt.Errorf("waiting for an answer: %w", ctx.Err())
-	case read := <-done:
-		return read.line, read.err
-	}
 }
 
 // checkClusterIssuer accepts an https URL with a host of lowercase ASCII DNS

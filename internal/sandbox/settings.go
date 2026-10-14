@@ -127,6 +127,9 @@ type Local struct {
 	Tool func(ctx context.Context, name string, args ...string) (*exec.Cmd, error)
 	// Out receives progress lines and the output of long-running tools.
 	Out io.Writer
+	// Ask asks the operator questions. It is nil when stdin is not a
+	// terminal, and every question then fails with ErrNoTerminal.
+	Ask Asker
 }
 
 // QuickIssuerFile is where the tunnel step writes a quick tunnel's URL while

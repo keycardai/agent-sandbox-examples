@@ -29,6 +29,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/charmbracelet/x/term"
 	"github.com/urfave/cli/v3"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/install"
@@ -96,7 +97,6 @@ func upCommand() *cli.Command {
 				EnvFile:    cmd.String("env"),
 				Print:      cmd.Bool("print"),
 				IssuerWait: cmd.Duration("issuer-wait"),
-				Answers:    cmd.Reader,
 			})
 		}),
 	}
@@ -186,7 +186,7 @@ func downCommand() *cli.Command {
 			&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "delete without asking"},
 		},
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
-			return local.Down(ctx, cmd.String("cluster"), cmd.Bool("yes"), cmd.Reader)
+			return local.Down(ctx, cmd.String("cluster"), cmd.Bool("yes"))
 		}),
 	}
 }
@@ -304,5 +304,10 @@ func newLocal(cmd *cli.Command) (*sandbox.Local, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading the settings: %w", err)
 	}
-	return &sandbox.Local{Root: root, Settings: settings, Tool: sandbox.Tool, Out: cmd.Writer}, nil
+	local := &sandbox.Local{Root: root, Settings: settings, Tool: sandbox.Tool, Out: cmd.Writer}
+	// huh reads os.Stdin, and only a terminal can answer it.
+	if term.IsTerminal(os.Stdin.Fd()) {
+		local.Ask = terminalAsker{}
+	}
+	return local, nil
 }

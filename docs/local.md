@@ -36,9 +36,13 @@ background and log to `local/out/tunnel.log` and `local/out/mirror.log`.
 Before each step, `up` prints the command that runs it by hand. If a step
 fails or you press Ctrl-C, `up` prints the commands that are left. After the
 checks, `up` keeps the tunnel and the mirror running until you press Ctrl-C.
-Press Enter to run the checks again. If the cluster was created with a
-different issuer, `up` asks to delete the cluster and create it again.
-Type y to accept. Any other answer keeps the cluster.
+It asks whether to run the checks again, and stops when you answer no. If
+the cluster was created with a different issuer, `up` asks to delete the
+cluster and create it again. The default answer keeps the cluster.
+
+`up` and `down` ask questions only when stdin is a terminal. Without one,
+`up` does not ask to run the checks again, and it keeps a cluster with a
+different issuer. `down` deletes only with `--yes`.
 
 `sandbox up --print` prints the commands without running them:
 

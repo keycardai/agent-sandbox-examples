@@ -1,11 +1,9 @@
 package sandbox
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -42,10 +40,6 @@ type UpOptions struct {
 	Print bool
 	// IssuerWait is how long Up retries check-issuer.
 	IssuerWait time.Duration
-	// Answers is the operator's input: y to delete a cluster that has
-	// another issuer, and an empty line to run the checks again. It must not
-	// be nil.
-	Answers io.Reader
 }
 
 // upStep is one step of Up and the command that runs it by hand.
@@ -61,7 +55,6 @@ type upStep struct {
 // upRun is the state of one Up.
 type upRun struct {
 	opts     UpOptions
-	answers  *bufio.Reader
 	services chan error
 	wg       sync.WaitGroup
 	// quickTunnel is true when Up started a quick tunnel. Its URL stops
@@ -74,9 +67,9 @@ type upRun struct {
 // Up prints the command that runs the step by hand. When a step fails or ctx
 // ends, it prints the commands that are left and returns an error.
 //
-// After run, Up keeps the tunnel and the mirror running until ctx ends. An
-// empty line on opts.Answers runs the checks again. Up does not delete the
-// cluster when it stops.
+// After run, Up keeps the tunnel and the mirror running until ctx ends. On a
+// terminal, it asks whether to run the checks again, and stops on no. Up does
+// not delete the cluster when it stops.
 //
 // Up does not start a tunnel when the operator publishes the issuer or
 // already runs a quick tunnel.
@@ -86,7 +79,7 @@ func (l *Local) Up(ctx context.Context, opts UpOptions) error {
 		l.printSteps(steps, opts.EnvFile)
 		return nil
 	}
-	state := &upRun{opts: opts, answers: bufio.NewReader(opts.Answers), services: make(chan error, len(steps))}
+	state := &upRun{opts: opts, services: make(chan error, len(steps))}
 	serviceCtx, stopServices := context.WithCancel(ctx)
 	// Wait for the background steps. The tunnel removes its issuer file and
 	// stops cloudflared as it returns.
@@ -183,7 +176,7 @@ func (l *Local) upBootstrap(ctx context.Context, state *upRun) error {
 	err := l.Bootstrap(ctx, "", "", false)
 	if errors.Is(err, ErrOtherIssuer) {
 		_, _ = fmt.Fprintf(l.Out, "%v\n\n", err)
-		if err = l.Down(ctx, "", false, state.answers); err != nil {
+		if err = l.Down(ctx, "", false); err != nil {
 			return err
 		}
 		err = l.Bootstrap(ctx, "", "", false)
@@ -291,33 +284,42 @@ func waitFor(ctx context.Context, state *upRun, what string, ready func() bool) 
 	return nil
 }
 
-// serve keeps the background steps running until ctx ends or one stops.
-// An empty line on the answers runs the checks again.
+// serve keeps the background steps running until ctx ends or one stops. On a
+// terminal, it asks whether to run the checks again until the operator
+// answers no or presses Ctrl-C. Without a terminal, it does not ask.
 func (l *Local) serve(ctx context.Context, steps []upStep, state *upRun) error {
 	_, _ = fmt.Fprintln(l.Out, "\nThe sandbox is up. Leave this running so the zone can read the cluster's issuer\n"+
-		"through the tunnel and the mirror.\n"+
-		"Press Enter to run the checks again, or Ctrl-C to stop. Stopping does not delete the cluster.")
-	lines := make(chan struct{})
+		"through the tunnel and the mirror. Ctrl-C stops up. Stopping does not delete the cluster.")
+	// waiting ends when ctx ends or a background step stops. The step's
+	// error is its cause.
+	waiting, stop := context.WithCancelCause(ctx)
+	defer stop(nil)
 	go func() {
-		for {
-			if _, err := state.answers.ReadString('\n'); err != nil {
-				return
-			}
-			lines <- struct{}{}
+		select {
+		case err := <-state.services:
+			stop(err)
+		case <-waiting.Done():
 		}
 	}()
 	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case err := <-state.services:
-			l.printLeft(steps, len(steps), state)
-			return err
-		case <-lines:
-			if err := l.CheckSandbox(ctx, "", "", "", ""); err != nil {
+		again, err := l.confirm(waiting, "Run the checks again? No stops up.", true)
+		if err == nil && again {
+			if err = l.CheckSandbox(ctx, "", "", "", ""); err != nil {
 				_, _ = fmt.Fprintf(l.Out, "%v\n", err)
 			}
+			continue
 		}
+		if errors.Is(err, ErrNoTerminal) {
+			<-waiting.Done()
+		}
+		switch {
+		case ctx.Err() != nil, errors.Is(err, ErrInterrupted):
+			return nil
+		case waiting.Err() != nil:
+			l.printLeft(steps, len(steps), state)
+			return context.Cause(waiting) //nolint:wrapcheck // The cause is the background step's error from startService.
+		}
+		return err
 	}
 }
 
