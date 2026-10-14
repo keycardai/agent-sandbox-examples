@@ -184,8 +184,8 @@ func TestInit(t *testing.T) {
 	wantValues := "# Written by `go run ./cmd/sandbox init`. zone-setup.example.yaml documents\n" +
 		"# each key. `sandbox run` sets issuer_url to the cluster's issuer.\n" +
 		"management_api_url: " + run.server.URL + "\n" +
-		"zone_id: zone-a\n" +
 		"zone_url: https://localhost\n" +
+		"zone_id: zone-a\n" +
 		"management_service_account:\n" +
 		"    client_id: sa-1\n" +
 		"    client_secret_file: " + filepath.Join(secretDir, "management-client-secret") + "\n" +
@@ -349,11 +349,14 @@ func TestInitGitHubToken(t *testing.T) {
 // TestInitRerun runs Init a second time. It shows the current settings and
 // asks only the sections chosen. Sections it keeps come from the files, and
 // it signs in with the saved account only when a chosen section needs
-// Keycard. Saved secrets stay unless the answer is no.
+// Keycard. Saved secrets stay unless the answer is no. When a row sets
+// prepare, the test runs it on the first run's files before the second run.
 func TestInitRerun(t *testing.T) {
 	t.Parallel()
+	const changeCluster = "cluster"
 	tests := []struct {
 		name      string
+		prepare   func(t *testing.T, run initRun)
 		answers   map[string][]string
 		notAsked  []string
 		wantFiles map[string]string // secret file name: content
@@ -383,7 +386,7 @@ func TestInitRerun(t *testing.T) {
 		{
 			name: "cluster",
 			answers: map[string][]string{
-				changeQuestion: {"cluster"},
+				changeQuestion: {changeCluster},
 				"How does the zone reach the cluster's issuer": {"named"},
 				"Tunnel name":     {"demo"},
 				"Tunnel hostname": {"https://issuer.example.org"},
@@ -391,11 +394,28 @@ func TestInitRerun(t *testing.T) {
 			notAsked: append(signInQuestions(), "The zone's active policy set"),
 			check:    checkNamedTunnel,
 		},
+		{
+			name:     "cluster, in a hand-written values file",
+			prepare:  handWritten,
+			answers:  map[string][]string{changeQuestion: {changeCluster}},
+			notAsked: signInQuestions(),
+			check:    checkHandWrittenKept,
+		},
+		{
+			name:     "credentials, in a hand-written values file",
+			prepare:  handWritten,
+			answers:  map[string][]string{changeQuestion: {credentialsSection}},
+			notAsked: append(signInQuestions(), "Service account client secret", openRouterKeyQuestion),
+			check:    checkHandWrittenKept,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			run := firstRun(t)
+			if tc.prepare != nil {
+				tc.prepare(t, run)
+			}
 			run.out.Reset()
 			ask := &scriptedAsker{t: t, answers: tc.answers}
 			run.local.Ask = ask
@@ -409,6 +429,62 @@ func TestInitRerun(t *testing.T) {
 			tc.check(t, run)
 		})
 	}
+}
+
+// handWrittenValues is a values file with the keys Init does not ask about:
+// client_secret_env, issuer_url, namespace, policy_set, secret_env and a
+// resource of its own. It is in the form yaml.Marshal writes.
+const handWrittenValues = `zone_url: https://localhost
+zone_id: zone-a
+management_service_account:
+    client_id: sa-1
+    client_secret_env: SANDBOX_SECRET
+issuer_url: https://issuer.example.com
+namespace: team-a
+policy_set: Team A
+users:
+    - email: ada@example.com
+resources:
+    - identifier: https://api.github.com
+      name: GitHub
+      prefix: true
+      credential_provider: github
+    - identifier: https://github.com
+      name: GitHub git
+      prefix: true
+      credential_provider: github
+    - identifier: https://openrouter.ai/api/v1
+      name: OpenRouter
+      prefix: true
+      secret_env: OPENROUTER_API_KEY
+    - identifier: https://api.example.com
+      name: Example
+      prefix: false
+      secret_file: /run/secrets/example
+`
+
+// handWritten replaces the values file with handWrittenValues, and puts the
+// service account secret in SANDBOX_SECRET.
+func handWritten(t *testing.T, run initRun) {
+	t.Helper()
+	writeFile(t, filepath.Join(run.local.Root, "zone-setup.yaml"),
+		"management_api_url: "+run.server.URL+"\n"+handWrittenValues)
+	run.local.Getenv = func(key string) string {
+		if key == "SANDBOX_SECRET" {
+			return goodSecret
+		}
+		return ""
+	}
+}
+
+// checkHandWrittenKept requires the values file to keep every key of
+// handWrittenValues.
+func checkHandWrittenKept(t *testing.T, run initRun) {
+	t.Helper()
+	checkFile(t, filepath.Join(run.local.Root, "zone-setup.yaml"),
+		"# Written by `go run ./cmd/sandbox init`. zone-setup.example.yaml documents\n"+
+			"# each key. `sandbox run` sets issuer_url to the cluster's issuer.\n"+
+			"management_api_url: "+run.server.URL+"\n"+handWrittenValues)
 }
 
 // signInQuestions returns the questions that sign in and choose the zone.
