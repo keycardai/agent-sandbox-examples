@@ -198,7 +198,8 @@ esac
 }
 
 // TestUpRecreates checks that Up asks down's question before it deletes a
-// cluster with another issuer, and deletes it only on yes. When Up keeps the
+// cluster with another issuer, and deletes it only on yes. Up prints the
+// issuers, but not Bootstrap's advice to run down. When Up keeps the
 // cluster, the commands left start with bootstrap. The issuer is a closed
 // port, so after a recreate check-issuer fails at once and the commands left
 // include the mirror. A nil ask means stdin is not a terminal.
@@ -252,8 +253,14 @@ func TestUpRecreates(t *testing.T) {
 			} else if strings.Contains(got, "cluster delete") {
 				t.Errorf("calls = %q, want no delete", got)
 			}
-			if !strings.Contains(out.String(), wantOut) {
-				t.Errorf("output lacks %q\n%s", wantOut, out)
+			for text, want := range map[string]bool{
+				wantOut:                           true,
+				"was created with other settings": true,
+				deleteAdvice:                      false,
+			} {
+				if got := strings.Contains(out.String(), text); got != want {
+					t.Errorf("output has %q = %t, want %t\n%s", text, got, want, out)
+				}
 			}
 		})
 	}

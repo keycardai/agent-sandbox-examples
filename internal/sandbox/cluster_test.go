@@ -94,6 +94,11 @@ func TestBootstrapDryRun(t *testing.T) {
 	}
 }
 
+// deleteAdvice ends the error from Bootstrap for a cluster with another
+// issuer. up asks to delete the cluster instead, so it must not print this.
+const deleteAdvice = "k3d sets them only when it creates a cluster. Delete the cluster with\n" +
+	"    go run ./cmd/sandbox down --cluster asp, or bootstrap with its issuer"
+
 // TestBootstrap checks that Bootstrap creates a missing cluster or checks an
 // existing one, then checks the iss of a minted token.
 func TestBootstrap(t *testing.T) {
@@ -116,7 +121,8 @@ func TestBootstrap(t *testing.T) {
 		},
 		{
 			name: "present with another issuer", list: present, discovered: other,
-			want: []error{sandbox.ErrIssuer}, wantText: "cluster asp was created with other settings",
+			want:      []error{sandbox.ErrIssuer, sandbox.ErrOtherIssuer},
+			wantText:  deleteAdvice,
 			wantCalls: listCall + discoveryCall,
 		},
 		{
