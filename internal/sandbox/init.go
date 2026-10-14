@@ -62,9 +62,11 @@ type wizard struct {
 	prev  previous
 	env   Settings
 	roots *x509.CertPool
-	out   valuesFile
-	org   *zonesetup.Org
-	zone  *zonesetup.Session
+	// out starts as the previous values file. Each chosen section replaces
+	// only the keys it asks about.
+	out  zonesetup.Values
+	org  *zonesetup.Org
+	zone *zonesetup.Session
 }
 
 // previous holds the values file from before Init. exists reports whether
@@ -74,32 +76,11 @@ type previous struct {
 	exists bool
 }
 
-// valuesFile is the zone-setup values file Init writes. Its keys are a
-// subset of zonesetup.Values.
-type valuesFile struct {
-	ManagementAPIURL string `yaml:"management_api_url"`
-	ZoneID           string `yaml:"zone_id"`
-	ZoneURL          string `yaml:"zone_url"`
-	Account          struct {
-		ClientID         string `yaml:"client_id"`
-		ClientSecretFile string `yaml:"client_secret_file,omitempty"`
-	} `yaml:"management_service_account"`
-	Users     []zonesetup.UserValues `yaml:"users"`
-	Resources []resourceValues       `yaml:"resources,omitempty"`
-}
-
-type resourceValues struct {
-	Identifier         string `yaml:"identifier"`
-	Name               string `yaml:"name"`
-	Prefix             bool   `yaml:"prefix"`
-	CredentialProvider string `yaml:"credential_provider,omitempty"`
-	SecretFile         string `yaml:"secret_file,omitempty"`
-}
-
 // Init asks the operator for the settings and writes local/local.env and the
 // zone-setup values file. Secrets the operator types go in 0600 files under
 // local/out/secrets, and the values file names them. Each question defaults
-// to the value in the existing files.
+// to the value in the existing files. Init keeps the keys it does not ask
+// about, such as namespace and policy_set.
 //
 // Init reads zones, users and providers from the management API. Its only
 // write creates a zone, when the operator asks for one. It does not change
@@ -114,6 +95,7 @@ func (l *Local) Init(ctx context.Context) (InitResult, error) {
 		return InitResult{}, fmt.Errorf("%w. Run %s init in a terminal", ErrNoTerminal, sandboxCommand)
 	}
 	w := &wizard{l: l, ask: l.Ask, prev: l.previousValues(), env: Settings{}}
+	w.out = w.prev.values
 	change, err := w.chooseChanges(ctx)
 	if err != nil || len(change) == 0 {
 		return InitResult{}, err
@@ -234,12 +216,15 @@ func (w *wizard) runSections(ctx context.Context, change map[string]bool) error 
 		ask, keep func(context.Context) error
 	}{
 		{sectionZone, w.askZone, w.keepZone},
-		{sectionCredentials, w.chooseResources, w.keepCredentials},
+		{sectionCredentials, w.chooseResources, nil},
 		{sectionCluster, w.chooseIssuer, w.keepCluster},
 	} {
 		run := section.keep
 		if change[section.name] {
 			run = section.ask
+		}
+		if run == nil {
+			continue
 		}
 		if err := run(ctx); err != nil {
 			return err
@@ -270,12 +255,8 @@ func (w *wizard) askZone(ctx context.Context) error {
 	return w.chooseUser(ctx)
 }
 
-// keepAccount keeps the management API, the service account and the extra
-// roots from the files.
+// keepAccount keeps the extra roots from local.env.
 func (w *wizard) keepAccount() {
-	w.out.ManagementAPIURL = w.prev.values.ManagementAPIURL
-	w.out.Account.ClientID = w.prev.values.ManagementServiceAccount.ClientID
-	w.out.Account.ClientSecretFile = w.prev.values.ManagementServiceAccount.ClientSecretFile
 	w.env[KeyCAFile] = w.l.Settings[KeyCAFile]
 }
 
@@ -283,51 +264,44 @@ func (w *wizard) keepAccount() {
 // or the sign-in fails, it calls login.
 func (w *wizard) signInAgain(ctx context.Context) error {
 	w.keepAccount()
-	secret := cmp.Or(w.getenv(zonesetup.DefaultManagementSecretEnv), readSecret(w.out.Account.ClientSecretFile))
+	account := w.out.ManagementServiceAccount
+	secret := w.savedSecret(account)
 	roots, err := rootsFrom(w.env[KeyCAFile])
 	if err != nil || secret == "" || w.out.ManagementAPIURL == "" {
 		return w.login(ctx)
 	}
 	w.roots = roots
-	if w.org, err = zonesetup.Login(ctx, w.out.ManagementAPIURL, w.out.Account.ClientID, secret, roots); err != nil {
+	if w.org, err = zonesetup.Login(ctx, w.out.ManagementAPIURL, account.ClientID, secret, roots); err != nil {
 		_, _ = fmt.Fprintf(w.l.Out, "Signing in with the saved account failed: %v\n", err)
 		return w.login(ctx)
 	}
 	return nil
 }
 
-// keepZone keeps the zone and the user from the files. After a sign-in, it
-// also opens a session on the zone for the sections that follow.
+// savedSecret returns the service account secret from the file the values
+// file names. With no file, it reads the environment variable the values
+// file names, or KEYCARD_MANAGEMENT_CLIENT_SECRET.
+func (w *wizard) savedSecret(account zonesetup.ManagementServiceAccountValues) string {
+	if account.ClientSecretFile != "" {
+		return readSecret(account.ClientSecretFile)
+	}
+	return w.getenv(cmp.Or(account.ClientSecretEnv, zonesetup.DefaultManagementSecretEnv))
+}
+
+// keepZone keeps the zone and the user settings from local.env. After a
+// sign-in, it also opens a session on the zone for the sections that follow.
 func (w *wizard) keepZone(ctx context.Context) error {
-	w.out.ZoneID, w.out.ZoneURL, w.out.Users = w.prev.values.ZoneID, w.prev.values.ZoneURL, w.prev.values.Users
 	for _, key := range []string{KeyZoneURL, KeyZoneOnHost, KeyUserEmail} {
 		w.env[key] = w.l.Settings[key]
 	}
 	if w.org == nil {
 		return nil
 	}
-	zones, err := w.org.Zones(ctx)
+	zone, err := w.org.Zone(ctx, &w.out)
 	if err != nil {
-		return fmt.Errorf("listing the zones: %w", err)
+		return fmt.Errorf("finding the saved zone: %w. Change the zone", err)
 	}
-	for i := range zones {
-		if zones[i].ID == w.out.ZoneID {
-			w.zone = w.org.Session(&zones[i])
-			return nil
-		}
-	}
-	return fmt.Errorf("%w: the service account cannot see the saved zone %s. Change the zone",
-		ErrAnswer, cmp.Or(w.out.ZoneID, "(none)"))
-}
-
-// keepCredentials keeps the resources from the values file.
-func (w *wizard) keepCredentials(context.Context) error {
-	for _, resource := range w.prev.values.Resources {
-		w.out.Resources = append(w.out.Resources, resourceValues{
-			Identifier: resource.Identifier, Name: resource.Name, Prefix: resource.Prefix,
-			CredentialProvider: resource.CredentialProvider, SecretFile: resource.SecretFile,
-		})
-	}
+	w.zone = w.org.Session(zone)
 	return nil
 }
 
@@ -380,7 +354,8 @@ func (w *wizard) confirm(ctx context.Context, question string, value bool) (bool
 
 // login asks for the management API URL, the extra trusted roots if the API
 // is not production, and the service account, then signs in. It asks for the
-// account again until the API accepts it.
+// account again while the token endpoint refuses it. Any other error stops
+// Init. A typed secret goes in a 0600 file once the sign-in succeeds.
 func (w *wizard) login(ctx context.Context) error {
 	var err error
 	w.out.ManagementAPIURL, err = w.input(ctx, "Keycard management API URL",
@@ -388,10 +363,42 @@ func (w *wizard) login(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// A non-production management API, such as localdev, may use a private
-	// CA. For production, keep the current setting without asking.
+	if err = w.askRoots(ctx); err != nil {
+		return err
+	}
+	clientID := w.prev.values.ManagementServiceAccount.ClientID
+	useSaved := true
+	for {
+		account, secret, typed, err := w.askAccount(ctx, clientID, useSaved)
+		if err != nil {
+			return err
+		}
+		w.org, err = zonesetup.Login(ctx, w.out.ManagementAPIURL, account.ClientID, secret, w.roots)
+		if errors.Is(err, zonesetup.ErrRefused) {
+			_, _ = fmt.Fprintf(w.l.Out, "%v\nTry again.\n", err)
+			clientID, useSaved = account.ClientID, false
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("signing in: %w", err)
+		}
+		if typed {
+			if account.ClientSecretFile, err = w.l.writeSecret("management-client-secret", secret); err != nil {
+				return err
+			}
+		}
+		w.out.ManagementServiceAccount = account
+		return nil
+	}
+}
+
+// askRoots asks for the extra trusted roots. A non-production management
+// API, such as localdev, may use a private CA. For production, it keeps the
+// current setting without asking.
+func (w *wizard) askRoots(ctx context.Context) error {
 	caFile := w.l.Settings[KeyCAFile]
 	if w.out.ManagementAPIURL != defaultManagementAPI {
+		var err error
 		caFile, err = w.input(ctx, "PEM file of extra trusted roots, as an absolute path. "+
 			"Leave empty if this API's certificate comes from a public CA.",
 			caFile, checkCAFile)
@@ -400,55 +407,49 @@ func (w *wizard) login(ctx context.Context) error {
 		}
 	}
 	w.env[KeyCAFile] = caFile
-	if w.roots, err = rootsFrom(caFile); err != nil {
-		return err
-	}
-	for {
-		clientID, secret, secretFile, err := w.askAccount(ctx)
-		if err != nil {
-			return err
-		}
-		w.org, err = zonesetup.Login(ctx, w.out.ManagementAPIURL, clientID, secret, w.roots)
-		if err == nil {
-			w.out.Account.ClientID, w.out.Account.ClientSecretFile = clientID, secretFile
-			return nil
-		}
-		if !errors.Is(err, zonesetup.ErrAuth) {
-			return fmt.Errorf("signing in: %w", err)
-		}
-		_, _ = fmt.Fprintf(w.l.Out, "%v\nTry again.\n", err)
-		w.prev.values.ManagementServiceAccount = zonesetup.ManagementServiceAccountValues{ClientID: clientID}
-	}
+	roots, err := rootsFrom(caFile)
+	w.roots = roots
+	return err
 }
 
-// askAccount asks for the service account. The secret comes from
-// KEYCARD_MANAGEMENT_CLIENT_SECRET, from the file an earlier Init wrote, or
-// from the operator. A typed secret goes in a 0600 file.
-func (w *wizard) askAccount(ctx context.Context) (string, string, string, error) {
-	account := w.prev.values.ManagementServiceAccount
-	clientID, err := w.input(ctx, "Organization service account client ID", account.ClientID, required)
+// askAccount asks for the service account and returns it, its secret, and
+// whether the operator typed the secret. When useSaved is true and the
+// environment variable or the file the values file names holds a secret, it
+// offers that secret.
+func (w *wizard) askAccount(
+	ctx context.Context,
+	clientID string,
+	useSaved bool,
+) (zonesetup.ManagementServiceAccountValues, string, bool, error) {
+	var account zonesetup.ManagementServiceAccountValues
+	saved := w.prev.values.ManagementServiceAccount
+	clientID, err := w.input(ctx, "Organization service account client ID", clientID, required)
 	if err != nil {
-		return "", "", "", err
+		return account, "", false, err
 	}
-	if secret := w.getenv(zonesetup.DefaultManagementSecretEnv); secret != "" {
-		_, _ = fmt.Fprintf(w.l.Out, "Using the client secret from %s.\n", zonesetup.DefaultManagementSecretEnv)
-		return clientID, secret, "", nil
+	account.ClientID = clientID
+	secret := ""
+	if useSaved {
+		secret = w.savedSecret(saved)
 	}
-	if secret := readSecret(account.ClientSecretFile); secret != "" && clientID == account.ClientID {
+	switch {
+	case secret != "" && saved.ClientSecretFile == "":
+		_, _ = fmt.Fprintf(w.l.Out, "Using the client secret from %s.\n",
+			cmp.Or(saved.ClientSecretEnv, zonesetup.DefaultManagementSecretEnv))
+		account.ClientSecretEnv = saved.ClientSecretEnv
+		return account, secret, false, nil
+	case secret != "" && clientID == saved.ClientID:
 		keep, keepErr := w.confirm(ctx, "Keep the saved client secret?", true)
 		if keepErr != nil {
-			return "", "", "", keepErr
+			return account, "", false, keepErr
 		}
 		if keep {
-			return clientID, secret, account.ClientSecretFile, nil
+			account.ClientSecretFile = saved.ClientSecretFile
+			return account, secret, false, nil
 		}
 	}
-	secret, err := w.secret(ctx, "Service account client secret", required)
-	if err != nil {
-		return "", "", "", err
-	}
-	path, err := w.l.writeSecret("management-client-secret", secret)
-	return clientID, secret, path, err
+	secret, err = w.secret(ctx, "Service account client secret", required)
+	return account, secret, true, err
 }
 
 // chooseZone asks for one of the zones the service account can see, or a
@@ -548,12 +549,21 @@ func (w *wizard) chooseUser(ctx context.Context) error {
 
 // chooseResources asks for the credentials of the demo's endpoints in
 // sandbox/values.example.yaml: a GitHub token, and an optional OpenRouter
-// API key.
+// API key. It keeps the other resources in the values file.
 func (w *wizard) chooseResources(ctx context.Context) error {
+	w.out.Resources = nil
 	if err := w.chooseGitHub(ctx); err != nil {
 		return err
 	}
-	return w.chooseOpenRouter(ctx)
+	if err := w.chooseOpenRouter(ctx); err != nil {
+		return err
+	}
+	for _, resource := range w.prev.values.Resources {
+		if !slices.Contains([]string{githubAPI, githubGit, openRouterAPI}, resource.Identifier) {
+			w.out.Resources = append(w.out.Resources, resource)
+		}
+	}
+	return nil
 }
 
 // chooseGitHub asks where the GitHub token comes from: a GitHub provider in
@@ -566,28 +576,27 @@ func (w *wizard) chooseGitHub(ctx context.Context) error {
 		return fmt.Errorf("listing the zone's providers: %w", err)
 	}
 	options := w.gitHubOptions(providers)
-	prevFile := w.prevSecretFile(githubAPI)
+	prev := w.prevResource(githubAPI)
 	value := options[0].Value
-	prev := w.prevProvider(githubAPI)
 	switch {
-	case slices.ContainsFunc(options, func(o Option) bool { return o.Value == prev }):
-		value = prev
-	case prevFile != "":
+	case slices.ContainsFunc(options, func(o Option) bool { return o.Value == prev.CredentialProvider }):
+		value = prev.CredentialProvider
+	case prev.Static():
 		value = gitHubToken
 	}
 	choice, err := w.choose(ctx, "How does the sandbox get a GitHub token?", options, value)
 	if err != nil {
 		return err
 	}
-	api := resourceValues{Identifier: githubAPI, Name: "GitHub", Prefix: true, CredentialProvider: choice}
-	git := resourceValues{Identifier: githubGit, Name: "GitHub git", Prefix: true, CredentialProvider: choice}
+	api := zonesetup.ResourceValues{Identifier: githubAPI, Name: "GitHub", Prefix: true, CredentialProvider: choice}
+	git := zonesetup.ResourceValues{Identifier: githubGit, Name: "GitHub git", Prefix: true, CredentialProvider: choice}
 	if choice == gitHubToken {
-		file, err := w.secretFile(ctx, prevFile, "GitHub personal access token", "github-token")
+		env, file, err := w.staticToken(ctx, prev, "GitHub personal access token", "github-token")
 		if err != nil {
 			return err
 		}
-		api.CredentialProvider, api.SecretFile = "", file
-		git.CredentialProvider, git.SecretFile = "", file
+		api.CredentialProvider, api.SecretEnv, api.SecretFile = "", env, file
+		git.CredentialProvider, git.SecretEnv, git.SecretFile = "", env, file
 	}
 	w.out.Resources = append(w.out.Resources, api, git)
 	return nil
@@ -627,46 +636,59 @@ func gitHubProvider(provider keycard.Provider) bool {
 	return false
 }
 
-// secretFile asks whether to keep the secret in prevFile, when it holds
-// one. Otherwise, or when the answer is no, it asks for the secret and
-// writes it to local/out/secrets/name.
-func (w *wizard) secretFile(ctx context.Context, prevFile, question, name string) (string, error) {
-	if readSecret(prevFile) != "" {
-		keep, err := w.confirm(ctx, "Keep the saved "+question+"?", true)
-		if err != nil || keep {
-			return prevFile, err
+// staticToken returns the secret_env and secret_file of a static token. When
+// prev reads the token from an environment variable or a file that holds
+// one, it asks whether to keep that source. Otherwise, or when the answer is
+// no, it asks for the token and writes it to local/out/secrets/name.
+func (w *wizard) staticToken(
+	ctx context.Context,
+	prev zonesetup.ResourceValues,
+	question, name string,
+) (string, string, error) {
+	keep := ""
+	switch {
+	case prev.SecretEnv != "":
+		keep = "Keep reading the " + question + " from " + prev.SecretEnv + "?"
+	case readSecret(prev.SecretFile) != "":
+		keep = "Keep the saved " + question + "?"
+	}
+	if keep != "" {
+		yes, err := w.confirm(ctx, keep, true)
+		if err != nil || yes {
+			return prev.SecretEnv, prev.SecretFile, err
 		}
 	}
 	secret, err := w.secret(ctx, question, required)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return w.l.writeSecret(name, secret)
+	file, err := w.l.writeSecret(name, secret)
+	return "", file, err
 }
 
-// prevSecretFile returns the secret_file the previous values file named for
-// identifier, or "".
-func (w *wizard) prevSecretFile(identifier string) string {
+// prevResource returns the resource the previous values file has for
+// identifier, or the zero value.
+func (w *wizard) prevResource(identifier string) zonesetup.ResourceValues {
 	for _, resource := range w.prev.values.Resources {
 		if resource.Identifier == identifier {
-			return resource.SecretFile
+			return resource
 		}
 	}
-	return ""
+	return zonesetup.ResourceValues{}
 }
 
 func (w *wizard) chooseOpenRouter(ctx context.Context) error {
-	prevFile := w.prevSecretFile(openRouterAPI)
-	add, err := w.confirm(ctx, "Add an OpenRouter API key?", prevFile != "")
+	prev := w.prevResource(openRouterAPI)
+	add, err := w.confirm(ctx, "Add an OpenRouter API key?", prev.Static())
 	if err != nil || !add {
 		return err
 	}
-	file, err := w.secretFile(ctx, prevFile, "OpenRouter API key", "openrouter-api-key")
+	resource := zonesetup.ResourceValues{Identifier: openRouterAPI, Name: "OpenRouter", Prefix: true}
+	resource.SecretEnv, resource.SecretFile, err = w.staticToken(ctx, prev, "OpenRouter API key", "openrouter-api-key")
 	if err != nil {
 		return err
 	}
-	w.out.Resources = append(w.out.Resources,
-		resourceValues{Identifier: openRouterAPI, Name: "OpenRouter", Prefix: true, SecretFile: file})
+	w.out.Resources = append(w.out.Resources, resource)
 	return nil
 }
 
@@ -745,7 +767,7 @@ func (w *wizard) write() error {
 	}
 	_, _ = fmt.Fprintf(w.l.Out, "Wrote %s.\n", w.l.valuesName())
 	w.env[KeyCluster] = cmp.Or(w.l.Settings[KeyCluster], defaultCluster)
-	w.env[KeyZoneSetupValues] = zoneSetupFile
+	w.env[KeyZoneSetupValues] = w.l.valuesName()
 	w.env[KeyGitHubLogin] = w.l.Settings[KeyGitHubLogin]
 	return w.l.writeSettings(w.env)
 }
@@ -819,17 +841,6 @@ func (l *Local) previousValues() previous {
 		_ = yaml.Unmarshal(raw, &prev.values)
 	}
 	return prev
-}
-
-// prevProvider returns the credential provider the previous values file
-// named for identifier, or "".
-func (w *wizard) prevProvider(identifier string) string {
-	for _, resource := range w.prev.values.Resources {
-		if resource.Identifier == identifier && resource.CredentialProvider != "" {
-			return resource.CredentialProvider
-		}
-	}
-	return ""
 }
 
 // onHost reports whether every address of the zone's host is a loopback or

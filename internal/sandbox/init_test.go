@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/pem"
+	"errors"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -15,11 +16,12 @@ import (
 	"testing"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
+	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
 // scriptedAsker answers a question with the next answer under the key the
-// question starts with. With no answer left, it keeps the default. It
-// records every question.
+// question starts with. With no answer left, it keeps the default, and Secret
+// returns errStop. It records every question.
 type scriptedAsker struct {
 	t       *testing.T
 	answers map[string][]string
@@ -38,10 +40,17 @@ func (a *scriptedAsker) Input(_ context.Context, question, value string, check f
 	return value, nil
 }
 
+// errStop is the error Secret returns when it has no answer left, as when the
+// operator presses Ctrl-C.
+var errStop = errors.New("stopped")
+
 func (a *scriptedAsker) Secret(_ context.Context, question string, check func(string) error) (string, error) {
 	answer, ok := a.next(question)
-	if !ok || check(answer) != nil {
-		a.t.Fatalf("%q: no usable answer", question)
+	if !ok {
+		return "", errStop
+	}
+	if check(answer) != nil {
+		a.t.Fatalf("%q: the answer %q is refused", question, answer)
 	}
 	return answer, nil
 }
@@ -104,10 +113,10 @@ const (
 // API with each secret in turn, and choose its user after one more listing.
 func signInAnswers(serverURL, caFile string, secrets ...string) map[string][]string {
 	return map[string][]string{
-		"Keycard management API URL":             {serverURL},
+		apiURLQuestion:                           {serverURL},
 		"PEM file of extra trusted roots":        {caFile},
 		"Organization service account client ID": {"sa-1"},
-		"Service account client secret":          secrets,
+		secretQuestion:                           secrets,
 		"Which user":                             {"\x00again", email},
 	}
 }
@@ -128,8 +137,12 @@ func fakeManagement(t *testing.T, providers, activeSets string) (*httptest.Serve
 		_, _ = w.Write([]byte(`{"access_token":"t","token_type":"Bearer"}`))
 	})
 	page := func(items string) string { return `{"items":[` + items + `],"pagination":{}}` }
+	const zone = `{"id":"zone-a","name":"Acme","protocols":{"oauth2":{"issuer":"https://localhost/"}}}`
 	mux.HandleFunc("GET /zones", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(page(`{"id":"zone-a","name":"Acme","protocols":{"oauth2":{"issuer":"https://localhost/"}}}`)))
+		_, _ = w.Write([]byte(page(zone)))
+	})
+	mux.HandleFunc("GET /zones/zone-a", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(zone))
 	})
 	mux.HandleFunc("GET /zones/zone-a/users", func(w http.ResponseWriter, _ *http.Request) {
 		if userLists.Add(1) == 1 {
@@ -184,8 +197,8 @@ func TestInit(t *testing.T) {
 	wantValues := "# Written by `go run ./cmd/sandbox init`. zone-setup.example.yaml documents\n" +
 		"# each key. `sandbox run` sets issuer_url to the cluster's issuer.\n" +
 		"management_api_url: " + run.server.URL + "\n" +
-		"zone_id: zone-a\n" +
 		"zone_url: https://localhost\n" +
+		"zone_id: zone-a\n" +
 		"management_service_account:\n" +
 		"    client_id: sa-1\n" +
 		"    client_secret_file: " + filepath.Join(secretDir, "management-client-secret") + "\n" +
@@ -224,6 +237,8 @@ func TestInit(t *testing.T) {
 
 // The questions and answers that more than one test uses.
 const (
+	apiURLQuestion        = "Keycard management API URL"
+	secretQuestion        = "Service account client secret"
 	openRouterKeyQuestion = "OpenRouter API key"
 	// gitHubSourceQuestion asks where the GitHub token comes from.
 	// gitHubTokenChoice is the answer for a personal access token.
@@ -349,13 +364,22 @@ func TestInitGitHubToken(t *testing.T) {
 // TestInitRerun runs Init a second time. It shows the current settings and
 // asks only the sections chosen. Sections it keeps come from the files, and
 // it signs in with the saved account only when a chosen section needs
-// Keycard. Saved secrets stay unless the answer is no.
+// Keycard. Saved secrets stay unless the answer is no. When a row sets
+// prepare, the test runs it on the first run's files before the second run.
 func TestInitRerun(t *testing.T) {
 	t.Parallel()
+	const (
+		changeCluster = "cluster"
+		changeAccount = "account"
+	)
+	// byZoneURL is handWrittenValues without zone_id.
+	byZoneURL := strings.Replace(handWrittenValues, "zone_id: zone-a\n", "", 1)
 	tests := []struct {
 		name      string
+		prepare   func(t *testing.T, run initRun)
 		answers   map[string][]string
 		notAsked  []string
+		wantErr   error
 		wantFiles map[string]string // secret file name: content
 		check     func(t *testing.T, run initRun)
 	}{
@@ -363,7 +387,7 @@ func TestInitRerun(t *testing.T) {
 		{
 			name:      "everything, keeping the secrets",
 			answers:   map[string][]string{changeQuestion: {"\x00everything"}},
-			notAsked:  []string{"Service account client secret", openRouterKeyQuestion},
+			notAsked:  []string{secretQuestion, openRouterKeyQuestion},
 			wantFiles: map[string]string{"management-client-secret": "good\n", "openrouter-api-key": "or-key\n"},
 			check:     checkValuesKept,
 		},
@@ -383,7 +407,7 @@ func TestInitRerun(t *testing.T) {
 		{
 			name: "cluster",
 			answers: map[string][]string{
-				changeQuestion: {"cluster"},
+				changeQuestion: {changeCluster},
 				"How does the zone reach the cluster's issuer": {"named"},
 				"Tunnel name":     {"demo"},
 				"Tunnel hostname": {"https://issuer.example.org"},
@@ -391,16 +415,68 @@ func TestInitRerun(t *testing.T) {
 			notAsked: append(signInQuestions(), "The zone's active policy set"),
 			check:    checkNamedTunnel,
 		},
+		{
+			name: "account, with a refused secret, then Ctrl-C",
+			answers: map[string][]string{
+				changeQuestion:                  {changeAccount},
+				"Keep the saved client secret?": {"n"},
+				secretQuestion:                  {"bad"},
+			},
+			wantErr:   errStop,
+			wantFiles: map[string]string{"management-client-secret": "good\n"},
+			check:     checkValuesKept,
+		},
+		{
+			name: "account, at an API that does not answer",
+			answers: map[string][]string{
+				changeQuestion: {changeAccount},
+				apiURLQuestion: {"https://127.0.0.1:1"},
+			},
+			wantErr: zonesetup.ErrAuth,
+			check:   checkValuesKept,
+		},
+		{
+			name:     "cluster, in another values file",
+			prepare:  renameValues,
+			answers:  map[string][]string{changeQuestion: {changeCluster}},
+			notAsked: signInQuestions(),
+			check:    checkRenamedValues,
+		},
+		{
+			name:     "cluster, in a hand-written values file",
+			prepare:  handWritten(handWrittenValues),
+			answers:  map[string][]string{changeQuestion: {changeCluster}},
+			notAsked: signInQuestions(),
+			check:    checkHandWrittenKept(handWrittenValues),
+		},
+		{
+			name:     "credentials, in a hand-written values file",
+			prepare:  handWritten(handWrittenValues),
+			answers:  map[string][]string{changeQuestion: {credentialsSection}},
+			notAsked: append(signInQuestions(), secretQuestion, openRouterKeyQuestion),
+			check:    checkHandWrittenKept(handWrittenValues),
+		},
+		{
+			name:     "credentials, in a hand-written values file with only zone_url",
+			prepare:  handWritten(byZoneURL),
+			answers:  map[string][]string{changeQuestion: {credentialsSection}},
+			notAsked: append(signInQuestions(), secretQuestion, openRouterKeyQuestion),
+			check:    checkHandWrittenKept(byZoneURL),
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			run := firstRun(t)
+			if tc.prepare != nil {
+				tc.prepare(t, run)
+			}
 			run.out.Reset()
 			ask := &scriptedAsker{t: t, answers: tc.answers}
 			run.local.Ask = ask
-			if _, err := run.local.Init(t.Context()); err != nil {
-				t.Fatal(err)
+			_, err := run.local.Init(t.Context())
+			if !errors.Is(err, tc.wantErr) || errors.Is(err, zonesetup.ErrRefused) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
 			}
 			checkNotAsked(t, ask, tc.notAsked)
 			for name, want := range tc.wantFiles {
@@ -411,9 +487,107 @@ func TestInitRerun(t *testing.T) {
 	}
 }
 
+// handWrittenValues is a values file with the keys Init does not ask about:
+// client_secret_env, issuer_url, namespace, policy_set, secret_env and a
+// resource of its own. It is in the form yaml.Marshal writes.
+const handWrittenValues = `zone_url: https://localhost
+zone_id: zone-a
+management_service_account:
+    client_id: sa-1
+    client_secret_env: SANDBOX_SECRET
+issuer_url: https://issuer.example.com
+namespace: team-a
+policy_set: Team A
+users:
+    - email: ada@example.com
+resources:
+    - identifier: https://api.github.com
+      name: GitHub
+      prefix: true
+      credential_provider: github
+    - identifier: https://github.com
+      name: GitHub git
+      prefix: true
+      credential_provider: github
+    - identifier: https://openrouter.ai/api/v1
+      name: OpenRouter
+      prefix: true
+      secret_env: OPENROUTER_API_KEY
+    - identifier: https://api.example.com
+      name: Example
+      prefix: false
+      secret_file: /run/secrets/example
+`
+
+// handWritten returns a prepare func that replaces the values file with
+// values, and puts the service account secret in SANDBOX_SECRET.
+func handWritten(values string) func(*testing.T, initRun) {
+	return func(t *testing.T, run initRun) {
+		t.Helper()
+		writeFile(t, filepath.Join(run.local.Root, "zone-setup.yaml"),
+			"management_api_url: "+run.server.URL+"\n"+values)
+		run.local.Getenv = func(key string) string {
+			if key == "SANDBOX_SECRET" {
+				return goodSecret
+			}
+			return ""
+		}
+	}
+}
+
+// checkHandWrittenKept returns a check that requires the values file to
+// keep every key of values.
+func checkHandWrittenKept(values string) func(*testing.T, initRun) {
+	return func(t *testing.T, run initRun) {
+		t.Helper()
+		checkFile(t, filepath.Join(run.local.Root, "zone-setup.yaml"),
+			"# Written by `go run ./cmd/sandbox init`. zone-setup.example.yaml documents\n"+
+				"# each key. `sandbox run` sets issuer_url to the cluster's issuer.\n"+
+				"management_api_url: "+run.server.URL+"\n"+values)
+	}
+}
+
+// otherValuesFile is the values file renameValues names in local.env.
+const otherValuesFile = "zone-setup.staging.yaml"
+
+// renameValues moves the values file to otherValuesFile and names it in
+// local.env.
+func renameValues(t *testing.T, run initRun) {
+	t.Helper()
+	root := run.local.Root
+	if err := os.Rename(filepath.Join(root, "zone-setup.yaml"), filepath.Join(root, otherValuesFile)); err != nil {
+		t.Fatal(err)
+	}
+	env := filepath.Join(root, "local", "local.env")
+	raw, err := os.ReadFile(env) //nolint:gosec // G304: the path is the test's own file.
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, env, strings.Replace(string(raw),
+		sandbox.KeyZoneSetupValues+"=zone-setup.yaml", sandbox.KeyZoneSetupValues+"="+otherValuesFile, 1))
+	run.local.Settings[sandbox.KeyZoneSetupValues] = otherValuesFile
+}
+
+// checkRenamedValues requires Init to keep otherValuesFile as the first run
+// wrote it, to name it in local.env, and not to write zone-setup.yaml.
+func checkRenamedValues(t *testing.T, run initRun) {
+	t.Helper()
+	checkFile(t, filepath.Join(run.local.Root, otherValuesFile), run.values)
+	settings, err := sandbox.LoadSettings(run.local.Root, "", func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := settings[sandbox.KeyZoneSetupValues]; got != otherValuesFile {
+		t.Errorf("%s = %q, want %q", sandbox.KeyZoneSetupValues, got, otherValuesFile)
+	}
+	if _, err = os.Stat(filepath.Join(run.local.Root, "zone-setup.yaml")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("stat zone-setup.yaml: %v, want it not to exist", err)
+	}
+}
+
 // signInQuestions returns the questions that sign in and choose the zone.
 func signInQuestions() []string {
-	return []string{"Keycard management API URL", "Organization service account client ID", "Which zone"}
+	return []string{apiURLQuestion, "Organization service account client ID", "Which zone"}
 }
 
 // checkKept requires the summary of the first run's settings, and the

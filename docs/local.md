@@ -35,13 +35,17 @@ optional OpenRouter API key, and how the zone reaches the cluster's issuer.
 It writes `local/local.env` and `zone-setup.yaml`. Secrets you type go in
 `local/out/secrets/`, readable only by you. If
 `KEYCARD_MANAGEMENT_CLIENT_SECRET` is set, `init` uses it and doesn't ask for
-the secret. To write the files by hand, start from
+the secret, unless `zone-setup.yaml` sets `client_secret_file`. If
+`zone-setup.yaml` sets `client_secret_env`, `init` reads that variable
+instead. To write the files by hand, start from
 `local/local.env.example` and `zone-setup.example.yaml`.
 
 To change something, run `go run ./cmd/sandbox init` again. It shows your
 current settings and asks which part to change. Each question defaults to
 your current answer. A saved secret stays unless you answer n to "Keep the
-saved ...?". The change takes effect on the next `sandbox up` or
+saved ...?". Keys `init` doesn't ask about, such as `namespace` and
+`policy_set`, keep their values. `init` drops the comments in
+`zone-setup.yaml`. The change takes effect on the next `sandbox up` or
 `sandbox run`. zone-setup does not delete what it created in Keycard for
 your old answers.
 
@@ -146,8 +150,9 @@ after you recreate the cluster.
 
 Set `KEYCARD_LOCAL_CA_FILE` when no public CA signed the certificate of the
 management API, the zone or the issuer. Set it to the absolute path of a
-PEM file with the roots that signed them. `sandbox init` trusts these roots
-for the management API, `sandbox check-issuer` for the issuer, and the proxy
+PEM file with the roots that signed them. `sandbox init` and `sandbox run`
+trust these roots for the management API, `sandbox check-issuer` for the
+issuer, and the proxy
 for the zone, through the chart's `zoneTrust` value. Each trusts them in
 addition to the system roots. `sandbox init` asks for this file only when
 the management API URL is not `https://api.keycard.ai`.

@@ -3,6 +3,7 @@ package zonesetup
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,21 +33,17 @@ type Session struct {
 }
 
 // Connect authenticates as the organization service account and resolves the
-// zone the values file names by zone_url, zone_id or both. It writes nothing
-// to the zone. Every error wraps ErrAuth, ErrAPI, ErrZoneNotFound,
-// ErrZoneAmbiguous or ErrZoneMismatch.
-func Connect(ctx context.Context, values *Values, secrets *Secrets) (*Session, error) {
+// zone the values file names by zone_url, zone_id or both. It trusts roots,
+// or the system roots if roots is nil. It writes nothing to the zone. Every
+// error wraps ErrAuth, ErrAPI, ErrZoneNotFound, ErrZoneAmbiguous or
+// ErrZoneMismatch.
+func Connect(ctx context.Context, values *Values, secrets *Secrets, roots *x509.CertPool) (*Session, error) {
 	org, err := Login(ctx, values.ManagementAPIURL, values.ManagementServiceAccount.ClientID,
-		secrets.ManagementClientSecret, nil)
+		secrets.ManagementClientSecret, roots)
 	if err != nil {
 		return nil, err
 	}
-	var zone *keycard.Zone
-	if values.ZoneID != "" {
-		zone, err = zoneByID(ctx, &org.zones, values)
-	} else {
-		zone, err = zoneByURL(ctx, &org.zones, values.ZoneURL)
-	}
+	zone, err := org.Zone(ctx, values)
 	if err != nil {
 		return nil, err
 	}
@@ -677,9 +674,15 @@ func serviceAccountToken(
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%w: the token endpoint returned HTTP %d for client %s. "+
+		err = fmt.Errorf("%w: the token endpoint returned HTTP %d for client %s. "+
 			"The client must be an organization service account",
 			ErrAuth, res.StatusCode, clientID)
+		// RFC 6749 section 5.2: a token endpoint answers a bad client or
+		// grant with 400, or with 401 when the client failed to authenticate.
+		if res.StatusCode == http.StatusBadRequest || res.StatusCode == http.StatusUnauthorized {
+			err = fmt.Errorf("%w: %w", ErrRefused, err)
+		}
+		return "", err
 	}
 	return tokenFromResponse(res.Body)
 }

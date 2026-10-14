@@ -27,6 +27,9 @@ var (
 	ErrAPI = errors.New("management API")
 	// ErrAuth is a service account the token endpoint did not accept.
 	ErrAuth = errors.New("service account token")
+	// ErrRefused is a client ID and secret the token endpoint refused with
+	// HTTP 400 or 401. An error that wraps ErrRefused also wraps ErrAuth.
+	ErrRefused = errors.New("refused")
 	// ErrApplicationAmbiguous is an application identifier more than one
 	// application in the zone has.
 	ErrApplicationAmbiguous = errors.New("application ambiguous")
@@ -103,28 +106,29 @@ var (
 )
 
 // Values is the values file. It holds no credential. Every secret is named by
-// the environment variable or file that holds it.
+// the environment variable or file that holds it. Marshal leaves out the empty
+// optional keys.
 type Values struct {
 	// ManagementAPIURL is the management API, a separate host from the zone.
 	ManagementAPIURL string `yaml:"management_api_url"`
 	// ZoneURL is the zone's issuer URL.
-	ZoneURL string `yaml:"zone_url"`
+	ZoneURL string `yaml:"zone_url,omitempty"`
 	// ZoneID names the zone directly.
-	ZoneID string `yaml:"zone_id"`
+	ZoneID string `yaml:"zone_id,omitempty"`
 	// ManagementServiceAccount is the organization service account zone-setup
 	// authenticates with. It is NEVER the sidecar's identity.
 	ManagementServiceAccount ManagementServiceAccountValues `yaml:"management_service_account"`
 	// IssuerURL is the cluster's OIDC issuer, kept byte for byte.
-	IssuerURL string `yaml:"issuer_url"`
+	IssuerURL string `yaml:"issuer_url,omitempty"`
 	// Namespace is the sandbox namespace. It defaults to DefaultNamespace.
-	Namespace string `yaml:"namespace"`
+	Namespace string `yaml:"namespace,omitempty"`
 	// PolicySet names the zone-wide policy set the per-user policies go in.
 	// It defaults to DefaultPolicySetName.
-	PolicySet string `yaml:"policy_set"`
+	PolicySet string `yaml:"policy_set,omitempty"`
 	// Users are the sandbox users, one per email.
 	Users []UserValues `yaml:"users"`
 	// Resources are the destinations the proxy mints credentials for.
-	Resources []ResourceValues `yaml:"resources"`
+	Resources []ResourceValues `yaml:"resources,omitempty"`
 }
 
 // ManagementServiceAccountValues is the organization service account.
@@ -132,10 +136,10 @@ type ManagementServiceAccountValues struct {
 	ClientID string `yaml:"client_id"`
 	// ClientSecretEnv names the environment variable holding the secret. It
 	// defaults to DefaultManagementSecretEnv when no file is named.
-	ClientSecretEnv string `yaml:"client_secret_env"`
+	ClientSecretEnv string `yaml:"client_secret_env,omitempty"`
 	// ClientSecretFile names a file holding the secret. When set, it is the
 	// only source read.
-	ClientSecretFile string `yaml:"client_secret_file"`
+	ClientSecretFile string `yaml:"client_secret_file,omitempty"`
 }
 
 // UserValues is one sandbox user.
@@ -150,17 +154,17 @@ type ResourceValues struct {
 	// exchange's `resource` parameter. The zone matches it exactly.
 	Identifier string `yaml:"identifier"`
 	// Name is the display name. It defaults to Identifier.
-	Name string `yaml:"name"`
+	Name string `yaml:"name,omitempty"`
 	// Prefix makes the identifier match every URL it is a prefix of.
 	Prefix bool `yaml:"prefix"`
 	// CredentialProvider is the identifier of an existing provider in the zone.
-	CredentialProvider string `yaml:"credential_provider"`
+	CredentialProvider string `yaml:"credential_provider,omitempty"`
 	// SecretEnv names the environment variable holding a static token for
 	// this resource.
-	SecretEnv string `yaml:"secret_env"`
+	SecretEnv string `yaml:"secret_env,omitempty"`
 	// SecretFile names a file holding a static token for this resource.
 	// LoadSecrets trims the whitespace around the token.
-	SecretFile string `yaml:"secret_file"`
+	SecretFile string `yaml:"secret_file,omitempty"`
 }
 
 // Static reports whether the resource uses a static token stored in the

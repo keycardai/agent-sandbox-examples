@@ -2,6 +2,7 @@ package zonesetup
 
 import (
 	"context"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"maps"
@@ -23,6 +24,9 @@ type Options struct {
 	ReplaceActive bool
 	// Log gets one line per entity Run finds, creates or changes.
 	Log io.Writer
+	// Roots are the CA certificates Run trusts for the management API. If
+	// Roots is nil, Run trusts the system roots.
+	Roots *x509.CertPool
 }
 
 // Output holds the k8s_sandbox and sandbox_user_access values a sandbox
@@ -61,7 +65,7 @@ type UserAccess struct {
 // With opts.DryRun it does not change the zone. The Output then has an empty
 // id for each entity that does not exist yet.
 func Run(ctx context.Context, values *Values, secrets *Secrets, opts *Options) (*Output, error) {
-	session, err := Connect(ctx, values, secrets)
+	session, err := Connect(ctx, values, secrets, opts.Roots)
 	if err != nil {
 		return nil, fmt.Errorf("resolving the zone: %w", err)
 	}
