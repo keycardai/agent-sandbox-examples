@@ -2,10 +2,11 @@
 
 `go run ./cmd/sandbox` runs the sandbox demo from your workstation against a
 real Keycard zone, a real user and real upstream APIs. Only the Kubernetes
-cluster is local. It's a k3d cluster that `sandbox bootstrap` creates, named
-by `KEYCARD_LOCAL_CLUSTER`. The steps change only that cluster and the zone.
-Each step reads its settings from `local/local.env` and writes its output
-under `local/out/`.
+cluster is local. It's a k3d cluster that `sandbox bootstrap` creates from
+scratch, with the name setup asks for (`keycard-sandbox-local` by default). The steps change only that cluster and the zone.
+Each step reads its settings from `~/.config/keycard/sandbox.yaml` and the
+environment, as [Settings](#settings) describes, and writes its output under
+`local/out/`.
 
 The steps create their own cluster because of the ServiceAccount issuer. A
 zone fetches `<issuer>/.well-known/openid-configuration` and compares its
@@ -17,25 +18,25 @@ zone fetches `<issuer>/.well-known/openid-configuration` and compares its
 
 - Docker, and the tools in `mise.toml` (`mise install`).
 - The client ID and secret of a Keycard organization service account.
-- A user in the zone for the sandbox to act for. The management API can't
-  create users. Add one in the Keycard console, or have the person sign in
-  to the zone.
+- A user in the zone for each agent to act for, such as yourself. The
+  management API can't create users. Add one in the Keycard console, or
+  have the person sign in to the zone.
+- Docker able to reach `ghcr.io`. The charts pin the egress-proxy release
+  `v0.2.1` of the three images (`ghcr.io/keycardai/egress-netsetup`,
+  `ghcr.io/keycardai/egress-proxy` and `ghcr.io/keycardai/sandbox-base`)
+  by digest, and the cluster pulls them. They are public, so Docker pulls
+  them without `docker login`.
 
 Then:
 
     go run ./cmd/sandbox up
 
 The first time, `up` runs `sandbox init`. It asks for your service account,
-the zone (or creates one), the user, which demo to run, the demo's
-questions, and how the zone reaches the cluster's issuer. It writes
-`local/local.env` and `zone-setup.yaml`, and `local/answers.yaml` for the
-demo's answers that are not secrets. Secrets you type go in
-`local/out/secrets/`, readable only by you. `init` doesn't ask for the
-service account secret when an environment variable holds it:
-`KEYCARD_MANAGEMENT_CLIENT_SECRET`, or the variable that `client_secret_env`
-in `zone-setup.yaml` names. A `client_secret_file` in `zone-setup.yaml`
-takes precedence over both. To write the files by hand, start from
-`local/local.env.example` and `zone-setup.example.yaml`.
+the zone (or creates one), who the agent acts as, which demo to run, the demo's
+questions, and how the zone reaches the cluster's issuer. Then it asks
+whether to save the settings. If `KEYCARD_CLIENT_SECRET` or
+`KEYCARD_MANAGEMENT_CLIENT_SECRET` is set, `init` uses it and doesn't ask
+for the secret.
 
 The cluster pulls `egress-netsetup`, `egress-proxy` and `sandbox-base` from
 `ghcr.io/keycardai`, at the release digests the charts pin. To run images
@@ -48,12 +49,48 @@ To change something, run `go run ./cmd/sandbox init` again. It shows your
 current settings and asks what to change: nothing, everything, or one part,
 such as the demo or the cluster. Each question defaults to your current
 answer. A saved secret stays unless you answer n to "Keep the saved ...?".
-Keys `init` doesn't ask about, such as `namespace` and `policy_set`, keep
-their values, and so do resources that no scenario lists. `init` drops the
-comments in `zone-setup.yaml`. If `zone-setup.yaml` does not parse, `init`
-asks every question and replaces the file. The change takes effect on the
-next `sandbox up` or `sandbox run`. zone-setup does not delete what it
-created in Keycard for your old answers.
+Credentials of resources that no demo lists keep their values. If the
+settings file does not parse, `init` asks every question, and saving
+replaces the file. The change takes effect on the next `sandbox up` or
+`sandbox run`. zone-setup does not delete what it created in Keycard for
+your old answers.
+
+## Settings
+
+Setup asks whether to save the settings. Saying yes writes them to
+`~/.config/keycard/sandbox.yaml`, or `$XDG_CONFIG_HOME/keycard/sandbox.yaml`
+when `XDG_CONFIG_HOME` is set, readable only by you. The secrets you typed,
+such as the service account's client secret or an OpenRouter key, go in
+your OS keychain, under the service `keycard`, as `sandbox/<name>`. A
+settings file you name with `--config` keeps its secrets apart, as
+`sandbox/<id>/<name>`. The config file never holds a secret. On Linux the keychain is the Secret
+Service of your desktop session. When the keychain refuses, as it does when
+it is locked or you deny access, setup stops and says so, and writes
+nothing. On a platform the keychain library does not support, the secrets
+go in `~/.config/keycard/sandbox-secrets.yaml`, readable only by you, and
+setup says so.
+
+Saying no keeps the settings until you quit. Setup writes nothing, and asks
+again next time. `sandbox.example.yaml` documents every key of the
+file, for writing it by hand.
+
+An environment variable that is not empty wins over the file's setting.
+`sandbox.example.yaml` names the variable of each setting that has one, such
+as `KEYCARD_LOCAL_SCENARIO` for the demo. `KEYCARD_CLIENT_ID` and
+`KEYCARD_CLIENT_SECRET` hold the service account, and
+`KEYCARD_SANDBOX_SECRET_<NAME>` holds a secret, such as
+`KEYCARD_SANDBOX_SECRET_OPENROUTER_API_KEY`, in place of the keychain.
+`run` refuses a `KEYCARD_LOCAL_ZONE_URL` other than the saved zone's, and
+`KEYCARD_LOCAL_USER_EMAIL` must name someone with an agent in the demo.
+
+`--config <file>` reads another settings file. `--config -`, or
+`KEYCARD_SANDBOX_CONFIG=-`, does not read a file. The steps then take the zone,
+the people and the demo's credentials from the zone-setup values file that
+`KEYCARD_LOCAL_ZONE_SETUP_VALUES` names, as `zone-setup.example.yaml`
+documents, and the other settings from their variables.
+
+`go run ./cmd/sandbox forget` deletes the saved settings and their secrets in
+the keychain.
 
 Each demo is a scenario in `scenarios/`. The `smoke` scenario runs an idle
 agent and the checks. It calls GitHub, so it needs a GitHub token. With a
@@ -62,6 +99,32 @@ acts as them. With a personal access token, every user's sandbox acts as
 the token's owner. With an OpenRouter API key, `sandbox check` also has the
 agent fetch the key's details from OpenRouter. That call does not run a
 model.
+
+## More than one agent
+
+Setup asks who the agent acts as, usually you. Every demo has an agent for
+that person. To give someone else an agent in one demo, list them under
+`agents.demos` in the settings file, by the demo's name:
+
+    agents:
+        default: you@example.com
+        demos:
+            pi: [grace@example.com]
+
+Each person gets their own sandbox and pod, named for their user ID, and
+their agent acts as them. A credential that each person signs in for, such
+as GitHub through a provider in the zone, is theirs alone. Every agent
+shares a key you type, such as an OpenRouter or Linear key.
+
+Setup asks a demo's question that differs per person, such as the Slack
+demo's member ID, once for each person with an agent in that demo. The settings
+keep its answers under `demo.people`, by email, for every demo.
+
+`sandbox up` and `sandbox run` bring up the agents of the demo you run, and
+delete the sandbox of anyone without an agent in it. zone-setup has already
+turned off that person's access rules. `sandbox shell`, `sandbox logs` and
+`sandbox check` act on the agent of `KEYCARD_LOCAL_USER_EMAIL`, which setup
+sets to the person the agent acts as.
 
 `up` runs the steps in order. The tunnel and the mirror run in the
 background and log to `local/out/tunnel.log` and `local/out/mirror.log`.
@@ -129,9 +192,9 @@ The input kinds:
 
 | Kind | What `sandbox init` asks |
 |---|---|
-| `text` | `prompt`, with `default` filled in. The answer goes in `local/answers.yaml`. |
-| `secret` | `prompt`. The answer goes in `local/out/secrets/<id>`, and the resources that name the input read it from there. With `confirm`, `init` first asks that yes or no question, and a no leaves out those resources. |
-| `github` | a GitHub provider in the zone, or a personal access token in `local/out/secrets/github-token` |
+| `text` | `prompt`, with `default` filled in. The settings keep the answer under `demo.answers`. With `per_user: true`, `init` asks it once for each person with an agent, and `{user}` in the prompt is the person's email. |
+| `secret` | `prompt`. The answer is the secret `<id>`, which the keychain keeps once you save the settings, and the resources that name the input get it from there. With `confirm`, `init` first asks that yes or no question, and a no leaves out those resources. |
+| `github` | a GitHub provider in the zone, or a personal access token, kept as the secret `github-token` |
 
 A resource's identifier must equal the canonical `url` of a credentialed
 endpoint. A secret never goes in the agent's environment. The proxy adds it
@@ -154,8 +217,10 @@ The image must keep `sh` and `curl` for the checks. Without a Dockerfile, the ag
 sandbox-base.
 
 `sandbox run` writes the scenario's endpoints and agent to
-`local/out/scenario.values.yaml`, and passes it to both charts after the
-other values files. The sandbox controller does not change a pod that
+`local/out/scenario.values.yaml` for the install chart, and to
+`local/out/agents/<user ID>/scenario.values.yaml` for each person's
+sandbox, with that person's answers. It passes each after the other values
+files. The sandbox controller does not change a pod that
 exists. When the sandbox's template changes, such as after you choose
 another demo or change a file in the scenario's directory, `run` deletes the
 pod and the controller creates it again.
@@ -203,7 +268,8 @@ Before `sandbox init`, create a Slack app for your workspace:
 1. Add the bot token scopes `im:write`, `im:history` and `chat:write`.
 2. In App Home, allow users to send messages from the Messages tab.
 3. Install the app, and copy the bot token, which starts with `xoxb-`.
-4. Copy your member ID from your Slack profile.
+4. Copy your member ID: in Slack, open your profile, click the ⋮ button
+   and choose Copy member ID.
 
 `sandbox init` also asks for the GitHub token and a Linear personal API
 key, which you create in Linear's security settings. The proxy sends the
@@ -213,15 +279,16 @@ expects ([Linear API](https://linear.app/developers/graphql)).
 ## Using an existing cluster
 
 To run the sandbox in an existing cluster, such as EKS, choose its
-kubeconfig context in `sandbox init`. `init` saves the context in
-`KEYCARD_LOCAL_KUBE_CONTEXT`. The cluster must:
+kubeconfig context in `sandbox init`. `init` keeps it as `kube_context`.
+The cluster must:
 
 - Publish its ServiceAccount issuer on the internet, as EKS does. `init`
   reads the issuer from the cluster and shows it.
-- Pull images from `ghcr.io/keycardai`. With `KEYCARD_LOCAL_IMAGE_TAG` set,
-  the cluster pulls the images at that tag instead of the ones the charts
-  pin. Nothing publishes the images of scenarios with a Dockerfile, so
-  `run` refuses those scenarios on an existing cluster.
+- Pull images from `ghcr.io/keycardai`. The images are public, so the
+  cluster does not need a pull secret. With `KEYCARD_LOCAL_IMAGE_TAG` set, the
+  cluster pulls the images at that tag instead of the ones the charts pin.
+  Nothing publishes the images of scenarios with a Dockerfile, so `run`
+  refuses those scenarios on an existing cluster.
 - Enforce NetworkPolicy. `sandbox check` fails when the cluster does not.
   The sandbox steps do not change the cluster's network setup.
 - Allow the privileged Pod Security level in the sandbox namespace. The
@@ -305,13 +372,14 @@ the management API URL is not `https://api.keycard.ai`.
 
 | Step | What it does |
 |---|---|
-| `sandbox init` | asks for your Keycard service account, zone, user and cluster, and writes `local/local.env` and `zone-setup.yaml` |
-| `sandbox up` | runs `sandbox init` if the settings files are missing, then `tunnel`, `bootstrap`, `mirror`, `check-issuer` and `run`, in order, in one process |
+| `sandbox init` | asks for your Keycard service account, the zone, who the agent acts as and the cluster, and saves the settings if you agree |
+| `sandbox forget` | deletes the saved settings and the secrets setup put in the keychain |
+| `sandbox up` | runs `sandbox init` if there are no settings yet, then `tunnel`, `bootstrap`, `mirror`, `check-issuer` and `run`, in order, in one process |
 | `sandbox tunnel` | publishes the cluster's issuer on the internet through a Cloudflare tunnel |
 | `sandbox bootstrap` | creates the local k3d cluster with the issuer, or checks the one you have |
 | `sandbox mirror` | serves the cluster's issuer documents for the tunnel |
 | `sandbox check-issuer` | checks that a Keycard zone can verify the cluster's tokens |
-| `sandbox run` | for k3d, runs `sandbox bootstrap`, and imports the images when `KEYCARD_LOCAL_IMAGE_TAG` is set. Then it runs zone-setup and `sandbox install`, creates the user's sandbox, and runs `sandbox check` |
+| `sandbox run` | for k3d, runs `sandbox bootstrap`, and imports the images when `KEYCARD_LOCAL_IMAGE_TAG` is set. Then it runs zone-setup and `sandbox install`, creates the sandbox of each person with an agent in the demo, deletes the others' sandboxes, and runs `sandbox check` in each |
 | `sandbox check` | runs the checks against the running sandbox. To check that the cluster enforces NetworkPolicy, it starts a pod in the sandbox namespace that tries to connect to CoreDNS on a port the policy blocks. kubectl deletes the pod when it exits. The check changes nothing else in the cluster. |
 | `sandbox logs` | follows the log of the running sandbox's agent, until you press Ctrl-C or the agent exits |
 | `sandbox shell` | runs the scenario's `run.command` in the running sandbox's agent container, or `sh` when it has none, attached to your terminal |

@@ -1,6 +1,7 @@
 package zonesetup
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"fmt"
@@ -99,6 +100,13 @@ func Run(ctx context.Context, values *Values, secrets *Secrets, opts *Options) (
 	out.K8sSandbox.Namespace = values.Namespace
 	out.K8sSandbox.ProviderID = providerID
 	return out, nil
+}
+
+// ParseValuesWithIssuer parses a values file's content, as ReadValuesFile
+// does. A non-empty issuerURL replaces its issuer_url, and an error about
+// issuerURL names it as source.
+func ParseValuesWithIssuer(raw []byte, issuerURL, source string) (*Values, error) {
+	return parseValues(bytes.NewReader(raw), issuerURL, source)
 }
 
 // ReadValuesFile parses the values file at path. A non-empty issuerURL

@@ -46,6 +46,8 @@ func TestUpPrint(t *testing.T) {
 		// killed writes QuickIssuerFile without the lock, as a killed quick
 		// tunnel leaves it.
 		killed bool
+		// config is the settings file, when it is not the default.
+		config string
 		opts   sandbox.UpOptions
 		want   string
 	}{
@@ -63,22 +65,24 @@ func TestUpPrint(t *testing.T) {
 			want:     rest,
 		},
 		{
-			name: "settings file and run flags",
-			opts: sandbox.UpOptions{
-				EnvFile: "my.env",
-				Run:     sandbox.RunOptions{SkipZoneSetup: true, ReplaceActive: true},
-			},
-			want: "  go run ./cmd/sandbox --env my.env tunnel --listen 127.0.0.1:8480    # in a terminal of its own\n" +
-				"  go run ./cmd/sandbox --env my.env bootstrap\n" +
-				"  go run ./cmd/sandbox --env my.env mirror --listen 127.0.0.1:8480    # in another terminal\n" +
-				"  go run ./cmd/sandbox --env my.env check-issuer\n" +
-				"  go run ./cmd/sandbox --env my.env run --skip-zone-setup --replace-active-policy-set\n",
+			name:   "settings file and run flags",
+			config: "/work/my.yaml",
+			opts:   sandbox.UpOptions{Run: sandbox.RunOptions{SkipZoneSetup: true, ReplaceActive: true}},
+			want: "  go run ./cmd/sandbox --config /work/my.yaml tunnel --listen 127.0.0.1:8480" +
+				"    # in a terminal of its own\n" +
+				"  go run ./cmd/sandbox --config /work/my.yaml bootstrap\n" +
+				"  go run ./cmd/sandbox --config /work/my.yaml mirror --listen 127.0.0.1:8480    # in another terminal\n" +
+				"  go run ./cmd/sandbox --config /work/my.yaml check-issuer\n" +
+				"  go run ./cmd/sandbox --config /work/my.yaml run --skip-zone-setup --replace-active-policy-set\n",
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			local, calls := newLocal(t, tc.settings, "")
+			if tc.config != "" {
+				local.Store = sandbox.NewStore(tc.config, nil, nil)
+			}
 			switch {
 			case tc.running:
 				holdIssuerFile(t, local.QuickIssuerFile(), "https://quick-brown-fox.trycloudflare.com\n")
@@ -104,7 +108,8 @@ func TestUpPrint(t *testing.T) {
 
 // TestUpStops checks that Up stops at the failed step and prints the
 // commands from that step on, and the background steps before it.
-// IssuerWait is a minute, and only a failed discovery fetch may retry.
+// IssuerWait is a minute, and only a failed discovery fetch may retry. With
+// settings this session did not save, it says the commands do not see them.
 func TestUpStops(t *testing.T) {
 	t.Parallel()
 	const (
@@ -121,6 +126,8 @@ func TestUpStops(t *testing.T) {
 		tool     string
 		// holdPort listens on the mirror's address before Up starts.
 		holdPort bool
+		// unsaved gives Up settings this session did not save.
+		unsaved  bool
 		want     []error
 		wantText string
 		wantLeft string
@@ -132,6 +139,16 @@ func TestUpStops(t *testing.T) {
 			want:     []error{sandbox.ErrDocker},
 			wantText: "Is Docker running?",
 			wantLeft: cmd + "bootstrap\n" + rest,
+		},
+		{
+			name:     "settings not saved",
+			settings: sandbox.Settings{sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer},
+			tool:     clusterTool("FAIL", "", ""),
+			unsaved:  true,
+			want:     []error{sandbox.ErrDocker},
+			wantLeft: strings.ReplaceAll(cmd+"bootstrap\n"+rest, "/sandbox ", "/sandbox --config - ") +
+				"\nThe settings are not saved, so these commands do not see them. " +
+				"Run go run ./cmd/sandbox init, save the settings, and run these commands without --config -.\n",
 		},
 		{
 			name:     "named tunnel without an issuer",
@@ -168,6 +185,9 @@ esac
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			local, calls := newLocal(t, tc.settings, tc.tool)
+			if tc.unsaved {
+				local.Store = sandbox.NewStore(sandbox.NoConfig, &sandbox.Config{}, nil)
+			}
 			out := &bytes.Buffer{}
 			local.Out = out
 			addr := listen
@@ -381,7 +401,7 @@ func TestUpShell(t *testing.T) {
 			ask:       &choiceAsker{answers: []string{"checks", "shell"}},
 			wantCalls: []string{shellCall, curlCall, shellCall},
 			wantAsked: []string{question, question, question},
-			wantOut:   []string{"\n$ go run ./cmd/sandbox shell\nagent-cli ran\n"},
+			wantOut:   []string{"\n$ go run ./cmd/sandbox --config - shell\nagent-cli ran\n"},
 		},
 		{
 			name:      "command fails without a terminal",
@@ -469,7 +489,7 @@ func TestUpBackground(t *testing.T) {
 		{
 			name:      "agent exits",
 			wantCalls: []string{logs + "--tail=-1 " + userID + " -c agent\n"},
-			wantOut:   "\n$ go run ./cmd/sandbox logs\n",
+			wantOut:   "\n$ go run ./cmd/sandbox --config - logs\n",
 		},
 		{
 			name:    "log ends while the agent runs",
@@ -519,7 +539,7 @@ esac
 `+healthy().script())
 	linkCharts(t, local.Root)
 	addScenario(t, local.Root, agentName, strings.Replace(agentScenario, "run: {mode: checks}", run, 1), false)
-	writeFile(t, filepath.Join(local.Root, "local", "answers.yaml"), "repo: "+agentRepo+"\n")
+	withAnswers(local, map[string]string{repoID: agentRepo})
 	writeFile(t, filepath.Join(local.Root, "local", "out", "zone-setup.yaml"), zoneSetupOutput)
 	out := &bytes.Buffer{}
 	local.Out = out

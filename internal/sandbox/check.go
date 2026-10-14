@@ -92,6 +92,8 @@ var (
 // CheckTarget is the sandbox the checks run against.
 type CheckTarget struct {
 	Cluster, Namespace, Pod, UserID string
+	// GitHubLogin is the GitHub login the agent must show, or "" for any.
+	GitHubLogin string
 }
 
 // proxyRecord is the part of the proxy's JSON audit record the checks read.
@@ -187,7 +189,9 @@ func (l *Local) CheckTargetFor(cluster, namespace, pod, userID string) (CheckTar
 		if err != nil {
 			return target, err
 		}
-		target.UserID = cmp.Or(target.UserID, access.UserID)
+		if target.UserID == "" {
+			target.UserID, target.GitHubLogin = access.UserID, l.Settings[KeyGitHubLogin]
+		}
 		target.Namespace = cmp.Or(target.Namespace, out.K8sSandbox.Namespace)
 	}
 	target.Pod = cmp.Or(target.Pod, target.UserID)
@@ -247,7 +251,7 @@ func (l *Local) checkCredentialed(ctx context.Context, target CheckTarget, since
 	if json.Unmarshal([]byte(body), &user) != nil || user.Login == "" {
 		return false, name + " did not return a GitHub account"
 	}
-	if want := l.Settings[KeyGitHubLogin]; want != "" && user.Login != want {
+	if want := target.GitHubLogin; want != "" && user.Login != want {
 		return false, fmt.Sprintf("%s named %q, want %q", name, user.Login, want)
 	}
 	return true, fmt.Sprintf("%s named the GitHub account %q", name, user.Login)

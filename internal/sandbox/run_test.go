@@ -3,7 +3,9 @@ package sandbox_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
+	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
 const (
@@ -50,6 +53,18 @@ func pinnedImages() []string {
 		"ghcr.io/keycardai/sandbox-base:v0.2.1@sha256:555ef77f07de9e186e594aa3b0aa4805cfe7149ace065ca97d40fbc0e02c1cce",
 	}
 }
+
+// otherUserID is the user ID of otherEmail, and secondAgent the zone-setup
+// output for their sandbox, after zoneSetupOutput.
+const (
+	otherUserID = "user2xyz"
+	secondAgent = `- user_email: ` + otherEmail + `
+  user_id: ` + otherUserID + `
+  service_account: system:serviceaccount:agents:` + otherUserID + `
+  client_id: client-2
+  namespace: agents
+`
+)
 
 // fakeSandbox is what the fake tools answer for a running sandbox.
 type fakeSandbox struct {
@@ -286,15 +301,16 @@ func TestCheck(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			local, _ := newLocal(t, sandbox.Settings{sandbox.KeyGitHubLogin: tc.login}, tc.sandbox.script())
+			local, _ := newLocal(t, sandbox.Settings{}, tc.sandbox.script())
 			if tc.openRouter {
-				writeFile(t, filepath.Join(local.Root, "zone-setup.yaml"),
-					"resources:\n  - identifier: https://openrouter.ai/api/v1\n    secret_file: /k\n")
+				local.Store = sandbox.NewStore(sandbox.NoConfig, &sandbox.Config{Demo: sandbox.ConfigDemo{
+					Credentials: []sandbox.ConfigCredential{{Identifier: "https://openrouter.ai/api/v1", Secret: "k"}},
+				}}, nil)
 			}
 			out := &bytes.Buffer{}
 			local.Out = out
 			err := local.Check(t.Context(), sandbox.CheckTarget{
-				Cluster: cluster, Namespace: namespace, Pod: userID, UserID: userID,
+				Cluster: cluster, Namespace: namespace, Pod: userID, UserID: userID, GitHubLogin: tc.login,
 			})
 			checkErr(t, err, tc.want, tc.wantText)
 			for _, want := range tc.wantOut {
@@ -336,7 +352,7 @@ func TestRunSettings(t *testing.T) {
 			"https://zone.example.com/z",
 			"KEYCARD_LOCAL_ZONE_URL must be https://<zone host>",
 		},
-		{"no user", sandbox.KeyUserEmail, "", "KEYCARD_LOCAL_USER_EMAIL is empty. Set it"},
+		{"no user", sandbox.KeyUserEmail, "", "KEYCARD_LOCAL_USER_EMAIL is empty. Run go run"},
 		{
 			"zone on host is yes",
 			sandbox.KeyZoneOnHost,
@@ -459,27 +475,14 @@ func TestRun(t *testing.T) {
 		kube         = "kubectl KUBERC=off --context k3d-asp --namespace agents "
 		bootstrapped = dockerCall + listCall + discoveryCall + mintCalls
 		imported     = bootstrapped + inspects + importCall
+		// listSandboxes lists the users with a sandbox, to delete those
+		// no longer in the output.
+		listSandboxes = kube + "get sandbox -l app.kubernetes.io/name=keycard-sandbox-user -o " +
+			`jsonpath={range .items[*]}{.metadata.labels.keycard\.ai/user-id}{"\n"}{end}` + "\n"
+		deleteSandbox = kube + "delete sandbox,configmap,serviceaccount -l " +
+			"app.kubernetes.io/name=keycard-sandbox-user,keycard.ai/user-id="
 	)
-	tests := []struct {
-		name    string
-		tag     string
-		sandbox fakeSandbox
-		// noDocker makes docker a path that does not exist.
-		noDocker bool
-		output   string
-		// scenario adds agentScenario with a Dockerfile and runs it.
-		scenario bool
-		// tool runs before the fake sandbox.
-		tool     string
-		want     []error
-		wantText string
-		// wantCalls, wantOut and wantManifest are substrings of the calls,
-		// the output and local/out/sandbox.yaml.
-		wantCalls    []string
-		wantOut      []string
-		wantManifest []string
-		notCalls     []string
-	}{
+	tests := []runTest{
 		{
 			name:     "docker missing",
 			sandbox:  healthy(),
@@ -529,8 +532,10 @@ func TestRun(t *testing.T) {
 				"/local/out/install.values.yaml --values ", "/local/out/scenario.values.yaml --wait\n",
 				"kubectl KUBERC=off --context k3d-asp apply --namespace agents -f -\n" +
 					kube + "get pod " + userID + " --ignore-not-found -o jsonpath={.status.phase}\n" +
-					kube + "wait --for=create pod/" + userID + " --timeout=120s\n" +
+					listSandboxes + kube + "wait --for=create pod/" + userID + " --timeout=120s\n" +
 					kube + "wait --for=condition=Ready pod/" + userID + " --timeout=5s\n" +
+					"kubectl KUBERC=off --context k3d-asp --namespace kube-system rollout status " +
+					"deployment/coredns --timeout=300s\n" +
 					kube + "exec " + userID + " -c agent -- curl",
 			},
 			notCalls:     []string{"docker KUBERC= image", "image import", "docker KUBERC= build"},
@@ -582,7 +587,7 @@ esac
 			wantCalls: []string{"apply --namespace agents -f -\n" + kube + "get pod " + userID +
 				" --ignore-not-found -o jsonpath={.status.phase}\n" + kube + "get sandbox " + userID +
 				" --ignore-not-found -o jsonpath={.metadata.generation}\n" + kube + "delete pod " + userID +
-				" --wait=true\n" + kube + "wait --for=create pod/" + userID},
+				" --wait=true\n" + listSandboxes + kube + "wait --for=create pod/" + userID},
 			wantOut: []string{
 				"Deleted the pod " + userID + ", so the controller creates it again from the sandbox's template.\n",
 			},
@@ -607,45 +612,122 @@ esac
 *"get pod ` + userID + ` --ignore-not-found"*) echo Running; exit 0 ;;
 esac
 `,
-			notCalls: []string{"delete pod"},
+			notCalls: []string{"delete pod", "delete sandbox"},
+		},
+		{
+			// The fake answers for the second agent's pod as for the first.
+			name:      "two agents",
+			sandbox:   healthy(),
+			output:    zoneSetupOutput + secondAgent,
+			team:      true,
+			perPerson: map[string]string{userID: adaChat, otherUserID: graceChat},
+			// The other person's agent shows their own GitHub login.
+			login: "octocat",
+			tool: `case "$*" in
+*"get pod ` + otherUserID + ` -o jsonpath={.spec.serviceAccountName}") printf ` + otherUserID + `; exit 0 ;;
+*"exec ` + otherUserID + ` -c agent -- sh -c curl"*"` + "https://api.github.com/user" + `")
+	printf '{"login":"grace-gh"}\n__sandbox_status__:200'; exit 0 ;;
+*"get sandbox -l "*) printf '%s\n' ` + userID + ` ` + otherUserID + ` olduser; exit 0 ;;
+esac
+set -- "${@//` + otherUserID + `/` + userID + `}"
+`,
+			wantCalls: []string{
+				deleteSandbox + "olduser --ignore-not-found --wait=true\n",
+				kube + "wait --for=create pod/" + otherUserID,
+				kube + "exec " + otherUserID + " -c agent -- curl",
+			},
+			wantOut: []string{
+				"==> Creating the sandbox for " + otherEmail + " (user " + otherUserID + ")\n",
+				"Deleted the sandbox of user olduser, and its pod.\n",
+				"==> Running the end-to-end checks in " + otherEmail + "'s agent\n",
+			},
+			notCalls: []string{"user-id=" + userID, "user-id=" + otherUserID},
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			local, calls := newLocal(t, sandbox.Settings{
-				sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer,
-				sandbox.KeyZoneURL: zoneURL, sandbox.KeyUserEmail: email, sandbox.KeyImageTag: tc.tag,
-			}, tc.tool+tc.sandbox.script())
-			if tc.noDocker {
-				removeDocker(t, local)
-			}
-			out := &bytes.Buffer{}
-			local.Out = out
-			linkCharts(t, local.Root)
-			if tc.scenario {
-				addScenario(t, local.Root, agentName, agentScenario, true)
-				writeFile(t, filepath.Join(local.Root, "local", "answers.yaml"), "repo: octo/demo\n")
-				local.Settings[sandbox.KeyScenario] = agentName
-			}
-			if tc.output != "" {
-				writeFile(t, filepath.Join(local.Root, "local", "out", "zone-setup.yaml"), tc.output)
-			}
-			err := local.Run(t.Context(), sandbox.RunOptions{SkipZoneSetup: true})
-			checkErr(t, err, tc.want, tc.wantText)
-			got := readCalls(t, calls)
-			if tc.want != nil {
-				if want := strings.Join(tc.wantCalls, ""); got != want {
-					t.Fatalf("calls = %q, want %q", got, want)
-				}
-				return
-			}
-			checkCalls(t, got, tc.wantCalls, tc.notCalls)
-			checkRunWrote(t, local.Root, out.String())
-			checkContains(t, "output", out.String(), tc.wantOut)
-			manifest, _ := os.ReadFile(filepath.Join(local.Root, "local", "out", "sandbox.yaml"))
-			checkContains(t, "sandbox.yaml", string(manifest), tc.wantManifest)
+			checkRun(t, &tc)
 		})
+	}
+}
+
+// runTest is a case of TestRun.
+type runTest struct {
+	name    string
+	tag     string
+	sandbox fakeSandbox
+	// noDocker makes docker a path that does not exist.
+	noDocker bool
+	output   string
+	// scenario adds agentScenario with a Dockerfile and runs it.
+	scenario bool
+	// team runs teamScenario, whose chat input each person answers.
+	// perPerson holds the answer each user's values file must hold.
+	team      bool
+	perPerson map[string]string
+	// login is the GitHub login the default person's agent must show.
+	login string
+	// tool runs before the fake sandbox.
+	tool     string
+	want     []error
+	wantText string
+	// wantCalls, wantOut and wantManifest are substrings of the calls,
+	// the output and the sandbox.yaml of userID's agent.
+	wantCalls    []string
+	wantOut      []string
+	wantManifest []string
+	notCalls     []string
+}
+
+// checkRun runs tc on a new checkout and checks the calls, the output and
+// what Run wrote.
+func checkRun(t *testing.T, tc *runTest) {
+	t.Helper()
+	local, calls := newLocal(t, sandbox.Settings{
+		sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer,
+		sandbox.KeyZoneURL: zoneURL, sandbox.KeyUserEmail: email, sandbox.KeyImageTag: tc.tag,
+		sandbox.KeyGitHubLogin: tc.login,
+	}, tc.tool+tc.sandbox.script())
+	if tc.noDocker {
+		removeDocker(t, local)
+	}
+	out := &bytes.Buffer{}
+	local.Out = out
+	linkCharts(t, local.Root)
+	if tc.scenario {
+		addScenario(t, local.Root, agentName, agentScenario, true)
+		withAnswers(local, map[string]string{repoID: agentRepo})
+		local.Settings[sandbox.KeyScenario] = agentName
+	}
+	if tc.team {
+		addScenario(t, local.Root, teamName, teamScenario, false)
+		local.Store = sandbox.NewStore(sandbox.NoConfig, &sandbox.Config{Demo: sandbox.ConfigDemo{
+			Answers: map[string]string{repoID: agentRepo},
+			People:  map[string]map[string]string{email: {chatID: adaChat}, otherEmail: {chatID: graceChat}},
+		}}, nil)
+		local.Settings[sandbox.KeyScenario] = teamName
+	}
+	if tc.output != "" {
+		writeFile(t, filepath.Join(local.Root, "local", "out", "zone-setup.yaml"), tc.output)
+	}
+	err := local.Run(t.Context(), sandbox.RunOptions{SkipZoneSetup: true})
+	checkErr(t, err, tc.want, tc.wantText)
+	got := readCalls(t, calls)
+	if tc.want != nil {
+		if want := strings.Join(tc.wantCalls, ""); got != want {
+			t.Fatalf("calls = %q, want %q", got, want)
+		}
+		return
+	}
+	checkCalls(t, got, tc.wantCalls, tc.notCalls)
+	checkRunWrote(t, local.Root, out.String())
+	checkContains(t, "output", out.String(), tc.wantOut)
+	manifest, _ := os.ReadFile(filepath.Join(local.Root, "local", "out", "agents", userID, "sandbox.yaml"))
+	checkContains(t, "sandbox.yaml", string(manifest), tc.wantManifest)
+	for id, answer := range tc.perPerson {
+		values := readFile(t, filepath.Join(local.Root, "local", "out", "agents", id, "scenario.values.yaml"))
+		checkContains(t, id+"'s scenario.values.yaml", values, []string{answer})
 	}
 }
 
@@ -692,13 +774,17 @@ func checkRunWrote(t *testing.T, root, out string) {
 	t.Helper()
 	for _, line := range []string{
 		"Wrote local/out/install.values.yaml, local/out/sandbox.values.yaml and local/out/scenario.values.yaml.\n",
-		"Wrote the applied manifests to local/out/sandbox.yaml.\n",
+		"Wrote the applied manifests to local/out/agents/" + userID + "/sandbox.yaml.\n",
 	} {
 		if !strings.Contains(out, line) {
 			t.Errorf("output lacks %q", line)
 		}
 	}
-	for _, name := range []string{"install.values.yaml", "sandbox.values.yaml", "scenario.values.yaml", "sandbox.yaml"} {
+	agent := filepath.Join("agents", userID)
+	for _, name := range []string{
+		"install.values.yaml", "sandbox.values.yaml", "scenario.values.yaml",
+		filepath.Join(agent, "scenario.values.yaml"), filepath.Join(agent, "sandbox.yaml"),
+	} {
 		path := filepath.Join(root, "local", "out", name)
 		raw, err := os.ReadFile(path) //nolint:gosec // G304: the path is the test's own file.
 		if err != nil || len(raw) == 0 {
@@ -775,4 +861,80 @@ esac
 	err := local.Run(t.Context(), sandbox.RunOptions{SkipZoneSetup: true})
 	checkErr(t, err, []error{sandbox.ErrPod},
 		userID+" stopped (Failed) before it was ready. The agent's last log line: "+lastLine)
+}
+
+// TestRunSecrets reads each secret zone-setup needs from its environment
+// variable when that is set, and otherwise from the keychain. A secret in
+// neither, a keychain that refuses, or a zone URL from the environment that
+// is not the settings' zone stops Run before it calls Keycard. The other
+// rows get as far as signing in, which the test's API refuses.
+func TestRunSecrets(t *testing.T) {
+	t.Parallel()
+	const orEnv = "KEYCARD_SANDBOX_SECRET_OPENROUTER_API_KEY"
+	saved := map[string]string{managementName: goodSecret, openRouterSecret: orKey}
+	for _, tc := range []struct {
+		name     string
+		env      map[string]string
+		keychain map[string]string
+		refuse   string
+		want     []error
+		wantText string
+	}{
+		{name: "in the keychain", keychain: saved},
+		{
+			name: "in the environment", env: map[string]string{orEnv: orKey},
+			keychain: map[string]string{managementName: goodSecret},
+		},
+		{
+			// The keychain refuses the key, so Run passes only if it reads
+			// the environment first.
+			name: "environment over the keychain", env: map[string]string{orEnv: orKey},
+			keychain: saved, refuse: openRouterSecret,
+		},
+		{
+			name: "account in the environment", env: map[string]string{sandbox.EnvClientSecret: goodSecret},
+			keychain: map[string]string{openRouterSecret: orKey},
+		},
+		{
+			name: "in neither", keychain: map[string]string{managementName: goodSecret},
+			want: []error{sandbox.ErrZoneSetup, zonesetup.ErrMissingSecret}, wantText: "unset: " + orEnv,
+		},
+		{
+			name: "keychain refuses", keychain: saved, refuse: openRouterSecret,
+			want: []error{sandbox.ErrKeychain, errRefused},
+		},
+		{
+			name: "zone URL from the environment", env: map[string]string{sandbox.KeyZoneURL: "https://other.example.com"},
+			keychain: saved, want: []error{sandbox.ErrSettings},
+			wantText: "Unset it, or run go run ./cmd/sandbox --config - init",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			local, _ := newLocal(t, nil, healthy().script())
+			linkCharts(t, local.Root)
+			keychain := newTestKeychain()
+			maps.Copy(keychain.secrets, tc.keychain)
+			keychain.getRefuse = tc.refuse
+			local.Store = sandbox.NewStore(sandbox.NoConfig, &sandbox.Config{
+				Account: sandbox.ConfigAccount{APIURL: "https://127.0.0.1", ClientID: "sa-1", Secret: managementName},
+				Zone:    sandbox.ConfigZone{ID: zoneID, URL: zoneURL},
+				Agents:  sandbox.ConfigAgents{Default: email},
+				Demo: sandbox.ConfigDemo{Name: sandbox.DefaultScenario, Credentials: []sandbox.ConfigCredential{
+					{Identifier: "https://openrouter.ai/api/v1", Name: "OpenRouter", Secret: openRouterSecret},
+				}},
+				Cluster: sandbox.ConfigCluster{Name: cluster, Issuer: testIssuer},
+			}, keychain)
+			local.Getenv = func(key string) string { return tc.env[key] }
+			local.UseConfig()
+			err := local.Run(t.Context(), sandbox.RunOptions{})
+			if tc.want != nil {
+				checkErr(t, err, tc.want, tc.wantText)
+				return
+			}
+			if !errors.Is(err, sandbox.ErrZoneSetup) || !errors.Is(err, zonesetup.ErrAuth) {
+				t.Fatalf("err = %v, want zone-setup to get past its secrets and fail to sign in", err)
+			}
+		})
+	}
 }
