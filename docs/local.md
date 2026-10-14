@@ -172,7 +172,8 @@ OpenRouter API key, the repository and the model. The agent does not see
 either credential. The proxy adds the OpenRouter key to each model request
 and the GitHub token to each GitHub request, including `git push`.
 
-The image adds Node.js 24 to sandbox-base, and pi at the version
+The image adds Node.js 24 to sandbox-base, Debian's fd-find, ripgrep, jq,
+make, patch, unzip, tree and less, and pi at the version
 `scenarios/pi/package-lock.json` pins. To update pi, change its version in
 `scenarios/pi/package.json`, run `npm install --package-lock-only
 --ignore-scripts` in that directory, and check that each package in
