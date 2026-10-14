@@ -94,87 +94,53 @@ func checkErr(t *testing.T, err error, want []error, wantText string) {
 	}
 }
 
-func TestLoadSettings(t *testing.T) {
+// TestConfigSettings reads the settings from the config file, with the
+// environment over them. A missing file gives none, and a key the config
+// does not have is an error.
+func TestConfigSettings(t *testing.T) {
 	t.Parallel()
-	example, err := os.ReadFile("../../local/local.env.example")
-	if err != nil {
-		t.Fatal(err)
-	}
-	const refused = "line 1 is not KEY=value for a key local.env.example lists"
-
 	tests := []struct {
 		name string
-		// file is the settings file's content. noFile writes none.
-		file   string
-		noFile bool
-		// named passes the file's path. Otherwise it is local/local.env.
-		named    bool
+		// file is the config file's content. noFile writes none.
+		file     string
+		noFile   bool
 		env      map[string]string
 		want     sandbox.Settings
 		wantText string
 	}{
 		{
-			name: "comments and blank lines",
-			file: "# comment\n\n   # indented\nKEYCARD_LOCAL_CLUSTER=asp\n",
-			want: sandbox.Settings{sandbox.KeyCluster: cluster},
+			name: "cluster and demo",
+			file: "cluster:\n  name: asp\ndemo:\n  name: pi\n",
+			want: sandbox.Settings{sandbox.KeyCluster: cluster, sandbox.KeyScenario: "pi"},
 		},
-		{
-			name: "value taken literally",
-			file: "KEYCARD_LOCAL_CLUSTER=\"quoted\" a=b",
-			want: sandbox.Settings{sandbox.KeyCluster: `"quoted" a=b`},
-		},
-		{name: "unknown key", file: "cluster=other\n", wantText: refused},
-		{name: "command", file: "touch MARKER\n", wantText: refused},
-		{name: "key after a space", file: " KEYCARD_LOCAL_CLUSTER=asp\n", wantText: refused},
+		{name: "unknown key", file: "clusters:\n  name: asp\n", wantText: "field clusters not found"},
 		{
 			name: "environment beats file",
-			file: "KEYCARD_LOCAL_CLUSTER=from-file\n",
+			file: "cluster:\n  name: from-file\n",
 			env:  map[string]string{sandbox.KeyCluster: "from-env", "OTHER": "x"},
 			want: sandbox.Settings{sandbox.KeyCluster: "from-env"},
 		},
 		{
 			name: "empty environment value",
-			file: "KEYCARD_LOCAL_CLUSTER=from-file\n",
+			file: "cluster:\n  name: from-file\n",
 			env:  map[string]string{sandbox.KeyCluster: ""},
 			want: sandbox.Settings{sandbox.KeyCluster: "from-file"},
 		},
 		{
-			name: "first non-empty value for a repeated key",
-			file: "KEYCARD_LOCAL_CLUSTER=\nKEYCARD_LOCAL_CLUSTER=first\nKEYCARD_LOCAL_CLUSTER=last\n",
-			want: sandbox.Settings{sandbox.KeyCluster: "first"},
-		},
-		{
-			name:   "missing default file",
+			name:   "no file",
 			noFile: true,
 			env:    map[string]string{sandbox.KeyIssuer: "https://oidc.example.com"},
 			want:   sandbox.Settings{sandbox.KeyIssuer: "https://oidc.example.com"},
-		},
-		{name: "missing named file", noFile: true, named: true, wantText: "no such file"},
-		{
-			name: "example file",
-			file: string(example),
-			want: sandbox.Settings{
-				sandbox.KeyCluster: "keycard-sandbox-local", sandbox.KeyIssuer: "", sandbox.KeyTunnel: "",
-				sandbox.KeyZoneURL: "", sandbox.KeyZoneOnHost: "", sandbox.KeyZoneSetupValues: "zone-setup.yaml",
-				sandbox.KeyUserEmail: "", sandbox.KeyGitHubLogin: "", sandbox.KeyCAFile: "",
-				sandbox.KeyKubeContext: "", sandbox.KeyImageTag: "", sandbox.KeyClusterCIDRs: "",
-				sandbox.KeyScenario: "smoke",
-			},
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			root := t.TempDir()
-			path, named := filepath.Join(root, "local", "local.env"), ""
-			if tc.named {
-				path = filepath.Join(root, "settings.env")
-				named = path
-			}
+			path := filepath.Join(t.TempDir(), "keycard", "sandbox.yaml")
 			if !tc.noFile {
 				writeFile(t, path, tc.file)
 			}
-			got, err := sandbox.LoadSettings(root, named, func(key string) string { return tc.env[key] })
+			config, err := sandbox.LoadConfig(path)
 			if tc.wantText != "" {
 				checkErr(t, err, []error{sandbox.ErrSettings}, tc.wantText)
 				return
@@ -182,10 +148,47 @@ func TestLoadSettings(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			got := sandbox.SettingsFrom(config, func(key string) string { return tc.env[key] })
+			maps.DeleteFunc(got, func(_, value string) bool { return value == "" })
 			if !maps.Equal(got, tc.want) {
 				t.Fatalf("settings = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestConfigExample reads sandbox.example.yaml, which documents every key.
+func TestConfigExample(t *testing.T) {
+	t.Parallel()
+	config, err := sandbox.LoadConfig("../../sandbox.example.yaml")
+	if err != nil || config == nil {
+		t.Fatalf("LoadConfig = %+v, %v", config, err)
+	}
+	if config.Cluster.Name != "keycard-sandbox-local" || config.Demo.Name != sandbox.DefaultScenario {
+		t.Errorf("config = %+v, want the defaults", config)
+	}
+}
+
+// TestDefaultConfigPath keeps the settings under XDG_CONFIG_HOME when it is
+// set, and under ~/.config otherwise, on every system.
+func TestDefaultConfigPath(t *testing.T) {
+	t.Parallel()
+	path, err := sandbox.DefaultConfigPath(func(key string) string {
+		return map[string]string{"XDG_CONFIG_HOME": "/xdg"}[key]
+	})
+	if err != nil || path != "/xdg/keycard/sandbox.yaml" {
+		t.Errorf("with XDG_CONFIG_HOME: %q, %v; want /xdg/keycard/sandbox.yaml", path, err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	path, err = sandbox.DefaultConfigPath(func(string) string { return "" })
+	if want := filepath.Join(home, ".config", "keycard", "sandbox.yaml"); err != nil || path != want {
+		t.Errorf("default: %q, %v; want %q", path, err, want)
+	}
+	if got := sandbox.HomeRelative(path); got != "~/.config/keycard/sandbox.yaml" {
+		t.Errorf("HomeRelative = %q", got)
 	}
 }
 
@@ -382,15 +385,17 @@ func checkQuickCall(t *testing.T, calls string) {
 }
 
 // waitForHeld returns the content of path once a running tunnel has it
-// locked. It fails the test after 10 seconds.
+// locked. It fails the test after 30 seconds.
 func waitForHeld(t *testing.T, path string) string {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+	// The whole package's tests start fake tools at once, which can slow
+	// one down a lot, so the wait is long.
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
 		if body, held := heldFile(path); held {
 			return body
 		}
 	}
-	t.Fatalf("no tunnel held %s within 10 seconds", path)
+	t.Fatalf("no tunnel held %s within 30 seconds", path)
 	return ""
 }
 
@@ -436,7 +441,6 @@ func writeFile(t *testing.T, path, body string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	//nolint:gosec // G703: the path is under the test's own directory.
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

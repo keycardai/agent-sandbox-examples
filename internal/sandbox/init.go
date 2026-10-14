@@ -1,23 +1,21 @@
 package sandbox
 
 import (
-	"bufio"
-	"bytes"
 	"cmp"
 	"context"
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/keycardai/keycard-go"
-	yaml "go.yaml.in/yaml/v3"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/pinned"
 	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
@@ -26,10 +24,12 @@ import (
 const (
 	defaultManagementAPI = "https://api.keycard.ai"
 	defaultCluster       = "keycard-sandbox-local"
-	zoneSetupFile        = "zone-setup.yaml"
-	// githubTokenFile is the secret file of a GitHub personal access token.
-	githubTokenFile = "github-token"
-	// zonePoll and zoneWait bound the wait for a new zone to become ready.
+	// githubTokenSecret and managementSecret name the secrets of a GitHub
+	// personal access token and of the service account.
+	githubTokenSecret = "github-token"
+	managementSecret  = "management-client-secret"
+	// zonePoll and zoneWait bound the wait for a new zone. The policy
+	// engine caches a 404 for an unknown zone for about a minute.
 	zonePoll = 5 * time.Second
 	zoneWait = 2 * time.Minute
 	// Choice values that cannot match a zone ID, user email, provider
@@ -45,14 +45,27 @@ const (
 	issuerPublished = "published"
 )
 
+// EnvClientID and EnvClientSecret hold the organization service account.
+// When they are set, init does not ask for the account, and zone-setup uses
+// them instead of the account in the settings.
+const (
+	EnvClientID     = "KEYCARD_CLIENT_ID"
+	EnvClientSecret = "KEYCARD_CLIENT_SECRET"
+)
+
 // ErrAnswer reports a missing or refused answer.
 var ErrAnswer = errors.New("no answer")
 
-// InitResult holds the answers Init does not write to a file.
+// QuestionUser is the question Init asks to choose who the agent acts as.
+const QuestionUser = "Who does the agent act as? Every demo has an agent for this person."
+
+// InitResult holds the answers Init does not keep in the config.
 type InitResult struct {
 	// ReplaceActive reports whether the operator agreed to replace the
 	// zone's active policy set.
 	ReplaceActive bool
+	// Saved reports whether the config file holds the settings.
+	Saved bool
 }
 
 // wizard is the state of one Init.
@@ -62,107 +75,163 @@ type wizard struct {
 	prev  previous
 	env   Settings
 	roots *x509.CertPool
-	// out starts as the previous values file. Each chosen section replaces
-	// only the keys it asks about.
+	// out starts as the previous values. Each chosen section replaces only
+	// the keys it asks about.
 	out  zonesetup.Values
 	org  *zonesetup.Org
 	zone *zonesetup.Session
-	// answers holds the text input answers of every scenario, by input id.
-	answers map[string]string
+	// answers holds the answers to text inputs, of every scenario. Its
+	// Shared map is nil until the wizard reads the settings' answers.
+	answers scenarioAnswers
+	// demos holds, for each demo, the other people with an agent in it.
+	demos map[string][]string
 }
 
-// previous holds the values file from before Init. exists reports whether
-// the settings file or the values file exists. err is the values file's parse
-// error. When err is set, values is empty and exists is false.
+// previous holds the settings from before Init, as zone-setup's values,
+// and the people with an agent. exists reports whether there were any.
 type previous struct {
 	values zonesetup.Values
+	agents ConfigAgents
 	exists bool
-	err    error
+}
+
+// valuesFile is zone-setup's values file, as the config gives it. Its keys
+// are a subset of zonesetup.Values. A secret is named by the environment
+// variable secretEnv makes.
+type valuesFile struct {
+	ManagementAPIURL string `yaml:"management_api_url"`
+	ZoneID           string `yaml:"zone_id"`
+	ZoneURL          string `yaml:"zone_url"`
+	Account          struct {
+		ClientID        string `yaml:"client_id"`
+		ClientSecretEnv string `yaml:"client_secret_env,omitempty"`
+	} `yaml:"management_service_account"`
+	Users     []zonesetup.UserValues `yaml:"users"`
+	Resources []resourceValues       `yaml:"resources,omitempty"`
+}
+
+type resourceValues struct {
+	Identifier         string `yaml:"identifier"`
+	Name               string `yaml:"name"`
+	Prefix             bool   `yaml:"prefix"`
+	CredentialProvider string `yaml:"credential_provider,omitempty"`
+	SecretEnv          string `yaml:"secret_env,omitempty"`
 }
 
 // Init asks the operator for the settings and the scenario's inputs, and
-// writes the settings file, the zone-setup values file and
-// local/answers.yaml. Secrets the operator types go in 0600 files under
-// local/out/secrets, and the values file names them. Each question defaults
-// to the value in the existing files. Init keeps the keys it does not ask
-// about, such as namespace and policy_set.
+// keeps them in the store as the config, with the secrets the operator
+// types. It asks whether to save them: the config file then holds the
+// settings, and the keychain the secrets. Each question defaults to the
+// settings from before, if any.
 //
-// Init reads zones, users and providers from the management API. It writes
-// to Keycard only to create a zone, when the operator asks for one. It does
-// not change policies. It asks whether `sandbox run` may replace another active policy
+// Init reads zones, users and providers from the management API. Its only
+// write creates a zone, when the operator asks for one. It does not change
+// policies. It asks whether `sandbox run` may replace another active policy
 // set, and returns the answer.
 //
 // Init asks with l.Ask, and returns ErrNoTerminal when l.Ask is nil. It
-// writes the files after the last question, so an error before then leaves
-// them unchanged.
+// keeps the settings after the last question, so an error before then
+// leaves them unchanged.
 func (l *Local) Init(ctx context.Context) (InitResult, error) {
 	if l.Ask == nil {
-		return InitResult{}, fmt.Errorf("%w. Run %s init in a terminal", ErrNoTerminal, sandboxCommand)
+		return InitResult{Saved: l.Store.Saved()}, fmt.Errorf("%w. Run %s in a terminal", ErrNoTerminal,
+			l.Command("init"))
 	}
 	w := &wizard{l: l, ask: l.Ask, prev: l.previousValues(), env: Settings{}}
 	w.out = w.prev.values
+	w.demos = maps.Clone(w.prev.agents.Demos)
 	change, err := w.chooseChanges(ctx)
-	if err != nil || len(change) == 0 {
-		return InitResult{}, err
+	switch {
+	case err != nil:
+		return InitResult{Saved: l.Store.Saved()}, err
+	case len(change) == 0 && !w.missingAnswers():
+		_, _ = fmt.Fprintln(l.Out, "Kept your settings as they are.")
+		return InitResult{Saved: l.Store.Saved()}, nil
 	}
-	if err = w.runSections(ctx, change); err != nil {
+	result, err := w.run(ctx, change)
+	if err != nil || !result.Saved {
+		return result, err
+	}
+	next := l.Command("up")
+	if result.ReplaceActive {
+		next += " --" + zonesetup.ReplaceActiveFlag
+	}
+	_, _ = fmt.Fprintf(l.Out, "\nTo start the sandbox, run:\n\n  %s\n", next)
+	return result, nil
+}
+
+// run asks the sections in change, asks whether to replace the zone's
+// active policy set, and keeps the settings.
+func (w *wizard) run(ctx context.Context, change map[string]bool) (InitResult, error) {
+	if err := w.runSections(ctx, change); err != nil {
 		return InitResult{}, err
 	}
 	replace := false
 	if w.zone != nil {
+		var err error
 		if replace, err = w.askReplaceActive(ctx); err != nil {
 			return InitResult{}, err
 		}
 	}
-	if err = w.write(); err != nil {
+	save, err := w.askSave(ctx)
+	if err != nil {
 		return InitResult{}, err
 	}
-	next := sandboxCommand + " up"
-	if replace {
-		next += " --" + zonesetup.ReplaceActiveFlag
+	if err = w.write(save); err != nil {
+		return InitResult{}, err
 	}
-	_, _ = fmt.Fprintf(l.Out, "\nTo start the sandbox, run:\n\n  %s\n", next)
-	return InitResult{ReplaceActive: replace}, nil
+	return InitResult{ReplaceActive: replace, Saved: w.l.Store.Saved()}, nil
+}
+
+// QuestionSave is the question Init asks to save the settings.
+const QuestionSave = "Save these settings for next time?"
+
+// askSave asks whether to save the settings, when they are not saved yet.
+// Settings saved before stay saved, with the changes.
+func (w *wizard) askSave(ctx context.Context) (bool, error) {
+	store := w.l.Store
+	switch {
+	case !store.CanSave():
+		return false, nil
+	case store.Saved():
+		return true, nil
+	}
+	return w.confirm(ctx, QuestionSave+" Yes saves them in "+HomeRelative(store.Path())+", and the secrets you typed in "+
+		store.KeychainWhere()+". No keeps them until you quit.", true)
 }
 
 // The sections of the settings, in the order Init asks them.
 const (
-	sectionAccount   = "account"
-	sectionZone      = "zone"
-	sectionScenario  = "scenario"
-	sectionCluster   = "cluster"
+	SectionAccount   = "account"
+	SectionZone      = "zone"
+	SectionScenario  = "scenario"
+	SectionCluster   = "cluster"
 	changeEverything = "\x00everything"
 	changeNothing    = "\x00nothing"
 )
 
-// chooseChanges returns the sections to ask. On a first run, or when the
-// values file does not parse, that is every section. When the settings files
-// exist, it shows the current settings and asks what to change. If the answer
-// is nothing, it returns an empty map and Init does not write the files.
+// chooseChanges returns the sections to ask. On a first run that is every
+// section. When there are settings, it shows them and asks what to change.
+// If the answer is nothing, it returns an empty map. Init then keeps the
+// settings, and asks only the answers they lack.
 func (w *wizard) chooseChanges(ctx context.Context) (map[string]bool, error) {
-	all := map[string]bool{sectionAccount: true, sectionZone: true, sectionScenario: true, sectionCluster: true}
-	if w.prev.err != nil {
-		_, _ = fmt.Fprintf(w.l.Out, "%s does not parse: %v\nInit asks every question and replaces it.\n",
-			w.l.valuesName(), w.prev.err)
-	}
+	all := allSections()
 	if !w.prev.exists {
 		return all, nil
 	}
-	_, _ = fmt.Fprintf(w.l.Out, "Your current settings, from %s and %s:\n\n%s\n",
-		w.l.settingsName(), w.l.valuesName(), w.summary())
+	_, _ = fmt.Fprintf(w.l.Out, "Your current settings:\n\n%s\n", w.summary())
 	choice, err := w.choose(ctx, "What do you want to change?", []Option{
 		{Label: "Nothing. Keep these settings.", Value: changeNothing},
 		{Label: "Everything. Answer each question again, starting from these answers.", Value: changeEverything},
-		{Label: "The Keycard account", Value: sectionAccount},
-		{Label: "The zone and the user", Value: sectionZone},
-		{Label: "The demo, its credentials and its settings", Value: sectionScenario},
-		{Label: "The cluster and the issuer", Value: sectionCluster},
+		{Label: "The Keycard account", Value: SectionAccount},
+		{Label: "The zone, and who the agent acts as", Value: SectionZone},
+		{Label: "The demo, its credentials and its settings", Value: SectionScenario},
+		{Label: "The cluster, and how Keycard reaches it", Value: SectionCluster},
 	}, changeNothing)
 	switch {
 	case err != nil:
 		return nil, err
 	case choice == changeNothing:
-		_, _ = fmt.Fprintf(w.l.Out, "Kept %s and %s as they are.\n", w.l.settingsName(), w.l.valuesName())
 		return map[string]bool{}, nil
 	case choice == changeEverything:
 		return all, nil
@@ -170,57 +239,109 @@ func (w *wizard) chooseChanges(ctx context.Context) (map[string]bool, error) {
 	return map[string]bool{choice: true}, nil
 }
 
-// summary describes the current settings, one line per section.
-func (w *wizard) summary() string {
-	values := w.prev.values
-	user := "no user"
-	if len(values.Users) > 0 {
-		user = values.Users[0].Email
-	}
-	return fmt.Sprintf("  Keycard account          %s at %s\n"+
-		"  Zone and user            %s in %s\n"+
-		"  Demo and credentials     %s\n"+
-		"  Cluster and issuer       %s\n",
-		cmp.Or(values.ManagementServiceAccount.ClientID, "none"), cmp.Or(values.ManagementAPIURL, "none"),
-		user, cmp.Or(values.ZoneURL, values.ZoneID, "no zone"),
-		w.scenarioSummary(), w.clusterSummary())
+func allSections() map[string]bool {
+	return map[string]bool{SectionAccount: true, SectionZone: true, SectionScenario: true, SectionCluster: true}
 }
 
-// scenarioSummary names the scenario and where each resource's credential
-// comes from.
+// summary describes the current settings, one line per section, in plain
+// words.
+func (w *wizard) summary() string {
+	return fmt.Sprintf("  Keycard account          %s\n"+
+		"  Zone and user            %s\n"+
+		"  Demo and credentials     %s\n"+
+		"  Cluster                  %s\n",
+		w.accountSummary(), w.zoneSummary(), w.scenarioSummary(), w.clusterSummary())
+}
+
+// accountSummary names the Keycard API by its host, and the service
+// account setup signs in with. The account in the environment wins.
+func (w *wizard) accountSummary() string {
+	values := w.prev.values
+	account := "the service account " + values.ManagementServiceAccount.ClientID
+	switch {
+	case w.l.getenv(EnvClientID) != "":
+		account = "the service account from " + EnvClientID
+	case values.ManagementServiceAccount.ClientID == "":
+		return "Not set up yet"
+	}
+	return hostOf(cmp.Or(values.ManagementAPIURL, defaultManagementAPI)) + ", with " + account
+}
+
+// zoneSummary names who the agent acts as, and the zone by its host. The
+// settings keep no zone name.
+func (w *wizard) zoneSummary() string {
+	values := w.prev.values
+	person := cmp.Or(w.prev.agents.Default, "No one picked yet")
+	zone := cmp.Or(hostOf(values.ZoneURL), values.ZoneID)
+	if zone == "" {
+		return person + ", and no zone yet"
+	}
+	return person + ", in the zone at " + zone
+}
+
+// hostOf returns a URL's host, or the text as it is when it has none.
+func hostOf(raw string) string {
+	if parsed, err := url.Parse(raw); err == nil && parsed.Host != "" {
+		return parsed.Host
+	}
+	return raw
+}
+
+// scenarioSummary names the demo by its title, says where each of its
+// credentials comes from, and names the demo's other people with an agent.
 func (w *wizard) scenarioSummary() string {
+	name := w.l.demo()
+	demo := name
+	if scenario, err := LoadScenario(w.l.Root, name); err == nil {
+		demo = demoLabel(scenario)
+	}
 	credentials := make([]string, 0, len(w.prev.values.Resources))
 	for _, resource := range w.prev.values.Resources {
-		source := "secret file"
-		switch {
-		case resource.CredentialProvider != "":
-			source = "provider " + resource.CredentialProvider
-		case resource.SecretEnv != "":
-			source = "environment variable " + resource.SecretEnv
-		}
-		credentials = append(credentials, cmp.Or(resource.Name, resource.Identifier)+" ("+source+")")
+		credentials = append(credentials, resource.Name+": "+credentialSource(resource))
 	}
-	return cmp.Or(w.l.Settings[KeyScenario], DefaultScenario) + ": " +
-		cmp.Or(strings.Join(credentials, ", "), "no credentials")
+	summary := demo + ", with no credentials"
+	if len(credentials) > 0 {
+		summary = demo + ". " + strings.Join(credentials, ", ")
+	}
+	if others := w.prev.agents.Demos[name]; len(others) > 0 {
+		summary += ". Agents also for " + strings.Join(others, ", ")
+	}
+	return summary
 }
 
+// credentialSource says where a resource's credential comes from.
+func credentialSource(resource zonesetup.ResourceValues) string {
+	switch {
+	case resource.CredentialProvider != "":
+		return "each person signs in (provider " + resource.CredentialProvider + ")"
+	case secretName(resource.SecretEnv) != "":
+		return "your key"
+	case resource.SecretEnv != "":
+		return "from " + resource.SecretEnv
+	default:
+		return "none"
+	}
+}
+
+// clusterSummary says where the agent runs, and how Keycard reaches the
+// cluster.
 func (w *wizard) clusterSummary() string {
 	settings := w.l.Settings
-	k3d := "a local k3d cluster, " + cmp.Or(settings[KeyCluster], defaultCluster) + ", with "
+	local := "The local cluster " + cmp.Or(settings[KeyCluster], defaultCluster)
 	switch {
 	case settings[KeyKubeContext] != "":
-		return "the existing cluster in the kubeconfig context " + settings[KeyKubeContext]
+		return "Your existing cluster " + settings[KeyKubeContext]
 	case settings[KeyTunnel] != "":
-		return k3d + "the named tunnel " + settings[KeyTunnel] + " at " + settings[KeyIssuer]
+		return local + ", reached through your Cloudflare tunnel " + settings[KeyTunnel] + " at " + settings[KeyIssuer]
 	case settings[KeyIssuer] != "":
-		return k3d + "the issuer " + settings[KeyIssuer]
+		return local + ", reached at " + settings[KeyIssuer]
 	default:
-		return k3d + "a quick tunnel"
+		return local + ", reached through a Cloudflare quick tunnel"
 	}
 }
 
 // runSections asks the chosen sections and keeps the others from the
-// files.
+// settings.
 func (w *wizard) runSections(ctx context.Context, change map[string]bool) error {
 	if err := w.account(ctx, change); err != nil {
 		return err
@@ -229,12 +350,12 @@ func (w *wizard) runSections(ctx context.Context, change map[string]bool) error 
 		name      string
 		ask, keep func(context.Context) error
 	}{
-		{sectionZone, w.askZone, w.keepZone},
-		{sectionScenario, w.chooseScenario, w.keepScenario},
-		{sectionCluster, w.chooseCluster, w.keepCluster},
+		{SectionZone, w.askZone, w.keepZone},
+		{SectionScenario, w.chooseScenario, w.keepScenario},
+		{SectionCluster, w.chooseCluster, w.keepCluster},
 	} {
 		run := section.keep
-		if change[section.name] {
+		if change[section.name] || (section.name == SectionScenario && w.zoneChanged()) {
 			run = section.ask
 		}
 		if err := run(ctx); err != nil {
@@ -244,14 +365,26 @@ func (w *wizard) runSections(ctx context.Context, change map[string]bool) error 
 	return nil
 }
 
+// zoneChanged reports whether the operator chose another zone than the
+// settings name. The demo's credentials can name the old zone's
+// providers, so Init then asks the demo's questions again.
+func (w *wizard) zoneChanged() bool {
+	changed := w.out.ZoneID != w.prev.values.ZoneID || w.out.ZoneURL != strings.TrimRight(w.prev.values.ZoneURL, "/")
+	if changed {
+		_, _ = fmt.Fprintln(w.l.Out, "The zone changed. A demo's credentials can depend on the zone, "+
+			"so confirm them for the new one.")
+	}
+	return changed
+}
+
 // account asks for the Keycard account when that section is chosen. When
 // another chosen section needs Keycard, it signs in with the saved account.
-// Otherwise it keeps the account from the files.
+// Otherwise it keeps the account from the settings.
 func (w *wizard) account(ctx context.Context, change map[string]bool) error {
 	switch {
-	case change[sectionAccount]:
+	case change[SectionAccount]:
 		return w.login(ctx)
-	case change[sectionZone] || change[sectionScenario]:
+	case change[SectionZone] || change[SectionScenario]:
 		return w.signInAgain(ctx)
 	default:
 		w.keepAccount()
@@ -259,16 +392,29 @@ func (w *wizard) account(ctx context.Context, change map[string]bool) error {
 	}
 }
 
+// askZone asks for the zone and who the agent acts as. The demos' other
+// people with an agent are the old zone's users, so a new zone drops them.
 func (w *wizard) askZone(ctx context.Context) error {
 	if err := w.chooseZone(ctx); err != nil {
 		return err
 	}
+	if w.out.ZoneID != w.prev.values.ZoneID && len(w.demos) > 0 {
+		w.demos = nil
+		_, _ = fmt.Fprintln(w.l.Out, "Removed the demos' other agents, which were for the old zone's users.")
+	}
 	return w.chooseUser(ctx)
 }
 
-// keepAccount keeps the extra roots from local.env.
+// keepAccount keeps the extra roots from the settings.
 func (w *wizard) keepAccount() {
 	w.env[KeyCAFile] = w.l.Settings[KeyCAFile]
+}
+
+// envAccount reports whether the environment holds the whole account, so
+// there is nothing to ask again when Keycard refuses it.
+func (w *wizard) envAccount() bool {
+	secret, _ := w.l.envSecret()
+	return w.l.getenv(EnvClientID) != "" && secret != ""
 }
 
 // signInAgain signs in with the saved account. If there is no saved secret
@@ -276,30 +422,22 @@ func (w *wizard) keepAccount() {
 func (w *wizard) signInAgain(ctx context.Context) error {
 	w.keepAccount()
 	account := w.out.ManagementServiceAccount
-	secret := w.savedSecret(account)
+	envSecret, _ := w.l.envSecret()
+	clientID := cmp.Or(w.l.getenv(EnvClientID), account.ClientID)
+	secret := cmp.Or(envSecret, w.l.keptSecret(account.ClientSecretEnv))
 	roots, err := rootsFrom(w.env[KeyCAFile])
 	if err != nil || secret == "" || w.out.ManagementAPIURL == "" {
 		return w.login(ctx)
 	}
 	w.roots = roots
-	if w.org, err = zonesetup.Login(ctx, w.out.ManagementAPIURL, account.ClientID, secret, roots); err != nil {
+	if w.org, err = zonesetup.Login(ctx, w.out.ManagementAPIURL, clientID, secret, roots); err != nil {
 		_, _ = fmt.Fprintf(w.l.Out, "Signing in with the saved account failed: %v\n", err)
 		return w.login(ctx)
 	}
 	return nil
 }
 
-// savedSecret returns the service account secret from the file the values
-// file names. With no file, it reads the environment variable the values
-// file names, or KEYCARD_MANAGEMENT_CLIENT_SECRET.
-func (w *wizard) savedSecret(account zonesetup.ManagementServiceAccountValues) string {
-	if account.ClientSecretFile != "" {
-		return readSecret(account.ClientSecretFile)
-	}
-	return w.getenv(cmp.Or(account.ClientSecretEnv, zonesetup.DefaultManagementSecretEnv))
-}
-
-// keepZone keeps the zone and the user settings from local.env. After a
+// keepZone keeps the zone and the people from the settings. After a
 // sign-in, it also opens a session on the zone for the sections that follow.
 func (w *wizard) keepZone(ctx context.Context) error {
 	for _, key := range []string{KeyZoneURL, KeyZoneOnHost, KeyUserEmail} {
@@ -316,26 +454,25 @@ func (w *wizard) keepZone(ctx context.Context) error {
 	return nil
 }
 
-// keepScenario keeps the scenario from local.env. The resources stay as the
-// values file has them, and local/answers.yaml stays as it is.
-func (w *wizard) keepScenario(context.Context) error {
+// keepScenario keeps the demo, its resources and its answers from the
+// settings. It asks the demo's per-user inputs of anyone without an answer,
+// such as someone just given an agent.
+func (w *wizard) keepScenario(ctx context.Context) error {
 	w.env[KeyScenario] = w.l.Settings[KeyScenario]
-	return nil
+	w.answers = w.l.answers()
+	scenario, err := w.l.scenario()
+	if err != nil {
+		return fmt.Errorf("%w. Change the demo to fix it", err)
+	}
+	return w.askPerUserInputs(ctx, scenario, true)
 }
 
-// keepCluster keeps the cluster and the issuer settings from local.env.
+// keepCluster keeps the cluster and the issuer settings.
 func (w *wizard) keepCluster(context.Context) error {
 	for _, key := range []string{KeyIssuer, KeyTunnel, KeyKubeContext, KeyImageTag, KeyClusterCIDRs} {
 		w.env[key] = w.l.Settings[key]
 	}
 	return nil
-}
-
-func (w *wizard) getenv(key string) string {
-	if w.l.Getenv == nil {
-		return ""
-	}
-	return w.l.Getenv(key)
 }
 
 func (w *wizard) input(ctx context.Context, question, value string, check func(string) error) (string, error) {
@@ -371,12 +508,10 @@ func (w *wizard) confirm(ctx context.Context, question string, value bool) (bool
 }
 
 // login asks for the management API URL, the extra trusted roots if the API
-// is not production, and the service account, then signs in. It asks for the
-// account again while the token endpoint refuses it. Any other error stops
-// Init. A typed secret goes in a 0600 file once the sign-in succeeds.
+// is not production, and the service account, then signs in.
 func (w *wizard) login(ctx context.Context) error {
 	var err error
-	w.out.ManagementAPIURL, err = w.input(ctx, "Keycard management API URL",
+	w.out.ManagementAPIURL, err = w.input(ctx, "Keycard API URL",
 		cmp.Or(w.prev.values.ManagementAPIURL, defaultManagementAPI), checkHTTPS)
 	if err != nil {
 		return err
@@ -384,26 +519,35 @@ func (w *wizard) login(ctx context.Context) error {
 	if err = w.askRoots(ctx); err != nil {
 		return err
 	}
+	return w.signIn(ctx)
+}
+
+// signIn asks for the service account and signs in. It asks for the account
+// again while the token endpoint refuses it, unless the environment holds
+// the whole account. Any other error stops Init. A typed secret goes in the
+// store once the sign-in succeeds.
+func (w *wizard) signIn(ctx context.Context) error {
 	clientID := w.prev.values.ManagementServiceAccount.ClientID
-	useSaved := true
-	for {
+	for useSaved := true; ; useSaved = false {
 		account, secret, typed, err := w.askAccount(ctx, clientID, useSaved)
 		if err != nil {
 			return err
 		}
 		w.org, err = zonesetup.Login(ctx, w.out.ManagementAPIURL, account.ClientID, secret, w.roots)
-		if errors.Is(err, zonesetup.ErrRefused) {
+		refused := errors.Is(err, zonesetup.ErrRefused)
+		switch {
+		case refused && useSaved && w.envAccount():
+			_, key := w.l.envSecret()
+			return fmt.Errorf("signing in with %s and %s: %w", EnvClientID, key, err)
+		case refused:
 			_, _ = fmt.Fprintf(w.l.Out, "%v\nTry again.\n", err)
-			clientID, useSaved = account.ClientID, false
+			clientID = account.ClientID
 			continue
-		}
-		if err != nil {
+		case err != nil:
 			return fmt.Errorf("signing in: %w", err)
 		}
 		if typed {
-			if account.ClientSecretFile, err = w.l.writeSecret("management-client-secret", secret); err != nil {
-				return err
-			}
+			w.l.Store.setSecret(managementSecret, secret)
 		}
 		w.out.ManagementServiceAccount = account
 		return nil
@@ -417,8 +561,8 @@ func (w *wizard) askRoots(ctx context.Context) error {
 	caFile := w.l.Settings[KeyCAFile]
 	if w.out.ManagementAPIURL != defaultManagementAPI {
 		var err error
-		caFile, err = w.input(ctx, "PEM file of extra trusted roots, as an absolute path. "+
-			"Leave empty if this API's certificate comes from a public CA.",
+		caFile, err = w.input(ctx, "CA certificate file, if this Keycard API needs one. Leave it empty unless "+
+			"the API uses a private certificate, as localdev does. Give the full path to a PEM file.",
 			caFile, checkCAFile)
 		if err != nil {
 			return err
@@ -431,9 +575,10 @@ func (w *wizard) askRoots(ctx context.Context) error {
 }
 
 // askAccount asks for the service account and returns it, its secret, and
-// whether the operator typed the secret. When useSaved is true and the
-// environment variable or the file the values file names holds a secret, it
-// offers that secret.
+// whether the operator typed the secret. KEYCARD_CLIENT_ID gives the client
+// ID without asking. When useSaved is true, the secret comes from
+// KEYCARD_CLIENT_SECRET or KEYCARD_MANAGEMENT_CLIENT_SECRET, or the
+// operator can keep the saved one.
 func (w *wizard) askAccount(
 	ctx context.Context,
 	clientID string,
@@ -441,32 +586,29 @@ func (w *wizard) askAccount(
 ) (zonesetup.ManagementServiceAccountValues, string, bool, error) {
 	var account zonesetup.ManagementServiceAccountValues
 	saved := w.prev.values.ManagementServiceAccount
-	clientID, err := w.input(ctx, "Organization service account client ID", clientID, required)
-	if err != nil {
-		return account, "", false, err
+	if env := w.l.getenv(EnvClientID); env != "" {
+		_, _ = fmt.Fprintf(w.l.Out, "Using the client ID from %s.\n", EnvClientID)
+		clientID = env
+	} else {
+		var err error
+		if clientID, err = w.input(ctx, "Service account client ID", clientID, required); err != nil {
+			return account, "", false, err
+		}
 	}
 	account.ClientID = clientID
-	secret := ""
-	if useSaved {
-		secret = w.savedSecret(saved)
-	}
-	switch {
-	case secret != "" && saved.ClientSecretFile == "":
-		_, _ = fmt.Fprintf(w.l.Out, "Using the client secret from %s.\n",
-			cmp.Or(saved.ClientSecretEnv, zonesetup.DefaultManagementSecretEnv))
-		account.ClientSecretEnv = saved.ClientSecretEnv
+	if secret, key := w.l.envSecret(); useSaved && secret != "" {
+		_, _ = fmt.Fprintf(w.l.Out, "Using the client secret from %s.\n", key)
 		return account, secret, false, nil
-	case secret != "" && clientID == saved.ClientID:
-		keep, keepErr := w.confirm(ctx, "Keep the saved client secret?", true)
-		if keepErr != nil {
-			return account, "", false, keepErr
-		}
-		if keep {
-			account.ClientSecretFile = saved.ClientSecretFile
-			return account, secret, false, nil
+	}
+	if secret := w.l.keptSecret(saved.ClientSecretEnv); useSaved && secret != "" && clientID == saved.ClientID {
+		keep, err := w.confirm(ctx, "Keep the saved client secret?", true)
+		if err != nil || keep {
+			account.ClientSecretEnv = saved.ClientSecretEnv
+			return account, secret, false, err
 		}
 	}
-	secret, err = w.secret(ctx, "Service account client secret", required)
+	secret, err := w.secret(ctx, "Service account client secret", required)
+	account.ClientSecretEnv = secretEnv(managementSecret)
 	return account, secret, true, err
 }
 
@@ -519,16 +661,26 @@ func (w *wizard) askOnHost(ctx context.Context) error {
 }
 
 // zoneOptions returns an option per zone and one to create a zone. The
-// default is the zone the previous values file names, or else the first zone.
+// default is the zone the settings name, or else the first zone.
+// Each zone shows by its name, with its URL only when another zone has the
+// same name.
 func (w *wizard) zoneOptions(zones []keycard.Zone) ([]Option, string) {
 	options := make([]Option, 0, len(zones)+1)
 	value := newZone
 	if len(zones) > 0 {
 		value = zones[0].ID
 	}
+	named := map[string]int{}
+	for _, zone := range zones {
+		named[zone.Name]++
+	}
 	for _, zone := range zones {
 		issuer := zone.Protocols.Oauth2.Issuer
-		options = append(options, Option{Label: zone.Name + "  " + issuer, Value: zone.ID})
+		label := cmp.Or(zone.Name, issuer)
+		if named[zone.Name] > 1 {
+			label += "  " + issuer
+		}
+		options = append(options, Option{Label: label, Value: zone.ID})
 		if zone.ID == w.prev.values.ZoneID || (w.prev.values.ZoneURL != "" && issuer == w.prev.values.ZoneURL) {
 			value = zone.ID
 		}
@@ -550,76 +702,134 @@ func (w *wizard) createZone(ctx context.Context) (*keycard.Zone, error) {
 	return zone, nil
 }
 
-// chooseUser asks for the user the sandbox acts for. The management API
-// cannot create users, so chooseUser lists the users again until the operator
-// picks one.
+// chooseUser asks who the agent acts as: one of the zone's users. Every
+// demo has an agent for them, and the commands for one agent act on it. The
+// management API cannot create users, so chooseUser lists the zone's users
+// again until the operator picks one.
 func (w *wizard) chooseUser(ctx context.Context) error {
 	for {
 		users, err := w.zone.Users(ctx)
 		if err != nil {
 			return fmt.Errorf("listing the zone's users: %w", err)
 		}
-		options := make([]Option, 0, len(users)+1)
-		for _, user := range users {
-			options = append(options, Option{Label: user.Email, Value: user.Email})
-		}
-		options = append(options, Option{Label: "Not listed: check again", Value: checkAgain})
-		if len(users) == 0 {
-			_, _ = fmt.Fprintln(w.l.Out, "The zone has no users, and init cannot create one. "+
-				"Add the user in the Keycard console, or have them sign in to the zone. Then check again.")
-		}
-		value := cmp.Or(w.l.Settings[KeyUserEmail], checkAgain)
-		choice, err := w.choose(ctx, "Which user does the sandbox act for?", options, value)
+		choice, err := w.choose(ctx, QuestionUser, w.userOptions(users), userDefault(users, w.l.Settings[KeyUserEmail]))
 		if err != nil {
 			return err
 		}
 		if choice != checkAgain {
-			w.out.Users = []zonesetup.UserValues{{Email: choice}}
 			w.env[KeyUserEmail] = choice
 			return nil
 		}
 	}
 }
 
+// userOptions returns an option for each of the zone's users, and one to
+// list them again.
+func (w *wizard) userOptions(users []keycard.User) []Option {
+	options := make([]Option, 0, len(users)+1)
+	for _, user := range users {
+		options = append(options, Option{Label: user.Email, Value: user.Email})
+	}
+	if len(users) == 0 {
+		_, _ = fmt.Fprintln(w.l.Out, "The zone has no users, and init cannot create one. "+
+			"Add the user in the Keycard console, or have them sign in to the zone. Then check again.")
+	}
+	return append(options, Option{Label: "Not in the list? Pick this to check again", Value: checkAgain})
+}
+
+// userDefault is who the list starts at: the person picked before while
+// the zone still has them, else the first user, else the option to check
+// again.
+func userDefault(users []keycard.User, picked string) string {
+	switch {
+	case slices.ContainsFunc(users, func(user keycard.User) bool { return user.Email == picked }):
+		return picked
+	case len(users) > 0:
+		return users[0].Email
+	}
+	return checkAgain
+}
+
+// people returns who has an agent in the demo the wizard asks about.
+func (w *wizard) people() []string {
+	agents := ConfigAgents{Default: w.env[KeyUserEmail], Demos: w.demos}
+	return agents.people(w.demo())
+}
+
+// demo returns the name of the demo the wizard asks about.
+func (w *wizard) demo() string {
+	return cmp.Or(w.env[KeyScenario], w.l.demo())
+}
+
 // chooseScenario asks which scenario to run, then asks its inputs. It
 // replaces the resources any scenario lists, and keeps the other resources
-// in the values file.
+// in the settings.
 func (w *wizard) chooseScenario(ctx context.Context) error {
 	scenarios, err := Scenarios(w.l.Root)
 	if err != nil {
 		return err
 	}
-	options := make([]Option, 0, len(scenarios))
-	listed := map[string]bool{}
-	for _, scenario := range scenarios {
-		options = append(options, Option{Label: scenario.Title + " (" + scenario.Name + ")", Value: scenario.Name})
-		for _, resource := range scenario.Resources {
-			listed[resource.Identifier] = true
-		}
-	}
 	value := cmp.Or(w.l.Settings[KeyScenario], DefaultScenario)
 	if !slices.ContainsFunc(scenarios, func(s *Scenario) bool { return s.Name == value }) {
 		value = scenarios[0].Name
 	}
-	choice, err := w.choose(ctx, "Which demo?", options, value)
+	choice, err := w.choose(ctx, QuestionDemo, demoOptions(scenarios, value), value)
 	if err != nil {
 		return err
 	}
 	w.env[KeyScenario] = choice
-	if w.answers, err = w.l.answers(); err != nil {
-		return err
-	}
+	w.answers = w.l.answers()
 	w.out.Resources = nil
 	scenario := scenarios[slices.IndexFunc(scenarios, func(s *Scenario) bool { return s.Name == choice })]
 	if err = w.askInputs(ctx, scenario); err != nil {
 		return err
 	}
+	listed := listedResources(scenarios)
 	for _, resource := range w.prev.values.Resources {
 		if !listed[resource.Identifier] {
 			w.out.Resources = append(w.out.Resources, resource)
 		}
 	}
 	return nil
+}
+
+// listedResources returns the identifiers of the resources any of the
+// scenarios lists.
+func listedResources(scenarios []*Scenario) map[string]bool {
+	listed := map[string]bool{}
+	for _, scenario := range scenarios {
+		for _, resource := range scenario.Resources {
+			listed[resource.Identifier] = true
+		}
+	}
+	return listed
+}
+
+// demoOptions lists the demos with the default first, so that the list
+// starts at the top, and the rest by name.
+func demoOptions(scenarios []*Scenario, value string) []Option {
+	options := make([]Option, 0, len(scenarios))
+	for _, scenario := range scenarios {
+		option := Option{Label: demoLabel(scenario), Value: scenario.Name}
+		if scenario.Name == value {
+			options = append([]Option{option}, options...)
+			continue
+		}
+		options = append(options, option)
+	}
+	return options
+}
+
+// demoLabel names a demo in the list: its title, then its name in
+// brackets when the title does not say it.
+func demoLabel(scenario *Scenario) string {
+	words := strings.FieldsFunc(strings.ToLower(scenario.Title), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	if slices.Contains(words, scenario.Name) {
+		return scenario.Title
+	}
+	return scenario.Title + " (" + scenario.Name + ")"
 }
 
 // askInputs asks the scenario's inputs in order, and adds the scenario's
@@ -634,8 +844,13 @@ func (w *wizard) askInputs(ctx context.Context, scenario *Scenario) error {
 			credential, err = w.chooseGitHub(ctx, w.prevCredential(scenario, input.ID))
 		case inputSecret:
 			credential, err = w.askSecret(ctx, input, w.prevCredential(scenario, input.ID))
-		default:
-			w.answers[input.ID], err = w.input(ctx, input.Prompt, cmp.Or(w.answers[input.ID], input.Default), required)
+		case inputText:
+			if input.PerUser {
+				err = w.askPerUser(ctx, input, false)
+				break
+			}
+			w.answers.Shared[input.ID], err = w.input(ctx, input.Prompt, cmp.Or(w.answers.Shared[input.ID], input.Default),
+				required)
 		}
 		if err != nil {
 			return err
@@ -653,38 +868,88 @@ func (w *wizard) askInputs(ctx context.Context, scenario *Scenario) error {
 	return nil
 }
 
-// prevCredential returns the previous values file's resource for the first
-// of the scenario's resources whose credential is input id, or the zero
-// value.
+// askPerUserInputs asks the scenario's per-user inputs, as askPerUser does.
+func (w *wizard) askPerUserInputs(ctx context.Context, scenario *Scenario, missingOnly bool) error {
+	for _, input := range scenario.Inputs {
+		if !input.PerUser {
+			continue
+		}
+		if err := w.askPerUser(ctx, input, missingOnly); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// askPerUser asks a per-user input once for each person with an agent,
+// starting from their saved answer. With missingOnly, it asks only those
+// without one.
+func (w *wizard) askPerUser(ctx context.Context, input ScenarioInput, missingOnly bool) error {
+	for _, email := range w.people() {
+		saved := w.answers.Users[email][input.ID]
+		answer := saved
+		if !missingOnly || saved == "" {
+			var err error
+			prompt := strings.ReplaceAll(input.Prompt, userRef, email)
+			if answer, err = w.input(ctx, prompt, cmp.Or(saved, input.Default), required); err != nil {
+				return err
+			}
+		}
+		w.answers.set(email, input.ID, answer)
+	}
+	return nil
+}
+
+// missingAnswers reports whether a person with an agent in the settings'
+// demo has no answer, and no default, for one of its per-user inputs.
+func (w *wizard) missingAnswers() bool {
+	scenario, err := w.l.scenario()
+	if err != nil {
+		return false
+	}
+	answers := w.l.answers()
+	for _, input := range scenario.Inputs {
+		for _, email := range w.prev.agents.people(w.l.demo()) {
+			if input.PerUser && input.Default == "" && answers.Users[email][input.ID] == "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// prevCredential returns the settings' resource for the first of the
+// scenario's resources whose credential is input id, or the zero value.
 func (w *wizard) prevCredential(scenario *Scenario, id string) zonesetup.ResourceValues {
 	for _, resource := range scenario.Resources {
 		if resource.Credential != id {
 			continue
 		}
-		if prev := w.prevResource(resource.Identifier); prev != (zonesetup.ResourceValues{}) {
-			return prev
+		for _, prev := range w.prev.values.Resources {
+			if prev.Identifier == resource.Identifier {
+				return prev
+			}
 		}
 	}
 	return zonesetup.ResourceValues{}
 }
 
-// askSecret asks for a secret input and writes it to
-// local/out/secrets/<id>. It offers to keep the source prev reads the
-// secret from. For an input with a confirm question, a no returns an empty
-// credential.
+// askSecret asks for a secret input, and keeps it as the input's id. It
+// offers to keep where prev reads the secret from. For an input with a
+// confirm question, a no returns an empty credential.
 func (w *wizard) askSecret(
 	ctx context.Context,
 	input ScenarioInput,
 	prev zonesetup.ResourceValues,
 ) (zonesetup.ResourceValues, error) {
 	if input.Confirm != "" {
-		add, err := w.confirm(ctx, input.Confirm, prev.Static())
+		add, err := w.confirm(ctx, input.Confirm, prev.Static() || w.l.keptSecret(secretEnv(input.ID)) != "")
 		if err != nil || !add {
 			return zonesetup.ResourceValues{}, err
 		}
 	}
-	env, file, err := w.staticToken(ctx, prev, input.Prompt, input.ID)
-	return zonesetup.ResourceValues{SecretEnv: env, SecretFile: file}, err
+	env, err := w.staticToken(ctx, prev, input.Prompt, input.ID)
+	return zonesetup.ResourceValues{SecretEnv: env}, err
 }
 
 // chooseGitHub asks where the GitHub token comes from: a GitHub provider in
@@ -703,12 +968,19 @@ func (w *wizard) chooseGitHub(ctx context.Context, prev zonesetup.ResourceValues
 	case prev.Static():
 		value = gitHubToken
 	}
-	choice, err := w.choose(ctx, "How does the sandbox get a GitHub token?", options, value)
-	if err != nil || choice != gitHubToken {
-		return zonesetup.ResourceValues{CredentialProvider: choice}, err
+	// Without a GitHub provider, a token is the only way, so there is
+	// nothing to choose.
+	choice := gitHubToken
+	if len(options) > 1 {
+		if choice, err = w.choose(ctx, "How does the agent get into GitHub?", options, value); err != nil {
+			return zonesetup.ResourceValues{}, err
+		}
 	}
-	env, file, err := w.staticToken(ctx, prev, "GitHub personal access token", githubTokenFile)
-	return zonesetup.ResourceValues{SecretEnv: env, SecretFile: file}, err
+	if choice != gitHubToken {
+		return zonesetup.ResourceValues{CredentialProvider: choice}, nil
+	}
+	env, err := w.staticToken(ctx, prev, "GitHub personal access token", githubTokenSecret)
+	return zonesetup.ResourceValues{SecretEnv: env}, err
 }
 
 // gitHubOptions returns a choice for each GitHub provider in the zone, then
@@ -718,17 +990,18 @@ func (w *wizard) gitHubOptions(providers []keycard.Provider) []Option {
 	for _, provider := range providers {
 		if gitHubProvider(provider) {
 			options = append(options, Option{
-				Label: "GitHub provider " + provider.Name + " (" + provider.Identifier + "). Each user signs in to GitHub.",
+				Label: "Each person signs in with their own GitHub account (provider " + provider.Name + ")",
 				Value: provider.Identifier,
 			})
 		}
 	}
 	if len(options) == 0 {
-		_, _ = fmt.Fprintln(w.l.Out, "The zone has no GitHub provider. To give each user their own token, "+
-			"add one in the Keycard console and run init again.")
+		_, _ = fmt.Fprintln(w.l.Out, "The zone has no GitHub provider. So the agent uses a personal access "+
+			"token. To have each person sign in with their own GitHub account, add a GitHub provider in the "+
+			"Keycard console and run setup again.")
 	}
 	return append(options, Option{
-		Label: "A personal access token. Every user acts as the token's owner.",
+		Label: "One personal access token, shared by everyone",
 		Value: gitHubToken,
 	})
 }
@@ -745,45 +1018,36 @@ func gitHubProvider(provider keycard.Provider) bool {
 	return false
 }
 
-// staticToken returns the secret_env and secret_file of a static token. When
-// prev reads the token from an environment variable or a file that holds
-// one, it asks whether to keep that source. Otherwise, or when the answer is
-// no, it asks for the token and writes it to local/out/secrets/name.
+// staticToken returns the secret_env of a static token. When prev reads the
+// token from a variable of the operator's, or when this program keeps a
+// secret as name, as from another demo, it asks whether to keep that
+// source. Otherwise, or when the answer is no, it asks for the token and
+// keeps it as name.
 func (w *wizard) staticToken(
 	ctx context.Context,
 	prev zonesetup.ResourceValues,
 	question, name string,
-) (string, string, error) {
+) (string, error) {
+	source := cmp.Or(prev.SecretEnv, secretEnv(name))
 	keep := ""
 	switch {
-	case prev.SecretEnv != "":
-		keep = "Keep reading the " + question + " from " + prev.SecretEnv + "?"
-	case readSecret(prev.SecretFile) != "":
+	case secretName(source) == "":
+		keep = "Keep reading the " + question + " from " + source + "?"
+	case w.l.keptSecret(source) != "":
 		keep = "Keep the saved " + question + "?"
 	}
 	if keep != "" {
 		yes, err := w.confirm(ctx, keep, true)
 		if err != nil || yes {
-			return prev.SecretEnv, prev.SecretFile, err
+			return source, err
 		}
 	}
 	secret, err := w.secret(ctx, question, required)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	file, err := w.l.writeSecret(name, secret)
-	return "", file, err
-}
-
-// prevResource returns the resource the previous values file has for
-// identifier, or the zero value.
-func (w *wizard) prevResource(identifier string) zonesetup.ResourceValues {
-	for _, resource := range w.prev.values.Resources {
-		if resource.Identifier == identifier {
-			return resource
-		}
-	}
-	return zonesetup.ResourceValues{}
+	w.l.Store.setSecret(name, secret)
+	return secretEnv(name), nil
 }
 
 // chooseCluster asks whether to create a local k3d cluster or use an
@@ -793,23 +1057,46 @@ func (w *wizard) chooseCluster(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	options := []Option{{Label: "A new local k3d cluster", Value: newCluster}}
+	options := []Option{{Label: "On this machine, in a new local cluster", Value: newCluster}}
 	for _, name := range contexts {
-		options = append(options, Option{Label: "Existing cluster in kubeconfig context " + name, Value: name})
+		options = append(options, Option{Label: "In your existing cluster " + name, Value: name})
 	}
 	value := cmp.Or(w.l.Settings[KeyKubeContext], newCluster)
 	if !slices.Contains(contexts, value) {
 		value = newCluster
 	}
-	choice, err := w.choose(ctx, "Which cluster runs the sandbox?", options, value)
+	choice, err := w.choose(ctx, "Where does the agent run?", options, value)
 	if err != nil {
 		return err
 	}
 	w.env[KeyImageTag] = w.l.Settings[KeyImageTag]
 	if choice == newCluster {
+		if err = w.askClusterName(ctx); err != nil {
+			return err
+		}
 		return w.chooseIssuer(ctx)
 	}
 	return w.existingCluster(ctx, choice)
+}
+
+// QuestionClusterName is the question Init asks to name a new cluster.
+const QuestionClusterName = "What should the new cluster be called?"
+
+// askClusterName asks for the local cluster's name. A new name leaves the
+// cluster of the old one running, so it says how to delete that one.
+func (w *wizard) askClusterName(ctx context.Context) error {
+	before := cmp.Or(w.l.Settings[KeyCluster], defaultCluster)
+	name, err := w.input(ctx, QuestionClusterName+" Use lowercase letters, digits and dashes, at most 32.", before,
+		checkClusterName)
+	if err != nil {
+		return err
+	}
+	w.env[KeyCluster] = name
+	if exists, _ := w.l.clusterExists(ctx, before); name != before && exists {
+		_, _ = fmt.Fprintf(w.l.Out, "The cluster %s keeps running. To delete it, run k3d cluster delete %s.\n",
+			before, before)
+	}
+	return nil
 }
 
 // existingCluster reads the cluster's issuer and asks for the cluster's
@@ -826,8 +1113,8 @@ func (w *wizard) existingCluster(ctx context.Context, kubeContext string) error 
 		return fmt.Errorf("%w: the zone is on this machine or a private network, "+
 			"and an existing cluster cannot connect to it", ErrExisting)
 	}
-	ranges, err := w.input(ctx, "The cluster's pod and service ranges in CIDR form, comma-separated. "+
-		"For example: 10.0.0.0/16,172.20.0.0/16",
+	ranges, err := w.input(ctx, "Your cluster's pod and service IP ranges, comma-separated, such as "+
+		"10.0.0.0/16,172.20.0.0/16. The agent cannot reach anything in them.",
 		w.l.Settings[KeyClusterCIDRs], checkCIDRs)
 	if err != nil {
 		return err
@@ -858,30 +1145,33 @@ func (w *wizard) chooseIssuer(ctx context.Context) error {
 	case w.l.Settings[KeyIssuer] != "":
 		value = issuerPublished
 	}
-	choice, err := w.choose(ctx, "How does the zone reach the cluster's issuer?", []Option{
+	choice, err := w.choose(ctx, "How does Keycard reach the cluster? Keycard checks who the agent is with keys "+
+		"the cluster publishes, so they need a public URL.", []Option{
 		{
-			Label: "Cloudflare quick tunnel. No account needed. Each start gets a new URL and needs a new cluster.",
+			Label: "A Cloudflare quick tunnel. No account needed, but each start gets a new URL and a new cluster.",
 			Value: issuerQuick,
 		},
-		{Label: "Named Cloudflare tunnel in your account, with a fixed URL", Value: issuerNamed},
-		{Label: "Your own HTTPS URL that forwards to sandbox mirror", Value: issuerPublished},
+		{Label: "A named Cloudflare tunnel in your account, with a fixed URL", Value: issuerNamed},
+		{Label: "Your own HTTPS URL that forwards to the sandbox mirror", Value: issuerPublished},
 	}, value)
 	if err != nil {
 		return err
 	}
 	switch choice {
 	case issuerNamed:
-		name, err := w.input(ctx, "Tunnel name", w.l.Settings[KeyTunnel], checkTunnelName)
+		name, err := w.input(ctx, "Name of your Cloudflare tunnel", w.l.Settings[KeyTunnel], checkTunnelName)
 		if err != nil {
 			return err
 		}
-		issuerURL, err := w.input(ctx, "Tunnel hostname, as https://<hostname>", w.l.Settings[KeyIssuer], checkHostIssuer)
+		issuerURL, err := w.input(ctx, "Your tunnel's URL, such as https://sandbox.example.com", w.l.Settings[KeyIssuer],
+			checkHostIssuer)
 		if err != nil {
 			return err
 		}
 		w.env[KeyTunnel], w.env[KeyIssuer] = name, issuerURL
 	case issuerPublished:
-		issuerURL, err := w.input(ctx, "Issuer URL", w.l.Settings[KeyIssuer], checkClusterIssuer)
+		issuerURL, err := w.input(ctx, "Your HTTPS URL, such as https://sandbox.example.com. It must forward to the "+
+			"sandbox mirror.", w.l.Settings[KeyIssuer], checkClusterIssuer)
 		if err != nil {
 			return err
 		}
@@ -907,127 +1197,51 @@ func (w *wizard) askReplaceActive(ctx context.Context) (bool, error) {
 	if len(others) == 0 {
 		return false, nil
 	}
-	return w.confirm(ctx, fmt.Sprintf("The zone's active policy set is %s. Only one set can be active. "+
-		"Replace it with %q when the sandbox runs? Its policies will stop applying to everyone in the zone.",
-		strings.Join(others, ", "), ours), false)
+	current := strings.Join(others, ", ")
+	return w.confirm(ctx, fmt.Sprintf("Turn on the sandbox's access rules in this zone? The zone uses the policy set "+
+		"%s now. A zone uses one set at a time, so %s stops applying to everyone in the zone.", current, current),
+		false)
 }
 
-// write writes the values file, local/answers.yaml when there are answers,
-// and the settings file. It refuses a setting with a line break, which would
-// add a line to local.env.
-func (w *wizard) write() error {
-	w.env[KeyCluster] = cmp.Or(w.l.Settings[KeyCluster], defaultCluster)
-	w.env[KeyZoneSetupValues] = w.l.valuesName()
+// write keeps what setup asked in the store as the config, and saves it
+// when save is set.
+func (w *wizard) write(save bool) error {
+	agents := ConfigAgents{Default: w.env[KeyUserEmail], Demos: w.demos}
+	w.answers.keepUsers(agents.everyone())
+	w.env[KeyCluster] = cmp.Or(w.env[KeyCluster], w.l.Settings[KeyCluster], defaultCluster)
 	w.env[KeyGitHubLogin] = w.l.Settings[KeyGitHubLogin]
-	for _, key := range settingKeys() {
-		if strings.ContainsAny(w.env[key], "\r\n") {
-			return fmt.Errorf("%w: %s has a line break: %q", ErrSettings, key, w.env[key])
-		}
+	store := w.l.Store
+	if store == nil {
+		return fmt.Errorf("%w: there is no store for the settings", ErrSettings)
 	}
-	raw, err := yaml.Marshal(w.out)
-	if err != nil {
-		return fmt.Errorf("encoding the values: %w", err)
+	store.setConfig(configFrom(w.env, &w.out, w.answers, w.demos))
+	if !save {
+		_, _ = fmt.Fprintln(w.l.Out, "Kept the settings for this session. Nothing was saved.")
+		return nil
 	}
-	header := "# Written by `go run ./cmd/sandbox init`. zone-setup.example.yaml documents\n" +
-		"# each key. `sandbox run` sets issuer_url to the cluster's issuer.\n"
-	if err = os.WriteFile(w.l.valuesPath(), append([]byte(header), raw...), fileMode); err != nil {
-		return fmt.Errorf("writing %s: %w", w.l.valuesPath(), err)
+	if err := store.save(); err != nil {
+		return err
 	}
-	_, _ = fmt.Fprintf(w.l.Out, "Wrote %s.\n", w.l.valuesName())
-	if len(w.answers) > 0 {
-		if raw, err = yaml.Marshal(w.answers); err != nil {
-			return fmt.Errorf("encoding the answers: %w", err)
-		}
-		header = "# Written by `go run ./cmd/sandbox init`. The answers to the scenarios'\n" +
-			"# questions that are not secrets, by input id.\n"
-		path := filepath.Join(w.l.Root, answersFile)
-		if err = os.WriteFile(path, append([]byte(header), raw...), fileMode); err != nil {
-			return fmt.Errorf("writing %s: %w", path, err)
-		}
-		_, _ = fmt.Fprintf(w.l.Out, "Wrote %s.\n", answersFile)
-	}
-	return w.l.writeSettings(w.env)
-}
-
-// Initialized reports whether the settings file and the values file both
-// exist.
-func (l *Local) Initialized() bool {
-	for _, path := range []string{l.settingsPath(), l.valuesPath()} {
-		if _, err := os.Stat(path); err != nil {
-			return false
-		}
-	}
-	return true
-}
-
-// writeSettings writes the settings file from local/local.env.example, with
-// each key set to its value in settings.
-func (l *Local) writeSettings(settings Settings) error {
-	example, err := os.ReadFile(filepath.Join(l.Root, "local", "local.env.example"))
-	if err != nil {
-		return fmt.Errorf("reading local.env.example: %w", err)
-	}
-	var out bytes.Buffer
-	lines := bufio.NewScanner(bytes.NewReader(example))
-	for lines.Scan() {
-		line := lines.Text()
-		if key, _, ok := strings.Cut(line, "="); ok && slices.Contains(settingKeys(), key) {
-			line = key + "=" + settings[key]
-		}
-		out.WriteString(line + "\n")
-	}
-	if err = os.WriteFile(l.settingsPath(), out.Bytes(), fileMode); err != nil {
-		return fmt.Errorf("writing %s: %w", l.settingsPath(), err)
-	}
-	_, _ = fmt.Fprintf(l.Out, "Wrote %s.\n", l.settingsName())
+	_, _ = fmt.Fprintf(w.l.Out, "Saved the settings in %s, and the secrets in %s.\n", HomeRelative(store.Path()),
+		store.KeychainWhere())
 	return nil
 }
 
-// writeSecret writes secret to local/out/secrets/name, which only the owner
-// can read, and returns its path.
-func (l *Local) writeSecret(name, secret string) (string, error) {
-	dir := filepath.Join(l.outDir(), "secrets")
-	if err := os.MkdirAll(dir, dirMode); err != nil {
-		return "", fmt.Errorf("creating %s: %w", dir, err)
-	}
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(secret+"\n"), fileMode); err != nil {
-		return "", fmt.Errorf("writing %s: %w", path, err)
-	}
-	_, _ = fmt.Fprintf(l.Out, "Wrote local/out/secrets/%s, readable only by you.\n", name)
-	return path, nil
+// Initialized reports whether the steps have their settings: the store has
+// a config, or KEYCARD_LOCAL_ZONE_SETUP_VALUES names a zone-setup values
+// file.
+func (l *Local) Initialized() bool {
+	return l.config() != nil || l.Settings[KeyZoneSetupValues] != ""
 }
 
-// settingsName returns the settings file's path as the operator named it, or
-// local/local.env.
-func (l *Local) settingsName() string {
-	return cmp.Or(l.SettingsFile, filepath.Join("local", "local.env"))
-}
-
-func (l *Local) settingsPath() string {
-	return cmp.Or(l.SettingsFile, filepath.Join(l.Root, "local", "local.env"))
-}
-
-// valuesName returns the values file's path relative to the repository root.
-func (l *Local) valuesName() string {
-	return cmp.Or(l.Settings[KeyZoneSetupValues], zoneSetupFile)
-}
-
-func (l *Local) valuesPath() string {
-	return filepath.Join(l.Root, l.valuesName())
-}
-
-// previousValues reads the values file without the ParseValues checks.
+// previousValues returns the config as zone-setup's values, for the
+// defaults of setup's questions.
 func (l *Local) previousValues() previous {
-	_, envErr := os.Stat(l.settingsPath())
-	raw, err := os.ReadFile(l.valuesPath())
-	prev := previous{exists: envErr == nil || err == nil}
-	if err == nil {
-		if prev.err = yaml.Unmarshal(raw, &prev.values); prev.err != nil {
-			prev = previous{err: prev.err}
-		}
+	config := l.config()
+	if config == nil {
+		return previous{}
 	}
-	return prev
+	return previous{values: config.zoneSetupValues(l.demo()), agents: config.Agents, exists: true}
 }
 
 // zoneAddresses reports whether every address of the zone's host is a
@@ -1064,20 +1278,6 @@ func rootsFrom(caFile string) (*x509.CertPool, error) {
 	return roots, nil
 }
 
-// readSecret returns the trimmed content of path, or "" when it is empty,
-// relative or cannot be read. zone-setup refuses a relative secret file, so
-// Init asks for that secret again.
-func readSecret(path string) string {
-	if !filepath.IsAbs(path) {
-		return ""
-	}
-	raw, err := os.ReadFile(path) //nolint:gosec // G304: the path is one an earlier Init wrote.
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(raw))
-}
-
 func required(answer string) error {
 	if strings.TrimSpace(answer) == "" {
 		return fmt.Errorf("%w: required", ErrAnswer)
@@ -1096,6 +1296,14 @@ func checkHTTPS(answer string) error {
 func checkCAFile(answer string) error {
 	_, err := (&Local{Settings: Settings{KeyCAFile: answer}}).caFile()
 	return err
+}
+
+func checkClusterName(answer string) error {
+	if len(answer) > maxClusterNameBytes || !clusterName.MatchString(answer) {
+		return fmt.Errorf("%w: use at most 32 lowercase letters, digits and dashes, "+
+			"starting and ending with a letter or digit", ErrAnswer)
+	}
+	return nil
 }
 
 func checkTunnelName(answer string) error {

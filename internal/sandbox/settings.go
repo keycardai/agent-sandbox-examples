@@ -3,8 +3,6 @@
 package sandbox
 
 import (
-	"bufio"
-	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -21,7 +19,8 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/pinned"
 )
 
-// The settings local.env can hold. local/local.env.example documents each one.
+// The settings. The config file holds them, and an environment variable
+// of the same name overrides each. docs/local.md documents each one.
 const (
 	KeyCluster          = "KEYCARD_LOCAL_CLUSTER"
 	KeyIssuer           = "KEYCARD_LOCAL_ISSUER"
@@ -79,63 +78,18 @@ func settingKeys() []string {
 	}
 }
 
-// Settings are the values of local.env, with the environment applied.
+// Settings are the config's settings, with the environment applied.
 type Settings map[string]string
-
-// LoadSettings reads the settings file at path, or root/local/local.env when
-// path is empty. It parses the file as data in the format local.env.example
-// describes, and does not run it. A missing default file gives empty
-// settings. A missing named file is an error. A non-empty value from getenv
-// overrides the file.
-func LoadSettings(root, path string, getenv func(string) string) (Settings, error) {
-	settings := Settings{}
-	file := cmp.Or(path, filepath.Join(root, "local", "local.env"))
-	raw, err := os.ReadFile(file) //nolint:gosec // G304: the path is the settings file the operator named.
-	switch {
-	case errors.Is(err, fs.ErrNotExist) && path == "":
-	case err != nil:
-		return nil, fmt.Errorf("%w: %w", ErrSettings, err)
-	default:
-		if err = settings.parse(file, raw); err != nil {
-			return nil, err
-		}
-	}
-	for _, key := range settingKeys() {
-		if value := getenv(key); value != "" {
-			settings[key] = value
-		}
-	}
-	return settings, nil
-}
-
-func (s Settings) parse(file string, raw []byte) error {
-	lines := bufio.NewScanner(bytes.NewReader(raw))
-	for lineNo := 1; lines.Scan(); lineNo++ {
-		line := lines.Text()
-		if trimmed := strings.TrimSpace(line); trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok || !slices.Contains(settingKeys(), key) {
-			return fmt.Errorf("%w: %s line %d is not KEY=value for a key local.env.example lists", ErrSettings, file, lineNo)
-		}
-		s[key] = cmp.Or(s[key], value)
-	}
-	if err := lines.Err(); err != nil {
-		return fmt.Errorf("%w: reading %s: %w", ErrSettings, file, err)
-	}
-	return nil
-}
 
 // Local is a checkout of this repository and the settings its steps read.
 type Local struct {
 	// Root is the repository root. The steps write under Root/local/out.
 	Root string
-	// Settings are the values of local.env, with the environment applied.
+	// Settings are the config's settings, with the environment applied.
 	Settings Settings
-	// SettingsFile is the settings file that Settings came from, and the
-	// file Init writes. If it is empty, the file is local/local.env.
-	SettingsFile string
+	// Store keeps what setup asked, for this session and, when the operator
+	// saves it, in the config file and the keychain. Copies share it.
+	Store *Store
 	// Tool returns a command that runs a tool mise.toml pins.
 	Tool func(ctx context.Context, name string, args ...string) (*exec.Cmd, error)
 	// Out receives progress lines and the output of long-running tools.
@@ -149,6 +103,16 @@ type Local struct {
 	// Getenv reads the environment for Init. If it is nil, Init does not
 	// read the environment.
 	Getenv func(string) string
+}
+
+// UseConfig sets the settings to the store's config, with the environment
+// over them.
+func (l *Local) UseConfig() {
+	getenv := l.Getenv
+	if getenv == nil {
+		getenv = func(string) string { return "" }
+	}
+	l.Settings = SettingsFrom(l.config(), getenv)
 }
 
 // QuickIssuerFile is where the tunnel step writes a quick tunnel's URL while

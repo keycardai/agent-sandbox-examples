@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -35,9 +34,6 @@ type UpOptions struct {
 	Run RunOptions
 	// Listen is the mirror's address, which the tunnel forwards to.
 	Listen string
-	// EnvFile is the --env value in the printed commands. If it is empty,
-	// the commands omit --env.
-	EnvFile string
 	// Print prints the steps as commands and does not run them.
 	Print bool
 	// IssuerWait is how long Up retries check-issuer.
@@ -89,7 +85,7 @@ type upRun struct {
 func (l *Local) Up(ctx context.Context, opts UpOptions) error {
 	steps := l.upSteps(opts)
 	if opts.Print {
-		l.printSteps(steps, opts.EnvFile)
+		l.printSteps(steps)
 		return nil
 	}
 	state := &upRun{opts: opts, services: make(chan error, len(steps))}
@@ -101,7 +97,7 @@ func (l *Local) Up(ctx context.Context, opts UpOptions) error {
 		state.wg.Wait()
 	}()
 	for i, step := range steps {
-		_, _ = fmt.Fprintf(l.Out, "\n$ %s\n", stepCommand(step, opts.EnvFile))
+		_, _ = fmt.Fprintf(l.Out, "\n$ %s\n", l.Command(step.args...))
 		if err := step.run(serviceCtx, state); err != nil {
 			stopServices()
 			l.printLeft(steps, i, state)
@@ -399,7 +395,7 @@ func (l *Local) stopServing(ctx, waiting context.Context, steps []upStep, state 
 // the agent exits, it returns the ErrAgent from Logs. When ctx ends, it
 // returns state.checks.
 func (l *Local) follow(ctx, waiting context.Context, steps []upStep, state *upRun) error {
-	_, _ = fmt.Fprintf(l.Out, "\n$ %s\n", stepCommand(upStep{args: []string{"logs"}}, state.opts.EnvFile))
+	_, _ = fmt.Fprintf(l.Out, "\n$ %s\n", l.Command("logs"))
 	_, _ = fmt.Fprintln(l.Out, "The agent runs in the background. Press Ctrl-C to stop following its log.")
 	target, err := l.CheckTargetFor("", "", "", "")
 	if err != nil {
@@ -421,7 +417,7 @@ func (l *Local) follow(ctx, waiting context.Context, steps []upStep, state *upRu
 func (l *Local) runAnswer(ctx context.Context, state *upRun, answer string) {
 	switch answer {
 	case serveShell:
-		l.openShell(ctx, state)
+		l.openShell(ctx)
 	case serveChecks:
 		l.recheck(ctx, state)
 	}
@@ -447,8 +443,8 @@ func (l *Local) askNext(ctx context.Context, scenario *Scenario) (string, error)
 
 // openShell runs Shell against the sandbox of the last run, and prints any
 // failure.
-func (l *Local) openShell(ctx context.Context, state *upRun) {
-	_, _ = fmt.Fprintf(l.Out, "\n$ %s\n", stepCommand(upStep{args: []string{"shell"}}, state.opts.EnvFile))
+func (l *Local) openShell(ctx context.Context) {
+	_, _ = fmt.Fprintf(l.Out, "\n$ %s\n", l.Command("shell"))
 	target, err := l.CheckTargetFor("", "", "", "")
 	if err != nil {
 		err = fmt.Errorf("finding the sandbox: %w", err)
@@ -472,9 +468,9 @@ func (l *Local) recheck(ctx context.Context, state *upRun) {
 	}
 }
 
-func (l *Local) printSteps(steps []upStep, envFile string) {
+func (l *Local) printSteps(steps []upStep) {
 	for _, step := range steps {
-		l.printStep(step, envFile)
+		l.printStep(step)
 	}
 }
 
@@ -484,28 +480,27 @@ func (l *Local) printLeft(steps []upStep, from int, state *upRun) {
 	_, _ = fmt.Fprintln(l.Out, "\nUp stopped. To finish by hand, run these commands from the repository root:")
 	for i, step := range steps {
 		if i >= from || step.background {
-			l.printStep(step, state.opts.EnvFile)
+			l.printStep(step)
 		}
+	}
+	if l.config() != nil && !l.Store.Saved() {
+		advice := "Run " + l.Command("init") + " and save them first."
+		if !l.Store.CanSave() {
+			advice = "Run " + sandboxCommand + " init, save the settings, and run these commands without --config -."
+		}
+		_, _ = fmt.Fprintln(l.Out, "\nThe settings are not saved, so these commands do not see them. "+advice)
 	}
 	if state.quickTunnel && state.bootstrapped {
 		_, _ = fmt.Fprintf(l.Out, "\nThe cluster's issuer is the quick tunnel's URL, which stopped working with Up.\n"+
-			"Start the tunnel, then run %s down and %s bootstrap\n"+
-			"to create the cluster again with the new URL.\n", sandboxCommand, sandboxCommand)
+			"Start the tunnel, then run %s and %s\n"+
+			"to create the cluster again with the new URL.\n", l.Command("down"), l.Command("bootstrap"))
 	}
 }
 
-func (l *Local) printStep(step upStep, envFile string) {
-	line := stepCommand(step, envFile)
+func (l *Local) printStep(step upStep) {
+	line := l.Command(step.args...)
 	if step.note != "" {
 		line += "    # " + step.note
 	}
 	_, _ = fmt.Fprintln(l.Out, "  "+line)
-}
-
-func stepCommand(step upStep, envFile string) string {
-	args := step.args
-	if envFile != "" {
-		args = append([]string{"--env", envFile}, args...)
-	}
-	return sandboxCommand + " " + strings.Join(args, " ")
 }

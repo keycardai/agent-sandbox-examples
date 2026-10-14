@@ -1,7 +1,7 @@
 # Install chart values for `sandbox run`. It passes this file, then
 # local/out/install.values.yaml, then local/out/scenario.values.yaml.
 # install.values.yaml holds the values that come from the running cluster
-# and local.env: zoneURL, the images when
+# and the settings: zoneURL, the images when
 # KEYCARD_LOCAL_IMAGE_TAG is set, the Docker network gateway in hostAliases
 # and network.allowCIDRs, zoneTrust when KEYCARD_LOCAL_CA_FILE is set, and
 # network.clusterCIDRs for an existing cluster. scenario.values.yaml sets

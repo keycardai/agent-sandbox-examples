@@ -1,0 +1,87 @@
+# The settings of `go run ./cmd/sandbox`, as setup saves them in
+# ~/.config/keycard/sandbox.yaml ($XDG_CONFIG_HOME/keycard/sandbox.yaml when
+# XDG_CONFIG_HOME is set). Setup writes this file when you choose to save the
+# settings, and --config or KEYCARD_SANDBOX_CONFIG names another one. The file
+# does not hold secrets. Each secret has a name, and the OS keychain keeps it
+# under the service "keycard", as sandbox/<name>. Another file's secrets go
+# under sandbox/<id>/<name>, where <id> comes from the file's path.
+#
+# An environment variable that is not empty wins over the file. A key that
+# has a variable names it.
+
+# The organization service account setup signs in with.
+account:
+  # The Keycard API.
+  api_url: https://api.keycard.ai
+  # KEYCARD_CLIENT_ID wins over it.
+  client_id: ""
+  # The name of the client secret in the keychain. KEYCARD_CLIENT_SECRET wins
+  # over it.
+  secret: management-client-secret
+  # The absolute path to a PEM file of roots to trust in addition to the
+  # system roots, for an API with a private CA. KEYCARD_LOCAL_CA_FILE.
+  ca_file: ""
+
+# The Keycard zone that decides every token exchange.
+zone:
+  id: ""
+  # KEYCARD_LOCAL_ZONE_URL must match it. To change the zone, run init.
+  url: ""
+  # true for a zone that is not on the internet and answers on the Docker
+  # host. The sandbox then sends its requests to the cluster's Docker
+  # gateway. KEYCARD_LOCAL_ZONE_ON_HOST.
+  on_host: false
+
+# Who has an agent. Each person gets their own sandbox and pod, and their
+# agent acts as them. The zone must have each person as a user.
+agents:
+  # The person setup picks. Every demo has an agent for them, and
+  # `sandbox shell`, `sandbox logs` and `sandbox check` act on it.
+  # KEYCARD_LOCAL_USER_EMAIL picks the agent these commands act on.
+  default: ""
+  # The other people with an agent, for each demo by name, such as
+  #   pi: [grace@example.com]
+  demos: {}
+
+# The demo: a directory under scenarios. KEYCARD_LOCAL_SCENARIO.
+demo:
+  name: smoke
+  # The answers to the demo's text questions, by input id.
+  answers: {}
+  # Each person's answers to the demo's per-person questions, by email,
+  # then input id.
+  people: {}
+  # Where the credential of each of the demo's resources comes from: a
+  # provider each person signs in with, the name of a secret in the
+  # keychain, or an environment variable. Setting
+  # KEYCARD_SANDBOX_SECRET_<NAME> wins over the secret <name>.
+  credentials: []
+  # The GitHub username the default person's agent must show. Empty accepts
+  # any.
+  # KEYCARD_LOCAL_GITHUB_LOGIN.
+  github_login: ""
+
+# Where the sandbox runs, and how Keycard reaches it.
+cluster:
+  # The k3d cluster `sandbox bootstrap` creates and `sandbox down` deletes.
+  # Setup asks for it. KEYCARD_LOCAL_CLUSTER.
+  name: keycard-sandbox-local
+  # The kubeconfig context of an existing cluster to run the sandbox in,
+  # instead of the k3d cluster. Its ServiceAccount issuer must be on the
+  # internet, and it must pull images from ghcr.io. KEYCARD_LOCAL_KUBE_CONTEXT.
+  kube_context: ""
+  # Empty runs the egress-proxy release the charts pin by digest, which the
+  # cluster pulls from ghcr.io/keycardai. A tag, such as local, runs the
+  # images Docker has at that tag instead, as built in the egress-proxy
+  # repository. KEYCARD_LOCAL_IMAGE_TAG.
+  image_tag: ""
+  # For an existing cluster, its pod and service ranges, comma-separated.
+  # The sandbox blocks them. KEYCARD_LOCAL_CLUSTER_CIDRS.
+  cidrs: ""
+  # The ServiceAccount issuer, fixed when the cluster is created. Empty uses
+  # a quick tunnel's URL. https://<hostname> for a named tunnel, or a URL you
+  # publish yourself. KEYCARD_LOCAL_ISSUER.
+  issuer: ""
+  # A Cloudflare tunnel in your account. Empty runs a quick tunnel, which
+  # does not need an account. KEYCARD_LOCAL_TUNNEL.
+  tunnel: ""
