@@ -3,6 +3,7 @@ package zonesetup
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,12 +33,13 @@ type Session struct {
 }
 
 // Connect authenticates as the organization service account and resolves the
-// zone the values file names by zone_url, zone_id or both. It writes nothing
-// to the zone. Every error wraps ErrAuth, ErrAPI, ErrZoneNotFound,
-// ErrZoneAmbiguous or ErrZoneMismatch.
-func Connect(ctx context.Context, values *Values, secrets *Secrets) (*Session, error) {
+// zone the values file names by zone_url, zone_id or both. It trusts roots,
+// or the system roots if roots is nil. It writes nothing to the zone. Every
+// error wraps ErrAuth, ErrAPI, ErrZoneNotFound, ErrZoneAmbiguous or
+// ErrZoneMismatch.
+func Connect(ctx context.Context, values *Values, secrets *Secrets, roots *x509.CertPool) (*Session, error) {
 	org, err := Login(ctx, values.ManagementAPIURL, values.ManagementServiceAccount.ClientID,
-		secrets.ManagementClientSecret, nil)
+		secrets.ManagementClientSecret, roots)
 	if err != nil {
 		return nil, err
 	}

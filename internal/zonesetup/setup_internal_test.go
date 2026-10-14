@@ -244,7 +244,7 @@ func connect(t *testing.T, fake *fakeZone) *Session {
 		ManagementAPIURL:         server.URL,
 		ZoneID:                   "zone-a",
 		ManagementServiceAccount: ManagementServiceAccountValues{ClientID: "sa-1"},
-	}, &Secrets{ManagementClientSecret: "sa-secret"})
+	}, &Secrets{ManagementClientSecret: "sa-secret"}, nil)
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
