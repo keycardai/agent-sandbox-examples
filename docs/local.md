@@ -129,7 +129,7 @@ is empty, they trust only the system roots.
 
 | Step | What it does |
 |---|---|
-| `sandbox up` | every step below, in order, in one process |
+| `sandbox up` | `tunnel`, `bootstrap`, `mirror`, `check-issuer` and `run`, in order, in one process |
 | `sandbox tunnel` | publishes the mirror at the issuer's https URL through a Cloudflare tunnel |
 | `sandbox bootstrap` | creates the cluster with the issuer, or checks that an existing one has it |
 | `sandbox mirror` | reads the cluster's discovery document and JWKS and serves them |
