@@ -137,8 +137,12 @@ func fakeManagement(t *testing.T, providers, activeSets string) (*httptest.Serve
 		_, _ = w.Write([]byte(`{"access_token":"t","token_type":"Bearer"}`))
 	})
 	page := func(items string) string { return `{"items":[` + items + `],"pagination":{}}` }
+	const zone = `{"id":"zone-a","name":"Acme","protocols":{"oauth2":{"issuer":"https://localhost/"}}}`
 	mux.HandleFunc("GET /zones", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(page(`{"id":"zone-a","name":"Acme","protocols":{"oauth2":{"issuer":"https://localhost/"}}}`)))
+		_, _ = w.Write([]byte(page(zone)))
+	})
+	mux.HandleFunc("GET /zones/zone-a", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(zone))
 	})
 	mux.HandleFunc("GET /zones/zone-a/users", func(w http.ResponseWriter, _ *http.Request) {
 		if userLists.Add(1) == 1 {
@@ -368,6 +372,8 @@ func TestInitRerun(t *testing.T) {
 		changeCluster = "cluster"
 		changeAccount = "account"
 	)
+	// byZoneURL is handWrittenValues without zone_id.
+	byZoneURL := strings.Replace(handWrittenValues, "zone_id: zone-a\n", "", 1)
 	tests := []struct {
 		name      string
 		prepare   func(t *testing.T, run initRun)
@@ -438,17 +444,24 @@ func TestInitRerun(t *testing.T) {
 		},
 		{
 			name:     "cluster, in a hand-written values file",
-			prepare:  handWritten,
+			prepare:  handWritten(handWrittenValues),
 			answers:  map[string][]string{changeQuestion: {changeCluster}},
 			notAsked: signInQuestions(),
-			check:    checkHandWrittenKept,
+			check:    checkHandWrittenKept(handWrittenValues),
 		},
 		{
 			name:     "credentials, in a hand-written values file",
-			prepare:  handWritten,
+			prepare:  handWritten(handWrittenValues),
 			answers:  map[string][]string{changeQuestion: {credentialsSection}},
 			notAsked: append(signInQuestions(), secretQuestion, openRouterKeyQuestion),
-			check:    checkHandWrittenKept,
+			check:    checkHandWrittenKept(handWrittenValues),
+		},
+		{
+			name:     "credentials, in a hand-written values file with only zone_url",
+			prepare:  handWritten(byZoneURL),
+			answers:  map[string][]string{changeQuestion: {credentialsSection}},
+			notAsked: append(signInQuestions(), secretQuestion, openRouterKeyQuestion),
+			check:    checkHandWrittenKept(byZoneURL),
 		},
 	}
 	for _, tc := range tests {
@@ -506,28 +519,32 @@ resources:
       secret_file: /run/secrets/example
 `
 
-// handWritten replaces the values file with handWrittenValues, and puts the
-// service account secret in SANDBOX_SECRET.
-func handWritten(t *testing.T, run initRun) {
-	t.Helper()
-	writeFile(t, filepath.Join(run.local.Root, "zone-setup.yaml"),
-		"management_api_url: "+run.server.URL+"\n"+handWrittenValues)
-	run.local.Getenv = func(key string) string {
-		if key == "SANDBOX_SECRET" {
-			return goodSecret
+// handWritten returns a prepare func that replaces the values file with
+// values, and puts the service account secret in SANDBOX_SECRET.
+func handWritten(values string) func(*testing.T, initRun) {
+	return func(t *testing.T, run initRun) {
+		t.Helper()
+		writeFile(t, filepath.Join(run.local.Root, "zone-setup.yaml"),
+			"management_api_url: "+run.server.URL+"\n"+values)
+		run.local.Getenv = func(key string) string {
+			if key == "SANDBOX_SECRET" {
+				return goodSecret
+			}
+			return ""
 		}
-		return ""
 	}
 }
 
-// checkHandWrittenKept requires the values file to keep every key of
-// handWrittenValues.
-func checkHandWrittenKept(t *testing.T, run initRun) {
-	t.Helper()
-	checkFile(t, filepath.Join(run.local.Root, "zone-setup.yaml"),
-		"# Written by `go run ./cmd/sandbox init`. zone-setup.example.yaml documents\n"+
-			"# each key. `sandbox run` sets issuer_url to the cluster's issuer.\n"+
-			"management_api_url: "+run.server.URL+"\n"+handWrittenValues)
+// checkHandWrittenKept returns a check that requires the values file to
+// keep every key of values.
+func checkHandWrittenKept(values string) func(*testing.T, initRun) {
+	return func(t *testing.T, run initRun) {
+		t.Helper()
+		checkFile(t, filepath.Join(run.local.Root, "zone-setup.yaml"),
+			"# Written by `go run ./cmd/sandbox init`. zone-setup.example.yaml documents\n"+
+				"# each key. `sandbox run` sets issuer_url to the cluster's issuer.\n"+
+				"management_api_url: "+run.server.URL+"\n"+values)
+	}
 }
 
 // otherValuesFile is the values file renameValues names in local.env.

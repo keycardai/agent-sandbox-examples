@@ -43,12 +43,7 @@ func Connect(ctx context.Context, values *Values, secrets *Secrets, roots *x509.
 	if err != nil {
 		return nil, err
 	}
-	var zone *keycard.Zone
-	if values.ZoneID != "" {
-		zone, err = zoneByID(ctx, &org.zones, values)
-	} else {
-		zone, err = zoneByURL(ctx, &org.zones, values.ZoneURL)
-	}
+	zone, err := org.Zone(ctx, values)
 	if err != nil {
 		return nil, err
 	}

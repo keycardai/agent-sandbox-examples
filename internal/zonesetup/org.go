@@ -49,6 +49,15 @@ func Login(ctx context.Context, managementAPIURL, clientID, secret string, roots
 	)}, nil
 }
 
+// Zone returns the zone values names by zone_url, zone_id or both. Every
+// error wraps ErrAPI, ErrZoneNotFound, ErrZoneAmbiguous or ErrZoneMismatch.
+func (o *Org) Zone(ctx context.Context, values *Values) (*keycard.Zone, error) {
+	if values.ZoneID != "" {
+		return zoneByID(ctx, &o.zones, values)
+	}
+	return zoneByURL(ctx, &o.zones, values.ZoneURL)
+}
+
 // Session returns a session for zone.
 func (o *Org) Session(zone *keycard.Zone) *Session {
 	return &Session{Zone: zone, zones: o.zones}

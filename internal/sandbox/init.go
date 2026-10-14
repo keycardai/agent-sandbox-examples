@@ -297,18 +297,12 @@ func (w *wizard) keepZone(ctx context.Context) error {
 	if w.org == nil {
 		return nil
 	}
-	zones, err := w.org.Zones(ctx)
+	zone, err := w.org.Zone(ctx, &w.out)
 	if err != nil {
-		return fmt.Errorf("listing the zones: %w", err)
+		return fmt.Errorf("finding the saved zone: %w. Change the zone", err)
 	}
-	for i := range zones {
-		if zones[i].ID == w.out.ZoneID {
-			w.zone = w.org.Session(&zones[i])
-			return nil
-		}
-	}
-	return fmt.Errorf("%w: the service account cannot see the saved zone %s. Change the zone",
-		ErrAnswer, cmp.Or(w.out.ZoneID, "(none)"))
+	w.zone = w.org.Session(zone)
+	return nil
 }
 
 // keepCluster keeps the cluster and the issuer settings from local.env.
