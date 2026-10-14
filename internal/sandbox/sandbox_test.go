@@ -24,7 +24,8 @@ import (
 const (
 	// cluster is the cluster name the tests pass.
 	cluster = "asp"
-	// namedTunnel is the Cloudflare tunnel name the tests use.
+	// namedTunnel is the Cloudflare tunnel name the tests use. It differs
+	// from cluster, so a test fails if the code uses one name for the other.
 	namedTunnel = "asp-tunnel"
 )
 
