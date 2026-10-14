@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -19,8 +21,13 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 )
 
-// cluster is the cluster name the tests pass.
-const cluster = "asp"
+const (
+	// cluster is the cluster name the tests pass.
+	cluster = "asp"
+	// namedTunnel is the Cloudflare tunnel name the tests use. It differs
+	// from cluster, so a test fails if the code uses one name for the other.
+	namedTunnel = "asp-tunnel"
+)
 
 // record is the start of every fake tool. It appends the tool's name, the
 // KUBERC it runs with and its arguments to $CALLS, one call per line.
@@ -176,10 +183,11 @@ func TestTunnel(t *testing.T) {
 	t.Parallel()
 	const (
 		host   = "https://oidc.example.com"
-		noHost = "the named tunnel asp needs KEYCARD_LOCAL_ISSUER set to https://<hostname>, with no port or path"
+		noHost = "the named tunnel " + namedTunnel +
+			" needs KEYCARD_LOCAL_ISSUER set to https://<hostname>, with no port or path"
 	)
 	named := func(issuerURL string) sandbox.Settings {
-		return sandbox.Settings{sandbox.KeyTunnel: "asp", sandbox.KeyIssuer: issuerURL}
+		return sandbox.Settings{sandbox.KeyTunnel: namedTunnel, sandbox.KeyIssuer: issuerURL}
 	}
 
 	tests := []struct {
@@ -193,7 +201,7 @@ func TestTunnel(t *testing.T) {
 		{
 			name:     "named tunnel",
 			settings: named(host),
-			wantCall: "cloudflared KUBERC= tunnel --no-autoupdate run --url http://127.0.0.1:8480 asp\n",
+			wantCall: "cloudflared KUBERC= tunnel --no-autoupdate run --url http://127.0.0.1:8480 " + namedTunnel + "\n",
 		},
 		{
 			name:     "quick tunnel with an issuer",
@@ -238,9 +246,10 @@ func TestTunnel(t *testing.T) {
 }
 
 // TestQuickTunnel runs a fake cloudflared that prints a quick tunnel URL and
-// then waits. The URL is in QuickIssuerFile while cloudflared runs. Once
-// Tunnel returns, the file is gone, unless another tunnel's URL replaced it.
-// The environment has TUNNEL_NAME, which cloudflared must not see.
+// then waits. While cloudflared runs, QuickIssuerFile has the URL and is
+// locked. After Tunnel returns, the file is gone unless another tunnel
+// replaced it. Tunnel deletes a file left by a killed tunnel before it
+// starts. The environment sets TUNNEL_NAME, and cloudflared must not see it.
 func TestQuickTunnel(t *testing.T) {
 	t.Parallel()
 	const (
@@ -249,6 +258,8 @@ func TestQuickTunnel(t *testing.T) {
 	)
 	tests := []struct {
 		name string
+		// killed is the content of an issuer file left by a killed tunnel.
+		killed string
 		// replace is what another tunnel writes to the issuer file while this one runs.
 		replace string
 		// wantFile is the issuer file after Tunnel returns, or "" for none.
@@ -256,6 +267,7 @@ func TestQuickTunnel(t *testing.T) {
 	}{
 		{name: "deletes its URL"},
 		{name: "keeps another tunnel's URL", replace: other, wantFile: other},
+		{name: "replaces a killed tunnel's URL", killed: other},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -271,13 +283,16 @@ exec sleep 60
 				cmd.Env = append(cmd.Env, "TUNNEL_NAME=asp")
 				return cmd, err
 			}
+			if tc.killed != "" {
+				writeFile(t, local.QuickIssuerFile(), tc.killed)
+			}
 			out := &bytes.Buffer{}
 			local.Out = out
 			ctx, stop := context.WithCancel(t.Context())
 			done := make(chan error, 1)
 			go func() { done <- local.Tunnel(ctx, "127.0.0.1:8480") }()
 
-			published := waitForFile(t, local.QuickIssuerFile())
+			published := waitForHeld(t, local.QuickIssuerFile())
 			if tc.replace != "" {
 				if err := os.Remove(local.QuickIssuerFile()); err != nil {
 					t.Fatal(err)
@@ -292,43 +307,68 @@ exec sleep 60
 				t.Fatalf("issuer file = %q, want %q", published, url+"\n")
 			}
 			checkIssuerFile(t, local.QuickIssuerFile(), tc.wantFile)
-			// The config path is a new temporary file on every run.
-			call := strings.Fields(readCalls(t, calls))
-			want := []string{
-				"cloudflared",
-				"KUBERC=",
-				"tunnel",
-				"--no-autoupdate",
-				"--config",
-				"*",
-				"--url",
-				"http://127.0.0.1:8480",
-			}
-			if !slices.EqualFunc(call, want, func(got, want string) bool { return want == "*" || got == want }) {
-				t.Fatalf("call = %q, want %q", call, want)
-			}
-			deleted := "Deleted " + local.QuickIssuerFile() + ". The quick tunnel's URL has stopped working.\n"
-			if got := strings.Contains(out.String(), deleted); got != (tc.wantFile == "") {
-				t.Errorf("output has %q = %t, want %t\n%s", deleted, got, tc.wantFile == "", out)
-			}
-			if !strings.Contains(out.String(), "api.trycloudflare.com") {
-				t.Errorf("output = %q, want cloudflared's log lines", out)
+			checkQuickCall(t, readCalls(t, calls))
+			deleted := "Deleted " + local.QuickIssuerFile()
+			for line, want := range map[string]bool{
+				deleted + ". The quick tunnel's URL has stopped working.\n":     tc.wantFile == "",
+				deleted + ". The quick tunnel that wrote it is not running.\n":  tc.killed != "",
+				"INF Requesting new quick Tunnel on api.trycloudflare.com...\n": true,
+			} {
+				if got := strings.Contains(out.String(), line); got != want {
+					t.Errorf("output has %q = %t, want %t\n%s", line, got, want, out)
+				}
 			}
 		})
 	}
 }
 
-// waitForFile returns the content of path once it exists, and fails the test
-// after 10 seconds.
-func waitForFile(t *testing.T, path string) string {
+// checkQuickCall fails the test unless calls is a single cloudflared call
+// that starts a quick tunnel, with no TUNNEL_ variables. The config path
+// changes on every run, so any path matches.
+func checkQuickCall(t *testing.T, calls string) {
+	t.Helper()
+	call := strings.Fields(calls)
+	want := []string{
+		"cloudflared",
+		"KUBERC=",
+		"tunnel",
+		"--no-autoupdate",
+		"--config",
+		"*",
+		"--url",
+		"http://127.0.0.1:8480",
+	}
+	if !slices.EqualFunc(call, want, func(got, want string) bool { return want == "*" || got == want }) {
+		t.Fatalf("call = %q, want %q", call, want)
+	}
+}
+
+// waitForHeld returns the content of path once a running tunnel has it
+// locked. It fails the test after 10 seconds.
+func waitForHeld(t *testing.T, path string) string {
 	t.Helper()
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		if raw, err := os.ReadFile(path); err == nil { //nolint:gosec // G304: the path is the test's own file.
-			return string(raw)
+		if body, held := heldFile(path); held {
+			return body
 		}
 	}
-	t.Fatalf("%s did not appear within 10 seconds", path)
+	t.Fatalf("no tunnel held %s within 10 seconds", path)
 	return ""
+}
+
+// heldFile returns the content of path, and whether another open file has an
+// exclusive lock on it.
+func heldFile(path string) (string, bool) {
+	file, err := os.Open(path) //nolint:gosec // G304: the path is the test's own file.
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = file.Close() }()
+	if err = syscall.Flock(int(file.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); !errors.Is(err, syscall.EWOULDBLOCK) {
+		return "", false
+	}
+	raw, err := io.ReadAll(file)
+	return string(raw), err == nil
 }
 
 // checkIssuerFile fails the test unless path holds want, or does not exist
@@ -354,10 +394,25 @@ func writeFile(t *testing.T, path, body string) {
 	}
 }
 
+// holdIssuerFile fakes a running quick tunnel. It writes the issuer file and
+// locks it until the test ends.
+func holdIssuerFile(t *testing.T, path, body string) {
+	t.Helper()
+	writeFile(t, path, body)
+	file, err := os.Open(path) //nolint:gosec // G304: the path is the test's own file.
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	if err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestQuickTunnelRefused checks that a quick tunnel fails when cloudflared
-// exits before it prints a URL, or when another tunnel's issuer file exists.
-// A failed tunnel must leave the issuer file as it found it, so it does not
-// delete a running tunnel's URL.
+// exits before it prints a URL, or when a running tunnel has the issuer file
+// locked. A failed tunnel must not change the issuer file, because the file
+// may belong to a running tunnel.
 func TestQuickTunnelRefused(t *testing.T) {
 	t.Parallel()
 	const other = "https://other-tunnel.trycloudflare.com\n"
@@ -365,7 +420,8 @@ func TestQuickTunnelRefused(t *testing.T) {
 		name string
 		// body is the fake cloudflared. It is not run when file is set.
 		body string
-		// file is the issuer file that exists before Tunnel starts.
+		// file is the content of an issuer file that a running tunnel has
+		// locked when Tunnel starts.
 		file     string
 		want     []error
 		wantText string
@@ -385,10 +441,10 @@ func TestQuickTunnelRefused(t *testing.T) {
 			wantText: "cloudflared exited with status 0 before it printed a trycloudflare.com URL",
 		},
 		{
-			name:     "issuer file exists",
+			name:     "another tunnel holds the issuer file",
 			file:     other,
 			want:     []error{sandbox.ErrTunnel},
-			wantText: "local/out/issuer exists. Another quick tunnel is running, or one was killed",
+			wantText: "another quick tunnel is running and holds ",
 			wantFile: other,
 		},
 		{
@@ -407,7 +463,7 @@ exec sleep 60
 			t.Parallel()
 			local, calls := newLocal(t, sandbox.Settings{}, tc.body)
 			if tc.file != "" {
-				writeFile(t, local.QuickIssuerFile(), tc.file)
+				holdIssuerFile(t, local.QuickIssuerFile(), tc.file)
 			}
 			err := local.Tunnel(t.Context(), "127.0.0.1:8480")
 			checkErr(t, err, tc.want, tc.wantText)
@@ -453,10 +509,14 @@ func TestCheckIssuer(t *testing.T) {
 		name               string
 		settings           sandbox.Settings
 		cluster, issuerURL string
-		quick              string
-		want               []error
-		wantText           string
-		wantCall           string
+		// quick is the URL in the issuer file of a running quick tunnel.
+		quick string
+		// killed writes the issuer file without its lock, as a killed tunnel
+		// leaves it.
+		killed   bool
+		want     []error
+		wantText string
+		wantCall string
 	}{
 		{
 			name:     "no cluster",
@@ -514,6 +574,14 @@ func TestCheckIssuer(t *testing.T) {
 			wantCall: mintCall,
 		},
 		{
+			name:     "killed quick tunnel",
+			settings: sandbox.Settings{sandbox.KeyCluster: cluster},
+			quick:    closed + "/quick",
+			killed:   true,
+			want:     []error{sandbox.ErrIssuer},
+			wantText: "local/out/issuer is not running. Run `go run ./cmd/sandbox tunnel`",
+		},
+		{
 			name:      "relative CA file",
 			settings:  withCA("roots.pem"),
 			issuerURL: closed,
@@ -557,8 +625,11 @@ func TestCheckIssuer(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			local, calls := newLocal(t, tc.settings, "echo fake-token\n")
-			if tc.quick != "" {
+			switch {
+			case tc.killed:
 				writeFile(t, local.QuickIssuerFile(), tc.quick+"\n")
+			case tc.quick != "":
+				holdIssuerFile(t, local.QuickIssuerFile(), tc.quick+"\n")
 			}
 			err := local.CheckIssuer(t.Context(), tc.cluster, tc.issuerURL)
 			checkErr(t, err, tc.want, tc.wantText)

@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -25,6 +24,9 @@ var (
 	ErrDocker = errors.New("docker unavailable")
 	// ErrConfirm means the operator did not confirm a deletion.
 	ErrConfirm = errors.New("not confirmed")
+	// ErrOtherIssuer is an existing cluster created with another issuer.
+	// An error that wraps it also wraps ErrIssuer.
+	ErrOtherIssuer = errors.New("cluster has another issuer")
 )
 
 var (
@@ -39,14 +41,30 @@ var (
 // Bootstrap creates the k3d cluster with the ServiceAccount issuer set on its
 // API server. It then checks that a token the cluster mints has that issuer.
 //
-// Bootstrap keeps an existing cluster. It returns ErrIssuer when that
-// cluster's discovery document has another issuer or jwks_uri.
+// Bootstrap keeps an existing cluster. It returns ErrOtherIssuer when that
+// cluster's discovery document has another issuer or jwks_uri. The error
+// says how to delete the cluster.
 //
 // With dryRun, Bootstrap checks the settings and prints the k3d command. It
 // does not run a tool.
 //
 // An empty cluster or issuerURL comes from the settings.
 func (l *Local) Bootstrap(ctx context.Context, cluster, issuerURL string, dryRun bool) error {
+	err := l.bootstrap(ctx, cluster, issuerURL, dryRun)
+	if !errors.Is(err, ErrOtherIssuer) {
+		return err
+	}
+	name, nameErr := l.cluster(cluster)
+	if nameErr != nil {
+		return fmt.Errorf("%w. Delete the cluster, or bootstrap with its issuer", err)
+	}
+	return fmt.Errorf("%w. Delete the cluster with\n"+
+		"    go run ./cmd/sandbox down --cluster %s, or bootstrap with its issuer", err, name)
+}
+
+// bootstrap is Bootstrap without the advice to delete the cluster. up uses
+// it, because up asks to delete the cluster itself.
+func (l *Local) bootstrap(ctx context.Context, cluster, issuerURL string, dryRun bool) error {
 	cluster, err := l.cluster(cluster)
 	if err != nil {
 		return err
@@ -102,12 +120,12 @@ func (l *Local) Bootstrap(ctx context.Context, cluster, issuerURL string, dryRun
 	return l.checkTokenIssuer(ctx, cluster, issuerURL)
 }
 
-// Down deletes the k3d cluster. Unless yes is set, it asks first and reads
-// the answer from answers. It deletes only on an answer that starts with y
-// or Y. A missing cluster is not an error.
+// Down deletes the k3d cluster. Unless yes is set, it asks first, and it
+// deletes only when the operator answers yes. A missing cluster is not an
+// error.
 //
 // An empty cluster comes from the settings.
-func (l *Local) Down(ctx context.Context, cluster string, yes bool, answers io.Reader) error {
+func (l *Local) Down(ctx context.Context, cluster string, yes bool) error {
 	cluster, err := l.cluster(cluster)
 	if err != nil {
 		return err
@@ -121,7 +139,7 @@ func (l *Local) Down(ctx context.Context, cluster string, yes bool, answers io.R
 		return nil
 	}
 	if !yes {
-		if err = l.confirmDelete(ctx, cluster, answers); err != nil {
+		if err = l.confirmDelete(ctx, cluster); err != nil {
 			return err
 		}
 	}
@@ -133,42 +151,19 @@ func (l *Local) Down(ctx context.Context, cluster string, yes bool, answers io.R
 	return nil
 }
 
-// confirmDelete asks whether to delete cluster and reads the answer. It
-// returns ErrConfirm unless the answer starts with y or Y.
-func (l *Local) confirmDelete(ctx context.Context, cluster string, answers io.Reader) error {
-	_, _ = fmt.Fprintf(l.Out, "Delete the k3d cluster %s? [y/N] ", cluster)
-	answer, err := readLine(ctx, answers)
+// confirmDelete asks whether to delete cluster. The default answer is no. It
+// returns ErrConfirm unless the operator answers yes.
+func (l *Local) confirmDelete(ctx context.Context, cluster string) error {
+	yes, err := l.confirm(ctx, "Delete the k3d cluster "+cluster+"?", false)
 	switch {
-	case ctx.Err() != nil:
-		_, _ = fmt.Fprintln(l.Out)
-		return fmt.Errorf("%w: interrupted, nothing deleted: %w", ErrConfirm, ctx.Err())
-	case answer == "" && err != nil:
-		return fmt.Errorf("%w: no answer. Pass --yes to delete without asking", ErrConfirm)
-	case !strings.HasPrefix(answer, "y") && !strings.HasPrefix(answer, "Y"):
+	case errors.Is(err, ErrNoTerminal):
+		return fmt.Errorf("%w: %w. Pass --yes to delete without asking", ErrConfirm, err)
+	case err != nil:
+		return fmt.Errorf("%w: nothing deleted: %w", ErrConfirm, err)
+	case !yes:
 		return fmt.Errorf("%w: nothing deleted", ErrConfirm)
 	}
 	return nil
-}
-
-// readLine returns the first line of r. It returns early when ctx is done,
-// such as on Ctrl-C. A read that is still blocked then keeps its goroutine
-// until r returns.
-func readLine(ctx context.Context, r io.Reader) (string, error) {
-	type result struct {
-		line string
-		err  error
-	}
-	done := make(chan result, 1)
-	go func() {
-		line, err := bufio.NewReader(r).ReadString('\n')
-		done <- result{line, err}
-	}()
-	select {
-	case <-ctx.Done():
-		return "", fmt.Errorf("waiting for an answer: %w", ctx.Err())
-	case read := <-done:
-		return read.line, read.err
-	}
 }
 
 // checkClusterIssuer accepts an https URL with a host of lowercase ASCII DNS
@@ -244,12 +239,11 @@ func (l *Local) checkDiscovery(ctx context.Context, cluster, issuerURL, jwksURI 
 		return fmt.Errorf("%w: the cluster's discovery document is not JSON: %w", ErrIssuer, err)
 	}
 	if doc.Issuer != issuerURL || doc.JWKSURI != jwksURI {
-		return fmt.Errorf("%w: cluster %s was created with other settings:\n\n"+
+		return fmt.Errorf("%w: %w: cluster %s was created with other settings:\n\n"+
 			"    issuer   : %s (wanted %s)\n"+
 			"    jwks_uri : %s (wanted %s)\n\n"+
-			"    k3d sets them only when it creates a cluster. Delete the cluster with\n"+
-			"    go run ./cmd/sandbox down --cluster %s, or bootstrap with its issuer",
-			ErrIssuer, cluster, doc.Issuer, issuerURL, doc.JWKSURI, jwksURI, cluster)
+			"    k3d sets them only when it creates a cluster",
+			ErrIssuer, ErrOtherIssuer, cluster, doc.Issuer, issuerURL, doc.JWKSURI, jwksURI)
 	}
 	return nil
 }

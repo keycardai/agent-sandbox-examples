@@ -9,9 +9,12 @@ The pinned tools install with [mise](https://mise.jdx.dev):
 
     mise install
 
-`docs/local.md` describes how to run the sandbox with `go run ./cmd/sandbox`
-on a local k3d cluster against a Keycard zone. It also needs Docker, from
-OrbStack or Docker Desktop.
+To try the sandbox, run:
+
+    go run ./cmd/sandbox up
+
+It sets up a local k3d cluster against your Keycard zone. It also needs
+Docker, from OrbStack or Docker Desktop. `docs/local.md` describes each step.
 
 Run every gate CI runs:
 

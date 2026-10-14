@@ -29,11 +29,37 @@ Then:
 
     cp local/local.env.example local/local.env
     $EDITOR local/local.env            # the zone URL and the user's email
+    go run ./cmd/sandbox up
+
+`up` runs the steps in order. The tunnel and the mirror run in the
+background and log to `local/out/tunnel.log` and `local/out/mirror.log`.
+Before each step, `up` prints the command that runs it by hand. If a step
+fails or you press Ctrl-C, `up` prints the commands that are left. After the
+checks, `up` keeps the tunnel and the mirror running until you press Ctrl-C.
+It asks whether to run the checks again, and stops when you answer no. If
+the last checks failed, `up` exits with status 1 when it stops. If the
+cluster was created with a different issuer, `up` asks to delete the cluster
+and create it again. The default answer keeps the cluster.
+
+`up` and `down` ask questions only when stdin is a terminal. If it isn't,
+`up` doesn't offer to run the checks again, and it keeps a cluster with a
+different issuer. `down` then deletes only with `--yes`.
+
+`sandbox up --print` prints the commands without running them:
+
     go run ./cmd/sandbox tunnel        # in its own terminal, until you stop it
     go run ./cmd/sandbox bootstrap
     go run ./cmd/sandbox mirror        # in another terminal, until you stop it
     go run ./cmd/sandbox check-issuer
     go run ./cmd/sandbox run
+
+When `up` stops, it stops the tunnel and the mirror, and the zone can't read
+the cluster's issuer until they run again. A quick tunnel gets a new URL
+every time it starts, but the cluster keeps the issuer it was created with.
+To keep one quick tunnel across restarts of `up`, start `sandbox tunnel` in
+its own terminal first. `up` uses a quick tunnel that is already running.
+With a named tunnel, `up` always runs cloudflared itself, and the URL stays
+the same.
 
 zone-setup stops if another policy set is active. Run `sandbox run` with
 `--replace-active-policy-set` to replace it for everyone in the zone.
@@ -59,11 +85,13 @@ Cloudflare says quick tunnels have no uptime guarantee and are for testing
 and development
 ([Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/)).
 The tunnel gets a new `https://<name>.trycloudflare.com` URL every time it
-starts. `sandbox tunnel` writes it to `local/out/issuer` and deletes the
-file when it exits. It refuses to start while that file exists. If a killed
-tunnel left the file behind, delete it. The other steps read the issuer from
-that file. The
-issuer is fixed when the cluster is created, so start `sandbox tunnel`
+starts. `sandbox tunnel` writes it to `local/out/issuer`, locks the file
+while it runs, and deletes the file when it exits. The lock goes away when
+the tunnel's process exits, even when it's killed. The other steps read the
+issuer from that file, and refuse it when it isn't locked. `sandbox tunnel`
+refuses to start while another tunnel has the file locked, and deletes a
+file left by a killed tunnel. The issuer is fixed when the cluster is
+created, so start `sandbox tunnel`
 before `sandbox bootstrap`. After a restart, run `sandbox down` and
 `sandbox bootstrap` again. zone-setup then creates a new provider for the
 new issuer, and keeps the old one.
@@ -106,6 +134,7 @@ is empty, they trust only the system roots.
 
 | Step | What it does |
 |---|---|
+| `sandbox up` | `tunnel`, `bootstrap`, `mirror`, `check-issuer` and `run`, in order, in one process |
 | `sandbox tunnel` | publishes the mirror at the issuer's https URL through a Cloudflare tunnel |
 | `sandbox bootstrap` | creates the cluster with the issuer, or checks that an existing one has it |
 | `sandbox mirror` | reads the cluster's discovery document and JWKS and serves them |

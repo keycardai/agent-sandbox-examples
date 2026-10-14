@@ -1,7 +1,11 @@
 // Command sandbox runs the sandbox demo: an agent in a Kubernetes sandbox
 // whose HTTPS goes through the Keycard egress proxy. Each subcommand is one
 // step, and each step reads its settings from local/local.env.
-// docs/local.md describes the steps.
+// docs/local.md describes the steps. `up` runs them all:
+//
+//	go run ./cmd/sandbox up
+//
+// or one at a time:
 //
 //	go run ./cmd/sandbox tunnel        # in a terminal of its own
 //	go run ./cmd/sandbox bootstrap
@@ -23,7 +27,9 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/charmbracelet/x/term"
 	"github.com/urfave/cli/v3"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/install"
@@ -32,7 +38,10 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
-const defaultListen = "127.0.0.1:8480"
+const (
+	defaultListen     = "127.0.0.1:8480"
+	defaultIssuerWait = 2 * time.Minute
+)
 
 var errUnexpectedArgument = errors.New("unexpected argument")
 
@@ -55,6 +64,7 @@ func newCommand() *cli.Command {
 			&cli.StringFlag{Name: "env", Usage: "settings file (default local/local.env)"},
 		},
 		Commands: []*cli.Command{
+			upCommand(),
 			tunnelCommand(),
 			bootstrapCommand(),
 			mirrorCommand(),
@@ -64,6 +74,31 @@ func newCommand() *cli.Command {
 			downCommand(),
 			installCommand(),
 		},
+	}
+}
+
+func upCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "up",
+		Usage: "set up and run the whole demo, and print the command for each step",
+		Flags: append([]cli.Flag{
+			listenFlag(),
+			&cli.BoolFlag{Name: "print", Usage: "print the commands and do not run them"},
+			&cli.DurationFlag{
+				Name:  "issuer-wait",
+				Value: defaultIssuerWait,
+				Usage: "how long to wait for the cluster's issuer to answer",
+			},
+		}, runFlags()...),
+		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
+			return local.Up(ctx, sandbox.UpOptions{
+				Run:        runOptions(cmd),
+				Listen:     cmd.String("listen"),
+				EnvFile:    cmd.String("env"),
+				Print:      cmd.Bool("print"),
+				IssuerWait: cmd.Duration("issuer-wait"),
+			})
+		}),
 	}
 }
 
@@ -118,21 +153,9 @@ func runCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "run",
 		Usage: "set up the cluster and Keycard, install the sandbox and the egress proxy, and run the checks",
-		Flags: []cli.Flag{
-			&cli.BoolFlag{
-				Name:  "skip-zone-setup",
-				Usage: "reuse the Keycard setup of the last run, in local/out/zone-setup.yaml",
-			},
-			&cli.BoolFlag{
-				Name:  zonesetup.ReplaceActiveFlag,
-				Usage: "make the sandbox policy set active, replacing the zone's active policy set",
-			},
-		},
+		Flags: runFlags(),
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
-			return local.Run(ctx, sandbox.RunOptions{
-				SkipZoneSetup: cmd.Bool("skip-zone-setup"),
-				ReplaceActive: cmd.Bool(zonesetup.ReplaceActiveFlag),
-			})
+			return local.Run(ctx, runOptions(cmd))
 		}),
 	}
 }
@@ -148,13 +171,8 @@ func checkCommand() *cli.Command {
 			&cli.StringFlag{Name: "user-id", Usage: "the user's Keycard id (default from the last run)"},
 		},
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
-			target, err := local.CheckTargetFor(
-				cmd.String("cluster"), cmd.String("namespace"), cmd.String("pod"), cmd.String("user-id"),
-			)
-			if err != nil {
-				return fmt.Errorf("finding the sandbox: %w", err)
-			}
-			return local.Check(ctx, target)
+			return local.CheckSandbox(ctx,
+				cmd.String("cluster"), cmd.String("namespace"), cmd.String("pod"), cmd.String("user-id"))
 		}),
 	}
 }
@@ -168,7 +186,7 @@ func downCommand() *cli.Command {
 			&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "delete without asking"},
 		},
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
-			return local.Down(ctx, cmd.String("cluster"), cmd.Bool("yes"), cmd.Reader)
+			return local.Down(ctx, cmd.String("cluster"), cmd.Bool("yes"))
 		}),
 	}
 }
@@ -232,6 +250,27 @@ func listenFlag() *cli.StringFlag {
 	}
 }
 
+// runFlags are the flags of run. up takes them too, and passes them to run.
+func runFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.BoolFlag{
+			Name:  "skip-zone-setup",
+			Usage: "reuse the Keycard setup of the last run, in local/out/zone-setup.yaml",
+		},
+		&cli.BoolFlag{
+			Name:  zonesetup.ReplaceActiveFlag,
+			Usage: "make the sandbox policy set active, replacing the zone's active policy set",
+		},
+	}
+}
+
+func runOptions(cmd *cli.Command) sandbox.RunOptions {
+	return sandbox.RunOptions{
+		SkipZoneSetup: cmd.Bool("skip-zone-setup"),
+		ReplaceActive: cmd.Bool(zonesetup.ReplaceActiveFlag),
+	}
+}
+
 // step returns an action that runs one step on a Local built from the
 // repository and the settings file.
 func step(run func(context.Context, *cli.Command, *sandbox.Local) error) cli.ActionFunc {
@@ -265,5 +304,10 @@ func newLocal(cmd *cli.Command) (*sandbox.Local, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading the settings: %w", err)
 	}
-	return &sandbox.Local{Root: root, Settings: settings, Tool: sandbox.Tool, Out: cmd.Writer}, nil
+	local := &sandbox.Local{Root: root, Settings: settings, Tool: sandbox.Tool, Out: cmd.Writer}
+	// huh reads os.Stdin and needs a terminal.
+	if term.IsTerminal(os.Stdin.Fd()) {
+		local.Ask = terminalAsker{}
+	}
+	return local, nil
 }
