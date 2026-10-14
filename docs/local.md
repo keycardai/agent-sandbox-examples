@@ -37,6 +37,7 @@ Before each step, `up` prints the command that runs it by hand. If a step
 fails or you press Ctrl-C, `up` prints the commands that are left. After the
 checks, `up` keeps the tunnel and the mirror running until you press Ctrl-C.
 It asks whether to run the checks again, and stops when you answer no. If
+the last checks failed, `up` exits with status 1 when it stops. If
 the cluster was created with a different issuer, `up` asks to delete the
 cluster and create it again. The default answer keeps the cluster.
 

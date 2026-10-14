@@ -62,6 +62,8 @@ type upRun struct {
 	// quickTunnel is true when Up started a quick tunnel. Its URL stops
 	// working when Up stops. bootstrapped is true when bootstrap succeeded.
 	quickTunnel, bootstrapped bool
+	// checks is the result of the last checks that ran to the end.
+	checks error
 }
 
 // Up runs every step in one process: tunnel, bootstrap, mirror, check-issuer
@@ -70,8 +72,9 @@ type upRun struct {
 // ends, it prints the commands that are left and returns an error.
 //
 // After run, Up keeps the tunnel and the mirror running until ctx ends. On a
-// terminal, it asks whether to run the checks again, and stops on no. Up does
-// not delete the cluster when it stops.
+// terminal, it asks whether to run the checks again, and stops on no. Failed
+// checks do not stop Up. When Up stops, it returns the error of the last
+// checks. Up does not delete the cluster when it stops.
 //
 // Up does not start a tunnel when the operator publishes the issuer or
 // already runs a quick tunnel.
@@ -130,9 +133,8 @@ func (l *Local) upSteps(opts UpOptions) []upStep {
 		upStep{args: runArgs, run: func(ctx context.Context, state *upRun) error {
 			err := l.Run(ctx, state.opts.Run)
 			if errors.Is(err, ErrCheck) {
-				// Failed checks do not stop Up. The sandbox is up, and
-				// serve runs the checks again on request.
 				_, _ = fmt.Fprintf(l.Out, "\n%v\n", err)
+				state.checks = err
 				return nil
 			}
 			return err
@@ -293,7 +295,8 @@ func waitFor(ctx context.Context, state *upRun, what string, ready func() bool) 
 
 // serve keeps the background steps running until ctx ends or one stops. On a
 // terminal, it asks whether to run the checks again until the operator
-// answers no or presses Ctrl-C. Without a terminal, it does not ask.
+// answers no or presses Ctrl-C. Without a terminal, it does not ask. When the
+// operator stops it, it returns state.checks.
 func (l *Local) serve(ctx context.Context, steps []upStep, state *upRun) error {
 	_, _ = fmt.Fprintln(l.Out, "\nThe sandbox is up. Leave this running so the zone can read the cluster's issuer\n"+
 		"through the tunnel and the mirror. Ctrl-C stops up. Stopping does not delete the cluster.")
@@ -311,8 +314,12 @@ func (l *Local) serve(ctx context.Context, steps []upStep, state *upRun) error {
 	for {
 		again, err := l.confirm(waiting, "Run the checks again? No stops up.", true)
 		if err == nil && again {
-			if err = l.CheckSandbox(ctx, "", "", "", ""); err != nil {
+			err = l.CheckSandbox(ctx, "", "", "", "")
+			if err != nil {
 				_, _ = fmt.Fprintf(l.Out, "%v\n", err)
+			}
+			if ctx.Err() == nil {
+				state.checks = err
 			}
 			continue
 		}
@@ -320,8 +327,8 @@ func (l *Local) serve(ctx context.Context, steps []upStep, state *upRun) error {
 			<-waiting.Done()
 		}
 		switch {
-		case ctx.Err() != nil, errors.Is(err, ErrInterrupted):
-			return nil
+		case err == nil, ctx.Err() != nil, errors.Is(err, ErrInterrupted):
+			return state.checks
 		case waiting.Err() != nil:
 			l.printLeft(steps, len(steps), state)
 			return context.Cause(waiting) //nolint:wrapcheck // The cause is the background step's error from startService.
