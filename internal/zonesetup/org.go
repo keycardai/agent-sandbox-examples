@@ -40,7 +40,8 @@ func Login(ctx context.Context, managementAPIURL, clientID, secret string, roots
 	if err != nil {
 		return nil, err
 	}
-	// keycard.NewClient reads KEYCARD_API_* variables. NewZoneService does not.
+	// The zone service takes its settings only from these options. It does
+	// not read KEYCARD_API_* variables.
 	return &Org{zones: keycard.NewZoneService(
 		option.WithBaseURL(managementAPIURL),
 		option.WithHTTPClient(httpClient),
@@ -49,7 +50,7 @@ func Login(ctx context.Context, managementAPIURL, clientID, secret string, roots
 	)}, nil
 }
 
-// Zone returns the zone values names by zone_url, zone_id or both. Every
+// Zone returns the zone that values names by zone_url, zone_id or both. Every
 // error wraps ErrAPI, ErrZoneNotFound, ErrZoneAmbiguous or ErrZoneMismatch.
 func (o *Org) Zone(ctx context.Context, values *Values) (*keycard.Zone, error) {
 	if values.ZoneID != "" {
@@ -71,8 +72,8 @@ func (o *Org) Zones(ctx context.Context) ([]keycard.Zone, error) {
 
 // CreateZone creates a zone named name and checks every poll whether it is
 // ready, for up to wait. A zone is ready when it has an issuer URL and its
-// policy set list does not return 404. New users need an invitation to
-// register, which is the zone default.
+// policy set list does not return 404. The zone keeps the default
+// requires_invitation, true, so new users need an invitation to register.
 func (o *Org) CreateZone(ctx context.Context, name string, poll, wait time.Duration) (*keycard.Zone, error) {
 	zone, err := o.zones.New(ctx, keycard.ZoneNewParams{Name: name})
 	if err != nil {

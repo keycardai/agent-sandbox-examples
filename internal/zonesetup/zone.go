@@ -677,8 +677,9 @@ func serviceAccountToken(
 		err = fmt.Errorf("%w: the token endpoint returned HTTP %d for client %s. "+
 			"The client must be an organization service account",
 			ErrAuth, res.StatusCode, clientID)
-		// RFC 6749 section 5.2: a token endpoint answers a bad client or
-		// grant with 400, or with 401 when the client failed to authenticate.
+		// RFC 6749 section 5.2: a token endpoint refuses a request with 400.
+		// When client authentication fails, it may answer 401, and must when
+		// the client used the Authorization header.
 		if res.StatusCode == http.StatusBadRequest || res.StatusCode == http.StatusUnauthorized {
 			err = fmt.Errorf("%w: %w", ErrRefused, err)
 		}

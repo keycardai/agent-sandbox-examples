@@ -29,8 +29,7 @@ const (
 	githubAPI            = "https://api.github.com"
 	githubGit            = "https://github.com"
 	openRouterAPI        = "https://openrouter.ai/api/v1"
-	// zonePoll and zoneWait bound the wait for a new zone. The policy
-	// engine caches a 404 for an unknown zone for about a minute.
+	// zonePoll and zoneWait bound the wait for a new zone to become ready.
 	zonePoll = 5 * time.Second
 	zoneWait = 2 * time.Minute
 	// Choice values that cannot match a zone ID, user email, provider
@@ -70,10 +69,12 @@ type wizard struct {
 }
 
 // previous holds the values file from before Init. exists reports whether
-// local/local.env or the values file exists.
+// local/local.env or the values file exists. err is the values file's parse
+// error. When err is set, values is empty and exists is false.
 type previous struct {
 	values zonesetup.Values
 	exists bool
+	err    error
 }
 
 // Init asks the operator for the settings and writes local/local.env and the
@@ -82,9 +83,9 @@ type previous struct {
 // to the value in the existing files. Init keeps the keys it does not ask
 // about, such as namespace and policy_set.
 //
-// Init reads zones, users and providers from the management API. Its only
-// write creates a zone, when the operator asks for one. It does not change
-// policies. It asks whether `sandbox run` may replace another active policy
+// Init reads zones, users and providers from the management API. It writes
+// to Keycard only to create a zone, when the operator asks for one. It does
+// not change policies. It asks whether `sandbox run` may replace another active policy
 // set, and returns the answer.
 //
 // Init asks with l.Ask, and returns ErrNoTerminal when l.Ask is nil. It
@@ -130,12 +131,16 @@ const (
 	changeNothing      = "\x00nothing"
 )
 
-// chooseChanges returns the sections to ask. On a first run that is every
-// section. When the settings files exist, it shows the current settings and
-// asks what to change. If the answer is nothing, it returns an empty map and
-// Init does not write the files.
+// chooseChanges returns the sections to ask. On a first run, or when the
+// values file does not parse, that is every section. When the settings files
+// exist, it shows the current settings and asks what to change. If the answer
+// is nothing, it returns an empty map and Init does not write the files.
 func (w *wizard) chooseChanges(ctx context.Context) (map[string]bool, error) {
 	all := map[string]bool{sectionAccount: true, sectionZone: true, sectionCredentials: true, sectionCluster: true}
+	if w.prev.err != nil {
+		_, _ = fmt.Fprintf(w.l.Out, "%s does not parse: %v\nInit asks every question and replaces it.\n",
+			w.l.valuesName(), w.prev.err)
+	}
 	if !w.prev.exists {
 		return all, nil
 	}
@@ -754,8 +759,17 @@ func (w *wizard) askReplaceActive(ctx context.Context) (bool, error) {
 		strings.Join(others, ", "), zonesetup.DefaultPolicySetName), false)
 }
 
-// write writes the values file and local/local.env.
+// write writes the values file and local/local.env. It refuses a setting
+// with a line break, which would add a line to local.env.
 func (w *wizard) write() error {
+	w.env[KeyCluster] = cmp.Or(w.l.Settings[KeyCluster], defaultCluster)
+	w.env[KeyZoneSetupValues] = w.l.valuesName()
+	w.env[KeyGitHubLogin] = w.l.Settings[KeyGitHubLogin]
+	for _, key := range settingKeys() {
+		if strings.ContainsAny(w.env[key], "\r\n") {
+			return fmt.Errorf("%w: %s has a line break: %q", ErrSettings, key, w.env[key])
+		}
+	}
 	raw, err := yaml.Marshal(w.out)
 	if err != nil {
 		return fmt.Errorf("encoding the values: %w", err)
@@ -766,9 +780,6 @@ func (w *wizard) write() error {
 		return fmt.Errorf("writing %s: %w", w.l.valuesPath(), err)
 	}
 	_, _ = fmt.Fprintf(w.l.Out, "Wrote %s.\n", w.l.valuesName())
-	w.env[KeyCluster] = cmp.Or(w.l.Settings[KeyCluster], defaultCluster)
-	w.env[KeyZoneSetupValues] = w.l.valuesName()
-	w.env[KeyGitHubLogin] = w.l.Settings[KeyGitHubLogin]
 	return w.l.writeSettings(w.env)
 }
 
@@ -831,14 +842,15 @@ func (l *Local) valuesPath() string {
 	return filepath.Join(l.Root, l.valuesName())
 }
 
-// previousValues reads the values file Init replaces. It skips the
-// ParseValues checks, because Init only takes defaults from it.
+// previousValues reads the values file without the ParseValues checks.
 func (l *Local) previousValues() previous {
 	_, envErr := os.Stat(filepath.Join(l.Root, "local", "local.env"))
 	raw, err := os.ReadFile(l.valuesPath())
 	prev := previous{exists: envErr == nil || err == nil}
 	if err == nil {
-		_ = yaml.Unmarshal(raw, &prev.values)
+		if prev.err = yaml.Unmarshal(raw, &prev.values); prev.err != nil {
+			prev = previous{err: prev.err}
+		}
 	}
 	return prev
 }

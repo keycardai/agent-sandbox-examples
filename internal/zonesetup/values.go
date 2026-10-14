@@ -196,7 +196,8 @@ func ParseValues(reader io.Reader) (*Values, error) {
 	return parseValues(reader, "", "")
 }
 
-// parseValues is ParseValues plus ReadValuesFile's issuerURL override.
+// parseValues parses like ParseValues. When issuerURL is not empty, it sets
+// issuer_url to issuerURL. source names where issuerURL came from, for errors.
 func parseValues(reader io.Reader, issuerURL, source string) (*Values, error) {
 	raw, err := io.ReadAll(reader)
 	if err != nil {
