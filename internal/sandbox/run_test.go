@@ -439,17 +439,22 @@ func TestCheckTargetFor(t *testing.T) {
 // A run that fails must make exactly the calls in wantCalls, so each row
 // shows the step Run stops at. A whole run must make each call in wantCalls
 // and none in notCalls. Without KEYCARD_LOCAL_IMAGE_TAG, the pod runs the
-// images the charts pin and Run does not import images. With it, Run imports
-// the images at that tag.
+// images the charts pin and Run does not import the three images. With it,
+// Run imports the images at that tag, and a missing image stops Run before
+// the import. A scenario with a Dockerfile builds its image FROM the pinned
+// sandbox-base and imports it, and the sandbox runs it with the scenario's
+// environment. Run deletes a pod that no longer matches the Sandbox, or
+// whose agent exited, so the controller creates it again.
 func TestRun(t *testing.T) {
 	t.Parallel()
 	const (
+		images = "ghcr.io/keycardai/egress-netsetup:local ghcr.io/keycardai/egress-proxy:local" +
+			" ghcr.io/keycardai/sandbox-base:local"
 		dockerCall = "docker KUBERC= version --format {{.Server.Version}}\n"
 		inspects   = "docker KUBERC= image inspect ghcr.io/keycardai/egress-netsetup:local\n" +
 			"docker KUBERC= image inspect ghcr.io/keycardai/egress-proxy:local\n" +
 			"docker KUBERC= image inspect ghcr.io/keycardai/sandbox-base:local\n"
-		importCall = "k3d KUBERC= image import --cluster asp ghcr.io/keycardai/egress-netsetup:local" +
-			" ghcr.io/keycardai/egress-proxy:local ghcr.io/keycardai/sandbox-base:local\n"
+		importCall   = "k3d KUBERC= image import --cluster asp " + images + "\n"
 		kube         = "kubectl KUBERC=off --context k3d-asp --namespace agents "
 		bootstrapped = dockerCall + listCall + discoveryCall + mintCalls
 		imported     = bootstrapped + inspects + importCall
@@ -459,14 +464,20 @@ func TestRun(t *testing.T) {
 		tag     string
 		sandbox fakeSandbox
 		// noDocker makes docker a path that does not exist.
-		noDocker  bool
-		output    string
-		want      []error
-		wantText  string
-		wantCalls []string
-		notCalls  []string
-		// wantImages are the images the applied pod runs.
-		wantImages []string
+		noDocker bool
+		output   string
+		// scenario adds agentScenario with a Dockerfile and runs it.
+		scenario bool
+		// tool runs before the fake sandbox.
+		tool     string
+		want     []error
+		wantText string
+		// wantCalls, wantOut and wantManifest are substrings of the calls,
+		// the output and local/out/sandbox.yaml.
+		wantCalls    []string
+		wantOut      []string
+		wantManifest []string
+		notCalls     []string
 	}{
 		{
 			name:     "docker missing",
@@ -514,13 +525,15 @@ func TestRun(t *testing.T) {
 			wantCalls: []string{
 				bootstrapped,
 				"helm KUBERC=off upgrade --install keycard-sandbox ",
+				"/local/out/install.values.yaml --values ", "/local/out/scenario.values.yaml --wait\n",
 				"kubectl KUBERC=off --context k3d-asp apply --namespace agents -f -\n" +
+					kube + "get pod " + userID + " --ignore-not-found -o jsonpath={.status.phase}\n" +
 					kube + "wait --for=create pod/" + userID + " --timeout=120s\n" +
 					kube + "wait --for=condition=Ready pod/" + userID + " --timeout=5s\n" +
 					kube + "exec " + userID + " -c agent -- curl",
 			},
-			notCalls:   []string{"docker KUBERC= image", "image import"},
-			wantImages: pinnedImages(),
+			notCalls:     []string{"docker KUBERC= image", "image import", "docker KUBERC= build"},
+			wantManifest: append(imageLines(pinnedImages()), "user: x-access-token\n"),
 		},
 		{
 			name:      "images at a tag",
@@ -528,10 +541,72 @@ func TestRun(t *testing.T) {
 			sandbox:   healthy(),
 			output:    zoneSetupOutput,
 			wantCalls: []string{imported},
-			wantImages: []string{
+			wantOut:   []string{"Imported " + strings.ReplaceAll(images, " ", ", ") + " into the k3d cluster asp.\n"},
+			wantManifest: imageLines([]string{
 				"ghcr.io/keycardai/egress-netsetup:local", "ghcr.io/keycardai/egress-proxy:local",
 				"ghcr.io/keycardai/sandbox-base:local",
+			}),
+		},
+		{
+			name:     "scenario with an image",
+			sandbox:  healthy(),
+			output:   zoneSetupOutput,
+			scenario: true,
+			wantCalls: []string{
+				bootstrapped + "docker KUBERC= build --tag ghcr.io/keycardai/sandbox-agent:local --build-arg BASE_IMAGE=" +
+					pinnedImages()[2] + " ",
+				"/scenarios/agent\nk3d KUBERC= image import --cluster asp ghcr.io/keycardai/sandbox-agent:local\n",
 			},
+			wantOut: []string{
+				"Built the image ghcr.io/keycardai/sandbox-agent:local.\n",
+				"Imported ghcr.io/keycardai/sandbox-agent:local into the k3d cluster asp.\n",
+			},
+			wantManifest: []string{
+				"image: ghcr.io/keycardai/sandbox-agent:local\n",
+				"- name: \"REPO\"\n", "value: \"https://github.com/octo/demo.git\"\n",
+				"url: https://api.example.com\n",
+			},
+		},
+		{
+			name:    "sandbox template changed",
+			sandbox: healthy(),
+			output:  zoneSetupOutput,
+			tool: `case "$*" in
+*"get sandbox ` + userID + ` --ignore-not-found"*)
+	[[ -f $CALLS.applied ]] && echo 2 || echo 1; exit 0 ;;
+*" apply --namespace "*) touch "$CALLS.applied" ;;
+*"get pod ` + userID + ` --ignore-not-found"*) echo Running; exit 0 ;;
+esac
+`,
+			wantCalls: []string{"apply --namespace agents -f -\n" + kube + "get pod " + userID +
+				" --ignore-not-found -o jsonpath={.status.phase}\n" + kube + "get sandbox " + userID +
+				" --ignore-not-found -o jsonpath={.metadata.generation}\n" + kube + "delete pod " + userID +
+				" --wait=true\n" + kube + "wait --for=create pod/" + userID},
+			wantOut: []string{
+				"Deleted the pod " + userID + ", so the controller creates it again from the sandbox's template.\n",
+			},
+		},
+		{
+			name:    "agent exited",
+			sandbox: healthy(),
+			output:  zoneSetupOutput,
+			tool: `case "$*" in
+*"get sandbox ` + userID + ` --ignore-not-found"*) echo 1; exit 0 ;;
+*"get pod ` + userID + ` --ignore-not-found"*) echo Failed; exit 0 ;;
+esac
+`,
+			wantCalls: []string{kube + "delete pod " + userID + " --wait=true\n"},
+		},
+		{
+			name:    "pod up to date",
+			sandbox: healthy(),
+			output:  zoneSetupOutput,
+			tool: `case "$*" in
+*"get sandbox ` + userID + ` --ignore-not-found"*) echo 1; exit 0 ;;
+*"get pod ` + userID + ` --ignore-not-found"*) echo Running; exit 0 ;;
+esac
+`,
+			notCalls: []string{"delete pod"},
 		},
 	}
 	for _, tc := range tests {
@@ -540,13 +615,18 @@ func TestRun(t *testing.T) {
 			local, calls := newLocal(t, sandbox.Settings{
 				sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer,
 				sandbox.KeyZoneURL: zoneURL, sandbox.KeyUserEmail: email, sandbox.KeyImageTag: tc.tag,
-			}, tc.sandbox.script())
+			}, tc.tool+tc.sandbox.script())
 			if tc.noDocker {
 				removeDocker(t, local)
 			}
 			out := &bytes.Buffer{}
 			local.Out = out
 			linkCharts(t, local.Root)
+			if tc.scenario {
+				addScenario(t, local.Root, agentName, agentScenario, true)
+				writeFile(t, filepath.Join(local.Root, "local", "answers.yaml"), "repo: octo/demo\n")
+				local.Settings[sandbox.KeyScenario] = agentName
+			}
 			if tc.output != "" {
 				writeFile(t, filepath.Join(local.Root, "local", "out", "zone-setup.yaml"), tc.output)
 			}
@@ -559,18 +639,11 @@ func TestRun(t *testing.T) {
 				}
 				return
 			}
-			for _, want := range tc.wantCalls {
-				if !strings.Contains(got, want) {
-					t.Fatalf("calls lack %q\n%s", want, got)
-				}
-			}
-			for _, absent := range tc.notCalls {
-				if strings.Contains(got, absent) {
-					t.Errorf("calls have %q\n%s", absent, got)
-				}
-			}
+			checkCalls(t, got, tc.wantCalls, tc.notCalls)
 			checkRunWrote(t, local.Root, out.String())
-			checkImages(t, local.Root, tc.wantImages)
+			checkContains(t, "output", out.String(), tc.wantOut)
+			manifest, _ := os.ReadFile(filepath.Join(local.Root, "local", "out", "sandbox.yaml"))
+			checkContains(t, "sandbox.yaml", string(manifest), tc.wantManifest)
 		})
 	}
 }
@@ -588,38 +661,58 @@ func removeDocker(t *testing.T, local *sandbox.Local) {
 	}
 }
 
-// checkImages checks that the applied sandbox pod runs images.
-func checkImages(t *testing.T, root string, images []string) {
+// checkCalls requires got to hold each of want and none of absent.
+func checkCalls(t *testing.T, got string, want, absent []string) {
 	t.Helper()
-	path := filepath.Join(root, "local", "out", "sandbox.yaml")
-	raw, err := os.ReadFile(path) //nolint:gosec // G304: the path is the test's own file.
-	if err != nil {
-		t.Fatal(err)
+	for _, call := range want {
+		if !strings.Contains(got, call) {
+			t.Fatalf("calls lack %q\n%s", call, got)
+		}
 	}
-	for _, image := range images {
-		if !strings.Contains(string(raw), "image: "+image+"\n") {
-			t.Errorf("local/out/sandbox.yaml lacks the image %q", image)
+	for _, call := range absent {
+		if strings.Contains(got, call) {
+			t.Errorf("calls have %q\n%s", call, got)
 		}
 	}
 }
 
-// checkRunWrote checks that the output reports what a whole run wrote, and
-// that those files exist under root.
+// imageLines returns the manifest lines that run images.
+func imageLines(images []string) []string {
+	lines := make([]string, 0, len(images))
+	for _, image := range images {
+		lines = append(lines, "image: "+image+"\n")
+	}
+	return lines
+}
+
+// checkRunWrote checks that the output reports what a whole run imported and
+// wrote, and that those files exist under root.
 func checkRunWrote(t *testing.T, root, out string) {
 	t.Helper()
 	for _, line := range []string{
-		"Wrote local/out/install.values.yaml and local/out/sandbox.values.yaml.\n",
+		"Wrote local/out/install.values.yaml, local/out/sandbox.values.yaml and local/out/scenario.values.yaml.\n",
 		"Wrote the applied manifests to local/out/sandbox.yaml.\n",
 	} {
 		if !strings.Contains(out, line) {
 			t.Errorf("output lacks %q", line)
 		}
 	}
-	for _, name := range []string{"install.values.yaml", "sandbox.values.yaml", "sandbox.yaml"} {
+	for _, name := range []string{"install.values.yaml", "sandbox.values.yaml", "scenario.values.yaml", "sandbox.yaml"} {
 		path := filepath.Join(root, "local", "out", name)
 		raw, err := os.ReadFile(path) //nolint:gosec // G304: the path is the test's own file.
 		if err != nil || len(raw) == 0 {
 			t.Errorf("local/out/%s: %v, want it written", name, err)
+		}
+	}
+}
+
+// checkContains requires got to contain each of wants. what names got in
+// the error.
+func checkContains(t *testing.T, what, got string, wants []string) {
+	t.Helper()
+	for _, want := range wants {
+		if !strings.Contains(got, want) {
+			t.Errorf("%s lacks %q\n%s", what, want, got)
 		}
 	}
 }
@@ -631,18 +724,28 @@ func with(change func(*fakeSandbox)) fakeSandbox {
 	return f
 }
 
-// linkCharts links the repository's sandbox chart and local values into
-// root, where Run reads them.
+// linkCharts links the repository's sandbox chart, local values and
+// scenarios into root, where Run reads them. Each scenario is its own link,
+// so a test can add a scenario of its own.
 func linkCharts(t *testing.T, root string) {
 	t.Helper()
 	repo, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = os.MkdirAll(filepath.Join(root, "local"), 0o750); err != nil {
+	scenarios, err := filepath.Glob(filepath.Join(repo, "scenarios", "*"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	for _, dir := range []string{"install", "sandbox", filepath.Join("local", "values")} {
+	links := make([]string, 0, len(scenarios)+3)
+	links = append(links, "install", "sandbox", filepath.Join("local", "values"))
+	for _, dir := range scenarios {
+		links = append(links, filepath.Join("scenarios", filepath.Base(dir)))
+	}
+	for _, dir := range links {
+		if err = os.MkdirAll(filepath.Dir(filepath.Join(root, dir)), 0o750); err != nil {
+			t.Fatal(err)
+		}
 		if err = os.Symlink(filepath.Join(repo, dir), filepath.Join(root, dir)); err != nil {
 			t.Fatal(err)
 		}

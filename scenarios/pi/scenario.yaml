@@ -1,0 +1,47 @@
+# The pi coding agent in your terminal. pi calls a model on OpenRouter and
+# works in a clone of a GitHub repository. docs/local.md documents the keys.
+title: Coding agent in your terminal (pi, OpenRouter and GitHub)
+inputs:
+  - {id: github, kind: github}
+  - {id: openrouter-api-key, kind: secret, prompt: OpenRouter API key}
+  - {id: repo, kind: text, prompt: "GitHub repository for pi to work in, as owner/name"}
+  - id: model
+    kind: text
+    prompt: OpenRouter model for pi
+    default: anthropic/claude-sonnet-5
+resources:
+  - {identifier: https://api.github.com, name: GitHub, credential: github}
+  - {identifier: https://github.com, name: GitHub git, credential: github}
+  - {identifier: https://openrouter.ai/api/v1, name: OpenRouter, credential: openrouter-api-key}
+endpoints:
+  - url: https://api.github.com
+    credential:
+      placement: {kind: header, name: Authorization, template: "Bearer {credential}"}
+  # git clone and push over HTTPS.
+  - url: https://github.com
+    credential:
+      placement: {kind: basic, user: x-access-token}
+  - url: https://openrouter.ai/api/v1
+    credential:
+      placement: {kind: header, name: Authorization, template: "Bearer {credential}"}
+  # Allowed without a credential. The checks fetch pypi.org.
+  - url: https://pypi.org
+  - url: https://files.pythonhosted.org
+agent:
+  args: [sleep, infinity]
+  env:
+    # pi lists OpenRouter's models only when this is set. The proxy replaces
+    # the key in each request.
+    OPENROUTER_API_KEY: placeholder
+    # Turn off pi's telemetry, the attribution headers it adds to model
+    # requests, and its calls to pi.dev for the latest version and the model
+    # catalog. No endpoint allows pi.dev. pi's docs/environment-variables.md
+    # documents these variables.
+    PI_TELEMETRY: "0"
+    PI_SKIP_VERSION_CHECK: "1"
+    PI_OFFLINE: "1"
+    SANDBOX_REPO: "{repo}"
+    SANDBOX_MODEL: "{model}"
+run:
+  mode: shell
+  command: [pi-session]

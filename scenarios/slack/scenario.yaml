@@ -1,0 +1,37 @@
+# A Slack agent that runs GitHub and Linear commands one user sends it in a
+# direct message. docs/local.md documents the keys.
+title: Slack agent for GitHub and Linear, in the background
+inputs:
+  - id: slack-bot-token
+    kind: secret
+    prompt: "Slack bot token (xoxb-), with the im:write, im:history and chat:write scopes"
+  - id: slack-user
+    kind: text
+    prompt: "Your Slack member ID, such as U012AB3CDE. The agent answers only this user."
+  - {id: github, kind: github}
+  - {id: linear-api-key, kind: secret, prompt: Linear personal API key}
+resources:
+  - {identifier: https://slack.com/api, name: Slack, credential: slack-bot-token}
+  - {identifier: https://api.github.com, name: GitHub, credential: github}
+  - {identifier: https://api.linear.app, name: Linear, credential: linear-api-key}
+endpoints:
+  - url: https://slack.com/api
+    credential:
+      placement: {kind: header, name: Authorization, template: "Bearer {credential}"}
+  - url: https://api.github.com
+    credential:
+      placement: {kind: header, name: Authorization, template: "Bearer {credential}"}
+  # A Linear personal API key goes in the header without a scheme
+  # (https://linear.app/developers/graphql).
+  - url: https://api.linear.app
+    credential:
+      placement: {kind: header, name: Authorization, template: "{credential}"}
+  # Allowed without a credential. The checks fetch pypi.org.
+  - url: https://pypi.org
+  - url: https://files.pythonhosted.org
+agent:
+  args: [slack-agent]
+  env:
+    SLACK_USER: "{slack-user}"
+run:
+  mode: background

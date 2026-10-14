@@ -1,0 +1,31 @@
+# The proxy checks: an idle agent on sandbox-base, and `sandbox check`
+# against GitHub, OpenRouter and pypi.org. docs/local.md documents the keys.
+title: Check the proxy with GitHub and OpenRouter
+inputs:
+  - {id: github, kind: github}
+  - id: openrouter-api-key
+    kind: secret
+    prompt: OpenRouter API key
+    confirm: Add an OpenRouter API key?
+resources:
+  - {identifier: https://api.github.com, name: GitHub, credential: github}
+  - {identifier: https://github.com, name: GitHub git, credential: github}
+  - {identifier: https://openrouter.ai/api/v1, name: OpenRouter, credential: openrouter-api-key}
+endpoints:
+  - url: https://api.github.com
+    credential:
+      placement: {kind: header, name: Authorization, template: "Bearer {credential}"}
+  # git over HTTPS.
+  - url: https://github.com
+    credential:
+      placement: {kind: basic, user: x-access-token}
+  - url: https://openrouter.ai/api/v1
+    credential:
+      placement: {kind: header, name: Authorization, template: "Bearer {credential}"}
+  # Allowed without a credential. The checks fetch pypi.org.
+  - url: https://pypi.org
+  - url: https://files.pythonhosted.org
+agent:
+  args: [sleep, infinity]
+run:
+  mode: checks

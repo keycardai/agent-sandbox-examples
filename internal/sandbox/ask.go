@@ -36,3 +36,13 @@ func (l *Local) confirm(ctx context.Context, question string, value bool) (bool,
 	}
 	return l.Ask.Confirm(ctx, question, value) //nolint:wrapcheck // Asker documents its errors. Callers add context.
 }
+
+// choose asks question with l.Ask. It returns ErrNoTerminal when l.Ask is
+// nil.
+func (l *Local) choose(ctx context.Context, question string, options []Option, value string) (string, error) {
+	if l.Ask == nil {
+		return "", ErrNoTerminal
+	}
+	//nolint:wrapcheck // Asker documents its errors. Callers add context.
+	return l.Ask.Choose(ctx, question, options, value)
+}

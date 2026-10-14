@@ -1,7 +1,9 @@
 /bin/
+/local/answers.yaml
 /local/local.env
 /local/out/
 /zone-setup.yaml
+__pycache__/
 
 # From https://github.com/github/gitignore/blob/main/community/Golang/Go.gitignore
 #
