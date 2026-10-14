@@ -287,7 +287,14 @@ func (l *Local) runSettings(ctx context.Context) (runSettings, error) {
 	if cfg.caFile, err = l.caFile(); err != nil {
 		return cfg, err
 	}
-	cfg.imageTag = l.Settings[KeyImageTag]
+	// Kubernetes sets imagePullPolicy to Always for an image tagged latest
+	// (https://kubernetes.io/docs/concepts/containers/images/#imagepullpolicy-defaulting).
+	// On k3d the node would then pull instead of running the images Run
+	// imports.
+	if cfg.imageTag = l.Settings[KeyImageTag]; cfg.imageTag == "latest" {
+		return cfg, fmt.Errorf("%w: %s must not be latest. Leave it empty to run the images the charts pin",
+			ErrSettings, KeyImageTag)
+	}
 	if cfg, err = l.existingSettings(cfg); err != nil {
 		return cfg, err
 	}
@@ -350,8 +357,6 @@ func ParseCIDRs(list string) ([]string, error) {
 
 // importImages imports the three images, tagged tag, from Docker into the
 // cluster. It fails before the import if Docker does not have one of them.
-// A tag other than latest defaults imagePullPolicy to IfNotPresent, so the
-// node runs the imported images and does not pull.
 func (l *Local) importImages(ctx context.Context, cluster, tag string) error {
 	var missing []string
 	for _, image := range images(tag) {

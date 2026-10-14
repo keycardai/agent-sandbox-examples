@@ -40,7 +40,8 @@ The cluster pulls `egress-netsetup`, `egress-proxy` and `sandbox-base` from
 `ghcr.io/keycardai`, at the release digests the charts pin. To run images
 you built in the egress-proxy repository, tag them
 `ghcr.io/keycardai/<name>:local` and set `KEYCARD_LOCAL_IMAGE_TAG=local`.
-`sandbox run` then imports them into the k3d cluster.
+`sandbox run` then imports them into the k3d cluster. `sandbox run` refuses
+the tag `latest`, because Kubernetes always pulls an image with that tag.
 
 To change something, run `go run ./cmd/sandbox init` again. It shows your
 current settings and asks which part to change. Each question defaults to

@@ -343,6 +343,7 @@ func TestRunSettings(t *testing.T) {
 			"yes",
 			`KEYCARD_LOCAL_ZONE_ON_HOST must be true or empty (got "yes")`,
 		},
+		{"image tag latest", sandbox.KeyImageTag, "latest", "KEYCARD_LOCAL_IMAGE_TAG must not be latest"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
