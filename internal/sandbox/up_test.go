@@ -280,7 +280,7 @@ esac
 
 // tlsIssuer serves a discovery document and an empty JWKS over TLS. It
 // returns the issuer URL and a CA file that trusts the server.
-func tlsIssuer(t *testing.T) (issuerURL, caFile string) {
+func tlsIssuer(t *testing.T) (string, string) {
 	t.Helper()
 	mux := http.NewServeMux()
 	server := httptest.NewTLSServer(mux)
@@ -291,7 +291,7 @@ func tlsIssuer(t *testing.T) (issuerURL, caFile string) {
 	mux.HandleFunc("/openid/v1/jwks", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `{"keys":[]}`)
 	})
-	caFile = filepath.Join(t.TempDir(), "ca.pem")
+	caFile := filepath.Join(t.TempDir(), "ca.pem")
 	writeFile(t, caFile, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})))
 	return server.URL, caFile
 }
