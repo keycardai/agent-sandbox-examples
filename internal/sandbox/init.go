@@ -745,9 +745,10 @@ func (w *wizard) askReplaceActive(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("listing the zone's active policy set: %w", err)
 	}
+	ours := cmp.Or(w.out.PolicySet, zonesetup.DefaultPolicySetName)
 	var others []string
 	for _, set := range active {
-		if set.Name != zonesetup.DefaultPolicySetName {
+		if set.Name != ours {
 			others = append(others, fmt.Sprintf("%q", set.Name))
 		}
 	}
@@ -756,7 +757,7 @@ func (w *wizard) askReplaceActive(ctx context.Context) (bool, error) {
 	}
 	return w.confirm(ctx, fmt.Sprintf("The zone's active policy set is %s. Only one set can be active. "+
 		"Replace it with %q when the sandbox runs? Its policies will stop applying to everyone in the zone.",
-		strings.Join(others, ", "), zonesetup.DefaultPolicySetName), false)
+		strings.Join(others, ", "), ours), false)
 }
 
 // write writes the values file and the settings file. It refuses a setting
