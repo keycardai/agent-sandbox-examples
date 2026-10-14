@@ -3,14 +3,20 @@ package sandbox_test
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/keycardai/agent-sandbox-examples/internal/issuer"
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 )
 
@@ -90,6 +96,7 @@ func TestUpPrint(t *testing.T) {
 
 // TestUpStops checks that Up stops at the failed step and prints the
 // commands from that step on, and the background steps before it.
+// check-issuer may retry for a minute, but only a failed discovery fetch.
 func TestUpStops(t *testing.T) {
 	t.Parallel()
 	const (
@@ -99,6 +106,7 @@ func TestUpStops(t *testing.T) {
 			cmd + "check-issuer\n" +
 			cmd + "run\n"
 	)
+	verifier, caFile := tlsIssuer(t)
 	tests := []struct {
 		name     string
 		settings sandbox.Settings
@@ -133,6 +141,20 @@ func TestUpStops(t *testing.T) {
 			wantText: "address already in use",
 			wantLeft: rest,
 		},
+		{
+			// The fetch passes, and the fake cluster mints an empty token.
+			name: "token refused",
+			settings: sandbox.Settings{
+				sandbox.KeyCluster: cluster, sandbox.KeyIssuer: verifier, sandbox.KeyCAFile: caFile,
+			},
+			tool: clusterTool(present, verifier, verifier) + `case "$*" in
+*"get --raw /openid/v1/jwks") echo '{"keys":[{"kty":"RSA","kid":"k","n":"AQAB","e":"AQAB"}]}' ;;
+esac
+`,
+			want:     []error{sandbox.ErrIssuer, issuer.ErrToken},
+			wantText: "token refused",
+			wantLeft: rest,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -149,11 +171,14 @@ func TestUpStops(t *testing.T) {
 				defer func() { _ = held.Close() }()
 				addr = held.Addr().String()
 			}
-			err := local.Up(t.Context(), sandbox.UpOptions{Listen: addr})
+			err := local.Up(t.Context(), sandbox.UpOptions{Listen: addr, IssuerWait: time.Minute})
 			checkErr(t, err, tc.want, tc.wantText)
 			want := leftHeader + strings.ReplaceAll(tc.wantLeft, "LISTEN", addr)
 			if !strings.HasSuffix(out.String(), want) {
 				t.Fatalf("output = %q, want it to end with %q", out, want)
+			}
+			if strings.Contains(out.String(), "does not answer yet") {
+				t.Fatalf("output = %q, want no retry", out)
 			}
 			if tc.tool == "" {
 				if got := readCalls(t, calls); got != "" {
@@ -243,6 +268,24 @@ case "$FAKE_TOOL $*" in
 *"create token default"*) echo 'e30.%[2]s.c2ln' ;;
 esac
 `, issuerURL, payload)
+}
+
+// tlsIssuer serves a discovery document and an empty JWKS over TLS. It
+// returns the issuer URL and a CA file that trusts the server.
+func tlsIssuer(t *testing.T) (issuerURL, caFile string) {
+	t.Helper()
+	mux := http.NewServeMux()
+	server := httptest.NewTLSServer(mux)
+	t.Cleanup(server.Close)
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"issuer":%q,"jwks_uri":%q}`, server.URL, server.URL+"/openid/v1/jwks")
+	})
+	mux.HandleFunc("/openid/v1/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"keys":[]}`)
+	})
+	caFile = filepath.Join(t.TempDir(), "ca.pem")
+	writeFile(t, caFile, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})))
+	return server.URL, caFile
 }
 
 // freeAddr returns a loopback address with a port nothing listens on.

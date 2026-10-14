@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/keycardai/agent-sandbox-examples/internal/issuer"
 )
 
 const (
@@ -213,12 +215,13 @@ func (l *Local) upMirror(ctx context.Context, state *upRun) error {
 }
 
 // upCheckIssuer runs check-issuer until it passes or opts.IssuerWait runs
-// out. It retries only errors that wrap ErrIssuer.
+// out. It retries only a failed discovery fetch, which a tunnel that is still
+// starting gives. Any other failure returns at once.
 func (l *Local) upCheckIssuer(ctx context.Context, state *upRun) error {
 	deadline := time.Now().Add(state.opts.IssuerWait)
 	for {
 		err := l.CheckIssuer(ctx, "", "")
-		if err == nil || !errors.Is(err, ErrIssuer) || time.Now().Add(issuerRetry).After(deadline) {
+		if err == nil || !errors.Is(err, issuer.ErrFetch) || time.Now().Add(issuerRetry).After(deadline) {
 			return err
 		}
 		_, _ = fmt.Fprintf(l.Out, "The issuer does not answer yet. Retrying in %s.\n", issuerRetry)
