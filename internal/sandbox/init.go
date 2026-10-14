@@ -760,8 +760,17 @@ func (w *wizard) askReplaceActive(ctx context.Context) (bool, error) {
 		strings.Join(others, ", "), zonesetup.DefaultPolicySetName), false)
 }
 
-// write writes the values file and local/local.env.
+// write writes the values file and local/local.env. It refuses a setting
+// with a line break, which would add a line to local.env.
 func (w *wizard) write() error {
+	w.env[KeyCluster] = cmp.Or(w.l.Settings[KeyCluster], defaultCluster)
+	w.env[KeyZoneSetupValues] = w.l.valuesName()
+	w.env[KeyGitHubLogin] = w.l.Settings[KeyGitHubLogin]
+	for _, key := range settingKeys() {
+		if strings.ContainsAny(w.env[key], "\r\n") {
+			return fmt.Errorf("%w: %s has a line break: %q", ErrSettings, key, w.env[key])
+		}
+	}
 	raw, err := yaml.Marshal(w.out)
 	if err != nil {
 		return fmt.Errorf("encoding the values: %w", err)
@@ -772,9 +781,6 @@ func (w *wizard) write() error {
 		return fmt.Errorf("writing %s: %w", w.l.valuesPath(), err)
 	}
 	_, _ = fmt.Fprintf(w.l.Out, "Wrote %s.\n", w.l.valuesName())
-	w.env[KeyCluster] = cmp.Or(w.l.Settings[KeyCluster], defaultCluster)
-	w.env[KeyZoneSetupValues] = w.l.valuesName()
-	w.env[KeyGitHubLogin] = w.l.Settings[KeyGitHubLogin]
 	return w.l.writeSettings(w.env)
 }
 
