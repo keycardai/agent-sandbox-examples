@@ -35,6 +35,7 @@ const (
 	KeyKubeContext      = "KEYCARD_LOCAL_KUBE_CONTEXT"
 	KeyImageTag         = "KEYCARD_LOCAL_IMAGE_TAG"
 	KeyClusterCIDRs     = "KEYCARD_LOCAL_CLUSTER_CIDRS"
+	KeyScenario         = "KEYCARD_LOCAL_SCENARIO"
 	maxClusterNameBytes = 32
 	// settingTrue is the value of a setting that is on.
 	settingTrue = "true"
@@ -74,7 +75,7 @@ func settingKeys() []string {
 	return []string{
 		KeyCluster, KeyIssuer, KeyTunnel, KeyZoneURL, KeyZoneOnHost,
 		KeyZoneSetupValues, KeyUserEmail, KeyGitHubLogin, KeyCAFile,
-		KeyKubeContext, KeyImageTag, KeyClusterCIDRs,
+		KeyKubeContext, KeyImageTag, KeyClusterCIDRs, KeyScenario,
 	}
 }
 
@@ -139,6 +140,9 @@ type Local struct {
 	Tool func(ctx context.Context, name string, args ...string) (*exec.Cmd, error)
 	// Out receives progress lines and the output of long-running tools.
 	Out io.Writer
+	// Stdin is the input of the command Shell runs in the agent container.
+	// If it is nil, the command reads no input.
+	Stdin io.Reader
 	// Ask asks the operator questions. When stdin is not a terminal, Ask is
 	// nil and every question returns ErrNoTerminal.
 	Ask Asker
@@ -252,14 +256,24 @@ func (l *Local) requireK3d(step string) error {
 // standard output. It sets KUBERC=off, so a kuberc default for --server,
 // --cluster, --user or --token cannot override the context.
 func (l *Local) kubectl(ctx context.Context, cluster string, stdin []byte, args ...string) ([]byte, error) {
-	cmd, err := l.Tool(ctx, "kubectl", slices.Concat([]string{"--context", l.kubeContext(cluster)}, args)...)
+	cmd, err := l.kubectlCommand(ctx, cluster, args...)
 	if err != nil {
 		return nil, err
 	}
-	cmd.Env = append(cmd.Environ(), "KUBERC=off")
 	out, err := pinned.Run(cmd, stdin)
 	if err != nil {
 		return nil, fmt.Errorf("kubectl: %w", err)
 	}
 	return out, nil
+}
+
+// kubectlCommand returns a kubectl command in the cluster's context, with
+// KUBERC=off.
+func (l *Local) kubectlCommand(ctx context.Context, cluster string, args ...string) (*exec.Cmd, error) {
+	cmd, err := l.Tool(ctx, "kubectl", slices.Concat([]string{"--context", l.kubeContext(cluster)}, args)...)
+	if err != nil {
+		return nil, err
+	}
+	cmd.Env = append(cmd.Environ(), "KUBERC=off")
+	return cmd, nil
 }

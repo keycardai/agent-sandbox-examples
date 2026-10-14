@@ -20,15 +20,15 @@ zone fetches `<issuer>/.well-known/openid-configuration` and compares its
 - A user in the zone for the sandbox to act for. The management API can't
   create users. Add one in the Keycard console, or have the person sign in
   to the zone.
-
 Then:
 
     go run ./cmd/sandbox up
 
 The first time, `up` runs `sandbox init`. It asks for your service account,
-the zone (or creates one), the user, where the GitHub token comes from, an
-optional OpenRouter API key, and how the zone reaches the cluster's issuer.
-It writes `local/local.env` and `zone-setup.yaml`. Secrets you type go in
+the zone (or creates one), the user, which demo to run, the demo's
+questions, and how the zone reaches the cluster's issuer. It writes
+`local/local.env` and `zone-setup.yaml`, and `local/answers.yaml` for the
+demo's answers that are not secrets. Secrets you type go in
 `local/out/secrets/`, readable only by you. `init` doesn't ask for the
 service account secret when an environment variable holds it:
 `KEYCARD_MANAGEMENT_CLIENT_SECRET`, or the variable that `client_secret_env`
@@ -44,35 +44,42 @@ you built in the egress-proxy repository, tag them
 the tag `latest`, because Kubernetes always pulls an image with that tag.
 
 To change something, run `go run ./cmd/sandbox init` again. It shows your
-current settings and asks which part to change. Each question defaults to
-your current answer. A saved secret stays unless you answer n to "Keep the
-saved ...?". Keys `init` doesn't ask about, such as `namespace` and
-`policy_set`, keep their values. `init` drops the comments in
-`zone-setup.yaml`. If `zone-setup.yaml` does not parse, `init` asks every
-question and replaces the file. The change takes effect on the next
-`sandbox up` or `sandbox run`. zone-setup does not delete what it created in
-Keycard for your old answers.
+current settings and asks what to change: nothing, everything, or one part,
+such as the demo or the cluster. Each question defaults to your current
+answer. A saved secret stays unless you answer n to "Keep the saved ...?".
+Keys `init` doesn't ask about, such as `namespace` and `policy_set`, keep
+their values, and so do resources that no scenario lists. `init` drops the
+comments in `zone-setup.yaml`. If `zone-setup.yaml` does not parse, `init`
+asks every question and replaces the file. The change takes effect on the
+next `sandbox up` or `sandbox run`. zone-setup does not delete what it
+created in Keycard for your old answers.
 
-The demo calls GitHub, so it needs a GitHub token. With a GitHub provider in
-the zone, each user signs in to GitHub and their sandbox acts as them. With
-a personal access token, every user's sandbox acts as the token's owner.
-If you add an OpenRouter API key, `sandbox check` also has the agent fetch
-the key's details from OpenRouter. This call does not run a model.
+Each demo is a scenario in `scenarios/`. The `smoke` scenario runs an idle
+agent and the checks. It calls GitHub, so it needs a GitHub token. With a
+GitHub provider in the zone, each user signs in to GitHub and their sandbox
+acts as them. With a personal access token, every user's sandbox acts as
+the token's owner. With an OpenRouter API key, `sandbox check` also has the
+agent fetch the key's details from OpenRouter. That call does not run a
+model.
 
 `up` runs the steps in order. The tunnel and the mirror run in the
 background and log to `local/out/tunnel.log` and `local/out/mirror.log`.
 Before each step, `up` prints the command that runs it by hand. If a step
 fails or you press Ctrl-C, `up` prints the commands that are left. After the
 checks, `up` keeps the tunnel and the mirror running until you press Ctrl-C.
-It asks whether to run the checks again, and stops when you answer no. If
+It asks whether to run the checks again, and stops when you answer no. For
+a scenario in shell mode, `up` opens the agent in your terminal after the
+checks instead. When you exit the agent, `up` asks whether to open it
+again, run the checks, or stop. For a scenario in background mode, `up`
+follows the agent's log after the checks, and stops if the agent exits. If
 the last checks failed, `up` exits with status 1 when it stops. If the
 cluster was created with a different issuer, or your kubeconfig has no
 context for it, `up` asks to delete the cluster and create it again. The
 default answer keeps the cluster.
 
 `up` and `down` ask questions only when stdin is a terminal. If it isn't,
-`up` doesn't offer to run the checks again, and it keeps such a cluster.
-`down` then deletes only with `--yes`.
+`up` doesn't offer to run the checks again or to open the agent again, and
+it keeps such a cluster. `down` then deletes only with `--yes`.
 
 `sandbox up --print` prints the commands without running them:
 
@@ -99,6 +106,105 @@ sandbox, use `go run ./cmd/sandbox check`.
 `go run ./cmd/sandbox down` deletes the cluster. It does not delete what
 zone-setup created in the zone.
 
+## Scenarios
+
+A scenario is a directory `scenarios/<name>/` with a `scenario.yaml`, and
+optionally a `Dockerfile` and the files it copies. `KEYCARD_LOCAL_SCENARIO`
+names the scenario, and `sandbox init` sets it. `scenario.yaml` has these
+keys:
+
+| Key | What it does |
+|---|---|
+| `title` | the name `sandbox init` shows |
+| `inputs` | the questions `sandbox init` asks, in order. Each has an `id` of lowercase letters, digits and dashes, and a `kind`. |
+| `resources` | the zone-setup resources. Each has an `identifier`, a `name`, and a `credential` that names a `secret` or `github` input. `sandbox init` writes each with `prefix: true`. |
+| `endpoints` | the sandbox chart's `endpoints`, as `sandbox/values.yaml` documents them |
+| `agent.args` | the agent container's args, which the sandbox-base entrypoint runs |
+| `agent.env` | the agent's environment. `{id}` in a value is the answer to the text input `id`. |
+| `run.mode` | what `sandbox up` does once the sandbox is up. `checks` runs the checks. `shell` runs the checks, then `run.command` in the agent container, attached to your terminal. `background` runs the checks, then follows the log of the agent that `agent.args` starts. |
+| `run.command` | in shell mode, the command `sandbox up` and `sandbox shell` run in the agent container |
+
+The input kinds:
+
+| Kind | What `sandbox init` asks |
+|---|---|
+| `text` | `prompt`, with `default` filled in. The answer goes in `local/answers.yaml`. |
+| `secret` | `prompt`. The answer goes in `local/out/secrets/<id>`, and the resources that name the input read it from there. With `confirm`, `init` first asks that yes or no question, and a no leaves out those resources. |
+| `github` | a GitHub provider in the zone, or a personal access token in `local/out/secrets/github-token` |
+
+A resource's identifier must equal the canonical `url` of a credentialed
+endpoint. A secret never goes in the agent's environment. The proxy adds it
+to the request. If the agent needs the variable set, set it to a
+placeholder. `sandbox` refuses a scenario whose `agent.env` names a secret
+input.
+
+The checks fetch `https://pypi.org/simple/` and `https://api.github.com/user`
+from the agent, so every scenario must list `pypi.org` and GitHub in
+`endpoints`.
+
+With a `Dockerfile`, `sandbox run` builds the agent image from the
+scenario's directory, tags it `ghcr.io/keycardai/sandbox-<name>:local`, and
+imports it into the k3d cluster. The build gets the sandbox-base image as
+the `BASE_IMAGE` build argument: the one the charts pin, or
+`ghcr.io/keycardai/sandbox-base:<tag>` with `KEYCARD_LOCAL_IMAGE_TAG` set.
+The Dockerfile declares `ARG BASE_IMAGE` and builds `FROM ${BASE_IMAGE}`.
+The image must keep `sh` and `curl` for the checks. Without a Dockerfile, the agent runs
+sandbox-base.
+
+`sandbox run` writes the scenario's endpoints and agent to
+`local/out/scenario.values.yaml`, and passes it to both charts after the
+other values files. The sandbox controller does not change a pod that
+exists. When the sandbox's template changes, such as after you choose
+another demo, `run` deletes the pod and the controller creates it again.
+`run` also replaces a pod whose agent exited.
+
+## The pi scenario
+
+The `pi` scenario runs the [pi coding agent](https://pi.dev) in your
+terminal. pi calls a model on OpenRouter and works in a clone of the
+GitHub repository you name. `sandbox init` asks for GitHub access, the
+OpenRouter API key, the repository and the model. The agent does not see
+either credential. The proxy adds the OpenRouter key to each model request
+and the GitHub token to each GitHub request, including `git push`.
+
+The image adds Node.js 24 to sandbox-base, and pi at the version
+`scenarios/pi/package-lock.json` pins. To update pi, change its version in
+`scenarios/pi/package.json`, run `npm install --package-lock-only
+--ignore-scripts` in that directory, and check that each package in
+`package-lock.json` has an `integrity` hash.
+
+## The slack scenario
+
+The `slack` scenario runs an agent in the background that answers your
+direct messages in Slack, and ignores everyone else. Each message is one
+command:
+
+    github whoami
+    github issues OWNER/REPO
+    github issue OWNER/REPO TITLE
+    linear whoami
+    linear issues
+    linear issue TEAM-KEY TITLE
+
+The agent is a Python script, `scenarios/slack/slack-agent`. It does not
+call a model. It reads the direct message with `conversations.history` every
+3 seconds, 20 calls a minute, and answers with `chat.postMessage`. Slack
+allows an internal app 50 or more `conversations.history` calls a minute
+([conversations.history](https://docs.slack.dev/reference/methods/conversations.history)).
+The proxy adds the bot token to every call to `https://slack.com/api`.
+
+Before `sandbox init`, create a Slack app for your workspace:
+
+1. Add the bot token scopes `im:write`, `im:history` and `chat:write`.
+2. In App Home, allow users to send messages from the Messages tab.
+3. Install the app, and copy the bot token, which starts with `xoxb-`.
+4. Copy your member ID from your Slack profile.
+
+`sandbox init` also asks for the GitHub token and a Linear personal API
+key, which you create in Linear's security settings. The proxy sends the
+Linear key in the `Authorization` header without a scheme, as Linear
+expects ([Linear API](https://linear.app/developers/graphql)).
+
 ## Using an existing cluster
 
 To run the sandbox in an existing cluster, such as EKS, choose its
@@ -109,7 +215,8 @@ kubeconfig context in `sandbox init`. `init` saves the context in
   reads the issuer from the cluster and shows it.
 - Pull images from `ghcr.io/keycardai`. With `KEYCARD_LOCAL_IMAGE_TAG` set,
   the cluster pulls the images at that tag instead of the ones the charts
-  pin.
+  pin. Nothing publishes the images of scenarios with a Dockerfile, so
+  `run` refuses those scenarios on an existing cluster.
 - Enforce NetworkPolicy. `sandbox check` fails when the cluster does not.
   The sandbox steps do not change the cluster's network setup.
 - Allow the privileged Pod Security level in the sandbox namespace. The
@@ -119,10 +226,13 @@ kubeconfig context in `sandbox init`. `init` saves the context in
 `KEYCARD_LOCAL_CLUSTER_CIDRS`. The sandbox NetworkPolicy and the proxy
 block these ranges.
 
-With an existing cluster, `sandbox up` runs only `check-issuer` and `run`,
-and stops after the checks. `run` doesn't create a cluster or import images.
-`bootstrap`, `down`, `tunnel` and `mirror` fail. The other steps take the
-context in `--cluster`.
+With an existing cluster, `sandbox up` runs only `check-issuer` and `run`.
+In checks mode it stops after the checks. In shell mode it stops when you
+choose to stop or press Ctrl-C, or after the agent exits when stdin is not a
+terminal. In background mode it stops when you press Ctrl-C or the agent
+exits. `run` doesn't create a cluster or import images. `bootstrap`,
+`down`, `tunnel` and `mirror` fail. The other steps take the context in
+`--cluster`.
 
 ## Publishing the issuer
 
@@ -198,6 +308,8 @@ the management API URL is not `https://api.keycard.ai`.
 | `sandbox check-issuer` | checks that a Keycard zone can verify the cluster's tokens |
 | `sandbox run` | for k3d, runs `sandbox bootstrap`, and imports the images when `KEYCARD_LOCAL_IMAGE_TAG` is set. Then it runs zone-setup and `sandbox install`, creates the user's sandbox, and runs `sandbox check` |
 | `sandbox check` | runs the checks against the running sandbox. To check that the cluster enforces NetworkPolicy, it starts a pod in the sandbox namespace that tries to connect to CoreDNS on a port the policy blocks. kubectl deletes the pod when it exits. The check changes nothing else in the cluster. |
+| `sandbox logs` | follows the log of the running sandbox's agent, until you press Ctrl-C or the agent exits |
+| `sandbox shell` | runs the scenario's `run.command` in the running sandbox's agent container, or `sh` when it has none, attached to your terminal |
 | `sandbox down` | deletes the local cluster. It asks first, unless you pass `--yes`. |
 
 Every ID that `sandbox run` passes on comes from the zone-setup output in

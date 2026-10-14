@@ -1,0 +1,12 @@
+#!/bin/sh
+# Opens pi in a clone of $SANDBOX_REPO, with $SANDBOX_MODEL from OpenRouter.
+# The first run clones the repository into ~/work. Later runs reuse the
+# clone. Arguments go to pi.
+set -eu
+
+dir="$HOME/work/${SANDBOX_REPO##*/}"
+if [ ! -d "$dir/.git" ]; then
+	git clone "https://github.com/$SANDBOX_REPO.git" "$dir"
+fi
+cd "$dir"
+exec pi --provider openrouter --model "$SANDBOX_MODEL" "$@"

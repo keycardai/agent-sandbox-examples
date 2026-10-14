@@ -73,12 +73,16 @@ type upRun struct {
 // ends, it prints the commands that are left and returns an error.
 //
 // After run, Up keeps the tunnel and the mirror running until ctx ends. On a
-// terminal, it asks whether to run the checks again, and stops on no. Failed
-// checks do not stop Up, but when Up stops it returns the last checks' error.
-// Up does not delete the cluster when it stops.
+// terminal, it asks whether to run the checks again, and stops on no. For a
+// scenario in shell mode, Up first opens the scenario's command in the agent
+// container, and then asks whether to open it again, run the checks, or
+// stop. For a scenario in background mode, Up follows the agent's log, and
+// returns ErrAgent when the agent exits. Failed checks do not stop Up, but
+// when Up stops it returns the last checks' error. Up does not delete the
+// cluster when it stops.
 //
-// For an existing cluster, Up runs only check-issuer and run, and returns
-// after run.
+// For an existing cluster, Up runs only check-issuer and run. In checks mode
+// it returns after run, with ErrCheck when a check fails.
 //
 // Up does not start a tunnel when the operator publishes the issuer or
 // already runs a quick tunnel.
@@ -107,17 +111,21 @@ func (l *Local) Up(ctx context.Context, opts UpOptions) error {
 			return err
 		}
 	}
-	if !l.servesAfterRun() {
+	scenario, err := l.scenario()
+	if err != nil {
+		return err
+	}
+	if !l.servesAfterRun(scenario) {
 		return nil
 	}
-	return l.serve(ctx, steps, state)
+	return l.serve(ctx, steps, state, scenario)
 }
 
 // servesAfterRun reports whether Up keeps running after the run step. It
 // does on a k3d cluster, where it keeps the tunnel and the mirror serving the
-// issuer.
-func (l *Local) servesAfterRun() bool {
-	return !l.Existing()
+// issuer, and for a scenario in any mode other than checks.
+func (l *Local) servesAfterRun(scenario *Scenario) bool {
+	return !l.Existing() || scenario.Run.Mode != ModeChecks
 }
 
 // upSteps returns Up's steps for the settings. An existing cluster
@@ -156,7 +164,10 @@ func (l *Local) upRunStep(opts UpOptions) upStep {
 	}
 	return upStep{args: args, run: func(ctx context.Context, state *upRun) error {
 		err := l.Run(ctx, state.opts.Run)
-		if errors.Is(err, ErrCheck) && l.servesAfterRun() {
+		if !errors.Is(err, ErrCheck) {
+			return err
+		}
+		if scenario, scenarioErr := l.scenario(); scenarioErr == nil && l.servesAfterRun(scenario) {
 			// A failed check leaves the sandbox up. Print the failure and
 			// continue. serve runs the checks again on request.
 			_, _ = fmt.Fprintf(l.Out, "\n%v\n", err)
@@ -319,13 +330,24 @@ func waitFor(ctx context.Context, state *upRun, what string, ready func() bool) 
 	return nil
 }
 
-// serve keeps the background steps running until ctx ends or one stops. On a
-// terminal, it asks whether to run the checks again until the operator
-// answers no or presses Ctrl-C. Without a terminal, it does not ask. When the
-// operator stops it, it returns state.checks.
-func (l *Local) serve(ctx context.Context, steps []upStep, state *upRun) error {
-	_, _ = fmt.Fprintln(l.Out, "\nThe sandbox is up. Leave this running so the zone can read the cluster's issuer\n"+
-		"through the tunnel and the mirror. Ctrl-C stops up. Stopping does not delete the cluster.")
+// The answers to the question serve asks.
+const (
+	serveShell  = "shell"
+	serveChecks = "checks"
+	serveStop   = "stop"
+)
+
+// serve keeps the background steps running until ctx ends or one stops. In
+// background mode, it follows the agent's log. In shell mode, it first opens
+// the scenario's command. In shell and checks mode, on a terminal, it then
+// asks what to do next until the operator stops it or presses Ctrl-C.
+// Without a terminal, it does not ask, and on an existing cluster it returns
+// at once. When the operator stops it, it returns state.checks.
+func (l *Local) serve(ctx context.Context, steps []upStep, state *upRun, scenario *Scenario) error {
+	if !l.Existing() {
+		_, _ = fmt.Fprintln(l.Out, "\nThe sandbox is up. Leave this running so the zone can read the cluster's issuer\n"+
+			"through the tunnel and the mirror. Ctrl-C stops up. Stopping does not delete the cluster.")
+	}
 	// waiting ends when ctx ends or a background step stops. The step's
 	// error is its cause.
 	waiting, stop := context.WithCancelCause(ctx)
@@ -337,23 +359,104 @@ func (l *Local) serve(ctx context.Context, steps []upStep, state *upRun) error {
 		case <-waiting.Done():
 		}
 	}()
+	if scenario.Run.Mode == ModeBackground {
+		return l.follow(ctx, waiting, steps, state)
+	}
+	next := ""
+	if scenario.Run.Mode == ModeShell {
+		next = serveShell
+	}
 	for {
-		again, err := l.confirm(waiting, "Run the checks again? No stops up.", true)
-		if err == nil && again {
-			l.recheck(ctx, state)
-			continue
+		l.runAnswer(ctx, state, next)
+		var err error
+		if next, err = l.askNext(waiting, scenario); err != nil || next == serveStop {
+			return l.stopServing(ctx, waiting, steps, state, err)
 		}
-		if errors.Is(err, ErrNoTerminal) {
-			<-waiting.Done()
-		}
-		switch {
-		case err == nil, ctx.Err() != nil, errors.Is(err, ErrInterrupted):
+	}
+}
+
+// stopServing returns what serve returns once the operator stops it or its
+// question fails with err. Without a terminal, it first waits until waiting
+// ends, except on an existing cluster, which has no background steps.
+func (l *Local) stopServing(ctx, waiting context.Context, steps []upStep, state *upRun, err error) error {
+	if errors.Is(err, ErrNoTerminal) {
+		if l.Existing() {
 			return state.checks
-		case waiting.Err() != nil:
-			l.printLeft(steps, len(steps), state)
-			return context.Cause(waiting) //nolint:wrapcheck // The cause is the background step's error from startService.
 		}
-		return err
+		<-waiting.Done()
+	}
+	switch {
+	case err == nil, ctx.Err() != nil, errors.Is(err, ErrInterrupted):
+		return state.checks
+	case waiting.Err() != nil:
+		l.printLeft(steps, len(steps), state)
+		return context.Cause(waiting) //nolint:wrapcheck // The cause is the background step's error from startService.
+	}
+	return err
+}
+
+// follow follows the agent's log until waiting ends or the agent exits. When
+// the agent exits, it returns the ErrAgent from Logs. When ctx ends, it
+// returns state.checks.
+func (l *Local) follow(ctx, waiting context.Context, steps []upStep, state *upRun) error {
+	_, _ = fmt.Fprintf(l.Out, "\n$ %s\n", stepCommand(upStep{args: []string{"logs"}}, state.opts.EnvFile))
+	_, _ = fmt.Fprintln(l.Out, "The agent runs in the background. Press Ctrl-C to stop following its log.")
+	target, err := l.CheckTargetFor("", "", "", "")
+	if err != nil {
+		return fmt.Errorf("finding the sandbox: %w", err)
+	}
+	err = l.Logs(waiting, target)
+	switch {
+	case ctx.Err() != nil:
+		return state.checks
+	case waiting.Err() != nil:
+		l.printLeft(steps, len(steps), state)
+		return context.Cause(waiting) //nolint:wrapcheck // The cause is the background step's error from startService.
+	}
+	return err
+}
+
+// runAnswer opens the scenario's command or runs the checks, as answer
+// says. Any other answer does nothing.
+func (l *Local) runAnswer(ctx context.Context, state *upRun, answer string) {
+	switch answer {
+	case serveShell:
+		l.openShell(ctx, state)
+	case serveChecks:
+		l.recheck(ctx, state)
+	}
+}
+
+// askNext asks what serve does next. In shell mode, it offers to open the
+// scenario's command again, run the checks, or stop. Otherwise it asks
+// whether to run the checks again.
+func (l *Local) askNext(ctx context.Context, scenario *Scenario) (string, error) {
+	if scenario.Run.Mode == ModeShell {
+		return l.choose(ctx, "What next?", []Option{
+			{Label: "Open " + scenario.Run.Command[0] + " again", Value: serveShell},
+			{Label: "Run the checks", Value: serveChecks},
+			{Label: "Stop up", Value: serveStop},
+		}, serveShell)
+	}
+	again, err := l.confirm(ctx, "Run the checks again? No stops up.", true)
+	if err != nil || !again {
+		return serveStop, err
+	}
+	return serveChecks, nil
+}
+
+// openShell runs Shell against the sandbox of the last run, and prints any
+// failure.
+func (l *Local) openShell(ctx context.Context, state *upRun) {
+	_, _ = fmt.Fprintf(l.Out, "\n$ %s\n", stepCommand(upStep{args: []string{"shell"}}, state.opts.EnvFile))
+	target, err := l.CheckTargetFor("", "", "", "")
+	if err != nil {
+		err = fmt.Errorf("finding the sandbox: %w", err)
+	} else {
+		err = l.Shell(ctx, target)
+	}
+	if err != nil && ctx.Err() == nil {
+		_, _ = fmt.Fprintf(l.Out, "%v\n", err)
 	}
 }
 

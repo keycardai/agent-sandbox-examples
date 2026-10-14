@@ -111,6 +111,11 @@ agent:
   # entrypoint exits 64 when there are no args. `sleep infinity` keeps an idle
   # sandbox open for `kubectl exec`. Set the real agent's command here.
   args: ["sleep", "infinity"]
+  # The agent's environment, as NAME: value. Each value is a literal string.
+  # The chart does not render valueFrom. Do not put a credential here; the
+  # proxy adds credentials to requests. If the agent needs a credential's
+  # variable set, set it to a placeholder.
+  env: {}
 
 rbac:
   # Who is bound to the sandbox-admin Role. Empty renders the Role and no

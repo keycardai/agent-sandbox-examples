@@ -1,0 +1,167 @@
+#!/usr/bin/python3
+"""A Slack agent that answers one person in a direct message.
+
+It polls the direct message with SLACK_USER and answers each new message
+from that user. Each message is one command. `help` lists them. The agent
+does not call a model.
+
+The agent sends placeholder credentials. The egress proxy replaces each
+Authorization header with the credential for that host.
+"""
+
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+SLACK = "https://slack.com/api/"
+GITHUB = "https://api.github.com"
+LINEAR = "https://api.linear.app/graphql"
+# Slack allows conversations.history 50+ calls per minute for an internal
+# app (Tier 3). Polling every 3 seconds makes 20.
+# https://docs.slack.dev/reference/methods/conversations.history
+POLL_SECONDS = float(os.environ.get("POLL_SECONDS", "3"))
+USER = os.environ["SLACK_USER"]
+HELP = """Commands:
+  github whoami
+  github issues OWNER/REPO
+  github issue OWNER/REPO TITLE
+  linear whoami
+  linear issues
+  linear issue TEAM-KEY TITLE"""
+
+
+class Failed(Exception):
+    """A failed command or API call. The agent logs the message, or sends it
+    to Slack as the reply."""
+
+
+def log(message):
+    print(message, flush=True)
+
+
+def request(url, headers, body=None, form=None):
+    """Sends body as JSON, or form as a form, and returns the decoded JSON
+    response. On a 429, it waits for Retry-After and tries again."""
+    data, content_type = None, "application/json; charset=utf-8"
+    if body is not None:
+        data = json.dumps(body).encode()
+    if form is not None:
+        data, content_type = urllib.parse.urlencode(form).encode(), "application/x-www-form-urlencoded"
+    req = urllib.request.Request(url, data=data, headers={
+        "Content-Type": content_type, "User-Agent": "keycard-sandbox-slack-agent", **headers,
+    })
+    while True:
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as err:
+            if err.code == 429:
+                wait = int(err.headers.get("Retry-After", "30"))
+                log(f"rate limited by {req.host}, waiting {wait}s")
+                time.sleep(wait)
+                continue
+            raise Failed(f"{req.host} returned {err.code}: {err.read(300).decode(errors='replace')}") from err
+
+
+def slack(method, **params):
+    """Calls a Slack Web API method with a form. Slack reports errors in
+    the body."""
+    response = request(SLACK + method, {"Authorization": "Bearer placeholder"}, form=params)
+    if not response.get("ok"):
+        raise Failed(f"Slack {method} failed: {response.get('error')}")
+    return response
+
+
+def github(path, body=None):
+    return request(GITHUB + path, {"Authorization": "Bearer placeholder", "Accept": "application/vnd.github+json"},
+                   body=body)
+
+
+def linear(query, **variables):
+    # A Linear personal API key goes in the header without a scheme.
+    response = request(LINEAR, {"Authorization": "placeholder"}, body={"query": query, "variables": variables})
+    if response.get("errors"):
+        raise Failed("Linear: " + "; ".join(e.get("message", "") for e in response["errors"]))
+    return response["data"]
+
+
+def repo_path(name):
+    if name.count("/") != 1:
+        raise Failed(f"{name} is not OWNER/REPO")
+    return "/repos/" + "/".join(urllib.parse.quote(part, safe="") for part in name.split("/"))
+
+
+def run(text):
+    """Runs one command and returns the reply."""
+    words = text.split()
+    match words:
+        case ["help"] | []:
+            return HELP
+        case ["github", "whoami"]:
+            return "GitHub: " + github("/user")["login"]
+        case ["github", "issues", repo]:
+            issues = [i for i in github(repo_path(repo) + "/issues?state=open&per_page=10")
+                      if "pull_request" not in i]
+            return "\n".join(f"#{i['number']} {i['title']} {i['html_url']}" for i in issues) or "No open issues."
+        case ["github", "issue", repo, *title] if title:
+            issue = github(repo_path(repo) + "/issues", {"title": " ".join(title)})
+            return f"Created {issue['html_url']}"
+        case ["linear", "whoami"]:
+            viewer = linear("query { viewer { name email } }")["viewer"]
+            return f"Linear: {viewer['name']} ({viewer['email']})"
+        case ["linear", "issues"]:
+            nodes = linear("""query { viewer { assignedIssues(first: 10,
+                filter: {state: {type: {nin: ["completed", "canceled"]}}}) {
+                nodes { identifier title url } } } }""")["viewer"]["assignedIssues"]["nodes"]
+            return "\n".join(f"{n['identifier']} {n['title']} {n['url']}" for n in nodes) or "No open issues."
+        case ["linear", "issue", team, *title] if title:
+            teams = linear("query($key: String!) { teams(filter: {key: {eq: $key}}) { nodes { id } } }",
+                           key=team)["teams"]["nodes"]
+            if not teams:
+                raise Failed(f"Linear has no team {team}")
+            created = linear("""mutation($team: String!, $title: String!) {
+                issueCreate(input: {teamId: $team, title: $title}) { issue { identifier url } } }""",
+                             team=teams[0]["id"], title=" ".join(title))["issueCreate"]["issue"]
+            return f"Created {created['identifier']} {created['url']}"
+    return "I don't know that command.\n" + HELP
+
+
+def main():
+    channel = slack("conversations.open", users=USER)["channel"]["id"]
+    # Only messages after start-up get an answer.
+    last = f"{time.time():.6f}"
+    log(f"answering {USER} in {channel}")
+    while True:
+        try:
+            history = slack("conversations.history", channel=channel, oldest=last, limit=15)
+        except Failed as err:
+            log(str(err))
+            time.sleep(POLL_SECONDS)
+            continue
+        for message in sorted(history["messages"], key=lambda m: float(m["ts"])):
+            last = max(last, message["ts"], key=float)
+            if message.get("user") != USER or message.get("subtype") or message.get("bot_id"):
+                continue
+            log(f"command: {message.get('text', '')}")
+            try:
+                reply = run(message.get("text", ""))
+            except Failed as err:
+                reply = f"That failed: {err}"
+            log(reply)
+            try:
+                slack("chat.postMessage", channel=channel, text=reply)
+            except Failed as err:
+                log(str(err))
+        time.sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Failed as err:
+        log(str(err))
+        sys.exit(1)

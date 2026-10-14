@@ -2,6 +2,7 @@ package sandbox_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -351,4 +353,175 @@ fi
 	if !strings.Contains(out.String(), want) {
 		t.Fatalf("output lacks %q\n%s", want, out)
 	}
+}
+
+// TestUpShell runs Up on an existing cluster with a scenario in shell mode.
+// Up opens the command after the run, then asks what to do next: open it
+// again, run the checks, or stop. Ctrl-C ends Up. When the command fails, Up
+// prints the error. Without a terminal, Up opens the command once and
+// returns.
+func TestUpShell(t *testing.T) {
+	t.Parallel()
+	const (
+		shellCall = "exec -i " + userID + " -c agent -- agent-cli\n"
+		curlCall  = "exec " + userID + " -c agent -- curl"
+		question  = "What next? [Open agent-cli again, Run the checks, Stop up]"
+	)
+	tests := []struct {
+		name string
+		// ask is nil when stdin is not a terminal.
+		ask       *choiceAsker
+		exit      int
+		wantCalls []string
+		wantAsked []string
+		wantOut   []string
+	}{
+		{
+			name:      "shell then checks then shell",
+			ask:       &choiceAsker{answers: []string{"checks", "shell"}},
+			wantCalls: []string{shellCall, curlCall, shellCall},
+			wantAsked: []string{question, question, question},
+			wantOut:   []string{"\n$ go run ./cmd/sandbox shell\nagent-cli ran\n"},
+		},
+		{
+			name:      "command fails without a terminal",
+			exit:      3,
+			wantCalls: []string{shellCall},
+			wantOut:   []string{"agent-cli ran\nagent: agent-cli exited: exit status 3\n"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			local, calls, out := existingUp(t, "run: {mode: shell, command: [agent-cli]}", fmt.Sprintf(`case "$*" in
+*"exec -i %s -c agent -- agent-cli") echo "agent-cli ran"; exit %d ;;
+esac
+`, userID, tc.exit))
+			if tc.ask != nil {
+				local.Ask = tc.ask
+			}
+			if err := local.Up(t.Context(), sandbox.UpOptions{Run: sandbox.RunOptions{SkipZoneSetup: true}}); err != nil {
+				t.Fatal(err)
+			}
+			got := readCalls(t, calls)
+			checkInOrder(t, got[strings.LastIndex(got, "condition=Ready"):], tc.wantCalls)
+			if n, want := strings.Count(got, shellCall), strings.Count(strings.Join(tc.wantCalls, ""), shellCall); n != want {
+				t.Errorf("agent-cli ran %d times, want %d\n%s", n, want, got)
+			}
+			if tc.ask != nil && !slices.Equal(tc.ask.asked, tc.wantAsked) {
+				t.Errorf("asked %q, want %q", tc.ask.asked, tc.wantAsked)
+			}
+			checkContains(t, "output", out.String(), tc.wantOut)
+		})
+	}
+}
+
+// choiceAsker answers each choice with the next of answers, and returns
+// ErrInterrupted, as on Ctrl-C, once they run out. It records each question
+// with the labels of its options. Any other kind of question panics, because
+// the embedded Asker is nil.
+type choiceAsker struct {
+	sandbox.Asker
+
+	answers []string
+	asked   []string
+}
+
+func (a *choiceAsker) Choose(_ context.Context, question string, options []sandbox.Option, _ string) (string, error) {
+	labels := make([]string, 0, len(options))
+	for _, option := range options {
+		labels = append(labels, option.Label)
+	}
+	a.asked = append(a.asked, question+" ["+strings.Join(labels, ", ")+"]")
+	if len(a.answers) == 0 {
+		return "", sandbox.ErrInterrupted
+	}
+	answer := a.answers[0]
+	a.answers = a.answers[1:]
+	return answer, nil
+}
+
+// checkInOrder requires got to contain each of wants, in order.
+func checkInOrder(t *testing.T, got string, wants []string) {
+	t.Helper()
+	rest := got
+	for _, want := range wants {
+		i := strings.Index(rest, want)
+		if i < 0 {
+			t.Fatalf("calls lack %q in order\n%s", want, got)
+		}
+		rest = rest[i+len(want):]
+	}
+}
+
+// TestUpBackground runs Up on an existing cluster in background mode. Up
+// follows the agent's log until the agent exits, and returns its exit code.
+func TestUpBackground(t *testing.T) {
+	t.Parallel()
+	const logs = "logs --follow "
+	tests := []struct {
+		name string
+		// running is how many times the log ends while the agent runs.
+		running   int
+		wantCalls []string
+		wantOut   string
+	}{
+		{
+			name:      "agent exits",
+			wantCalls: []string{logs + "--tail=-1 " + userID + " -c agent\n"},
+			wantOut:   "\n$ go run ./cmd/sandbox logs\n",
+		},
+		{
+			name:    "log ends while the agent runs",
+			running: 1,
+			wantCalls: []string{
+				logs + "--tail=-1 " + userID + " -c agent\n", logs + "--tail=0 " + userID + " -c agent\n",
+			},
+			wantOut: "agent log line\nagent log line\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			local, calls, out := existingUp(t, "run: {mode: background}", fmt.Sprintf(`case "$*" in
+*"logs --follow"*) echo "agent log line"; exit 0 ;;
+*"state.terminated.exitCode"*)
+	n=$(cat "$CALLS.ended" 2>/dev/null || echo 0); echo $((n + 1)) >"$CALLS.ended"
+	(( n < %d )) || printf 3
+	exit 0 ;;
+esac
+`, tc.running))
+			err := local.Up(t.Context(), sandbox.UpOptions{Run: sandbox.RunOptions{SkipZoneSetup: true}})
+			checkErr(t, err, []error{sandbox.ErrAgent}, "the agent exited with code 3. Its log is above")
+			got := readCalls(t, calls)
+			checkInOrder(t, got, tc.wantCalls)
+			if n := strings.Count(got, logs); n != len(tc.wantCalls) {
+				t.Errorf("followed the log %d times, want %d\n%s", n, len(tc.wantCalls), got)
+			}
+			checkContains(t, "output", out.String(), []string{tc.wantOut})
+		})
+	}
+}
+
+// existingUp returns a Local for Up on an existing cluster, its calls file
+// and its output. The scenario is agentScenario with run as its run key. The
+// tool script runs tool before the fake cluster. The issuer is a test TLS
+// server that KEYCARD_LOCAL_CA_FILE trusts, so check-issuer passes.
+func existingUp(t *testing.T, run, tool string) (*sandbox.Local, string, *bytes.Buffer) {
+	t.Helper()
+	issuerURL, caFile, token := servedIssuer(t)
+	settings := existing()
+	settings[sandbox.KeyCAFile], settings[sandbox.KeyScenario] = caFile, agentName
+	local, calls := newLocal(t, settings, tool+`case "$FAKE_TOOL $*" in
+*"get --raw /.well-known/openid-configuration") echo '{"issuer":"`+issuerURL+`"}'; exit 0 ;;
+*"create token default"*) echo '`+token+`'; exit 0 ;;
+esac
+`+healthy().script())
+	linkCharts(t, local.Root)
+	addScenario(t, local.Root, agentName, strings.Replace(agentScenario, "run: {mode: checks}", run, 1), false)
+	writeFile(t, filepath.Join(local.Root, "local", "answers.yaml"), "repo: "+agentRepo+"\n")
+	writeFile(t, filepath.Join(local.Root, "local", "out", "zone-setup.yaml"), zoneSetupOutput)
+	out := &bytes.Buffer{}
+	local.Out = out
+	return local, calls, out
 }

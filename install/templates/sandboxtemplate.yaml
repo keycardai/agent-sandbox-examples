@@ -158,6 +158,13 @@ spec:
           args:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- with .Values.agent.env }}
+          env:
+            {{- range $name, $value := . }}
+            - name: {{ $name | quote }}
+              value: {{ $value | toString | quote }}
+            {{- end }}
+          {{- end }}
           securityContext:
             # Without CAP_SETUID the agent cannot switch to the proxy's uid,
             # which the redirect and the DROP exempt. Rendering fails if the
