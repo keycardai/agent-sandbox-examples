@@ -439,6 +439,15 @@ func (v *Values) checkManagementServiceAccount() error {
 		!envNameRE.MatchString(v.ManagementServiceAccount.ClientSecretEnv) {
 		return fmt.Errorf("%w: management_service_account.client_secret_env is not an environment variable name", ErrValues)
 	}
+	return checkSecretFile("management_service_account.client_secret_file", v.ManagementServiceAccount.ClientSecretFile)
+}
+
+// checkSecretFile refuses a relative path. The commands that read a secret
+// file run from different directories, so each must find the same file.
+func checkSecretFile(key, path string) error {
+	if path != "" && !filepath.IsAbs(path) {
+		return fmt.Errorf("%w: %s must be an absolute path (got %q)", ErrValues, key, path)
+	}
 	return nil
 }
 
@@ -486,21 +495,30 @@ func (v *Values) checkResources() error {
 		if resource.Name == "" {
 			resource.Name = resource.Identifier
 		}
-		set := 0
-		for _, source := range []string{resource.CredentialProvider, resource.SecretEnv, resource.SecretFile} {
-			if source != "" {
-				set++
-			}
-		}
-		if set != 1 {
-			return fmt.Errorf("%w: resources[%d]: set exactly one of credential_provider, secret_env and secret_file",
-				ErrValues, i)
-		}
-		if resource.SecretEnv != "" && !envNameRE.MatchString(resource.SecretEnv) {
-			return fmt.Errorf("%w: resources[%d].secret_env is not an environment variable name", ErrValues, i)
+		if err := checkSource(i, resource); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// checkSource checks where resources[i] gets its credential: exactly one of
+// a provider, an environment variable and an absolute file path.
+func checkSource(i int, resource *ResourceValues) error {
+	set := 0
+	for _, source := range []string{resource.CredentialProvider, resource.SecretEnv, resource.SecretFile} {
+		if source != "" {
+			set++
+		}
+	}
+	if set != 1 {
+		return fmt.Errorf("%w: resources[%d]: set exactly one of credential_provider, secret_env and secret_file",
+			ErrValues, i)
+	}
+	if resource.SecretEnv != "" && !envNameRE.MatchString(resource.SecretEnv) {
+		return fmt.Errorf("%w: resources[%d].secret_env is not an environment variable name", ErrValues, i)
+	}
+	return checkSecretFile(fmt.Sprintf("resources[%d].secret_file", i), resource.SecretFile)
 }
 
 // checkIssuer applies checkURL and refuses a query or a fragment, which an

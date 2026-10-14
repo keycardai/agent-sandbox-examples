@@ -16,8 +16,9 @@ zone_url: https://acme.keycard.cloud
 #
 # The secret comes from KEYCARD_MANAGEMENT_CLIENT_SECRET, from the variable
 # set in client_secret_env, or from the file set in client_secret_file. When
-# client_secret_file is set, it is the only source read. The file holds the
-# secret alone. Whitespace around it, such as a trailing newline, is ignored.
+# client_secret_file is set, it is the only source read. It must be an
+# absolute path. The file holds the secret alone. Whitespace around it, such
+# as a trailing newline, is ignored.
 management_service_account:
   client_id: replace-me
   # client_secret_env: KEYCARD_MANAGEMENT_CLIENT_SECRET
@@ -53,7 +54,7 @@ users:
 # resource:
 #   credential_provider  the identifier of an existing provider in the zone
 #   secret_env           the environment variable holding a static token
-#   secret_file          the file holding a static token
+#   secret_file          the absolute path of a file holding a static token
 resources:
   - identifier: https://api.github.com
     name: GitHub

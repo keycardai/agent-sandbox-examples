@@ -313,6 +313,50 @@ func TestParseValues(t *testing.T) {
 	}
 }
 
+// TestParseValuesSecretFile checks that a secret file must be an absolute
+// path, because zone-setup and sandbox run read it from different
+// directories.
+func TestParseValuesSecretFile(t *testing.T) {
+	t.Parallel()
+	withClientFile := func(path string) string {
+		return strings.Replace(minimal, "client_id: sa-1\n", "client_id: sa-1\n  client_secret_file: "+path+"\n", 1)
+	}
+	for _, tc := range []struct {
+		name, doc string
+		// wantField is the text the error names, or "" for none.
+		wantField string
+	}{
+		{
+			name: "absolute paths",
+			doc:  withClientFile("/run/secrets/client") + "resources: [{identifier: r, secret_file: /run/secrets/token}]\n",
+		},
+		{
+			name:      "a relative secret_file",
+			doc:       minimal + "resources: [{identifier: r, secret_file: local/out/secrets/token}]\n",
+			wantField: `resources[0].secret_file must be an absolute path (got "local/out/secrets/token")`,
+		},
+		{
+			name:      "a relative client_secret_file",
+			doc:       withClientFile("secret"),
+			wantField: `management_service_account.client_secret_file must be an absolute path (got "secret")`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := zonesetup.ParseValues(strings.NewReader(tc.doc))
+			if tc.wantField == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if !errors.Is(err, zonesetup.ErrValues) || !strings.Contains(err.Error(), tc.wantField) {
+				t.Fatalf("error = %v, want ErrValues naming %s", err, tc.wantField)
+			}
+		})
+	}
+}
+
 // TestReadValuesFileIssuer checks that a valid issuer from the caller
 // replaces issuer_url, also when the file leaves it out. An invalid one fails
 // with an error that names the caller's source.

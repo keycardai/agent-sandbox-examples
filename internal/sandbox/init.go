@@ -867,10 +867,11 @@ func rootsFrom(caFile string) (*x509.CertPool, error) {
 	return roots, nil
 }
 
-// readSecret returns the trimmed content of path, or "" when it is empty or
-// cannot be read.
+// readSecret returns the trimmed content of path, or "" when it is empty,
+// relative or cannot be read. zone-setup refuses a relative secret file, so
+// Init asks for that secret again.
 func readSecret(path string) string {
-	if path == "" {
+	if !filepath.IsAbs(path) {
 		return ""
 	}
 	raw, err := os.ReadFile(path) //nolint:gosec // G304: the path is one an earlier Init wrote.

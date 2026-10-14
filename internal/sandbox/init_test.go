@@ -176,8 +176,8 @@ func initLocal(t *testing.T) *sandbox.Local {
 func TestInit(t *testing.T) {
 	t.Parallel()
 	run := firstRun(t)
-	gitHub := run.ask.offered["How does the sandbox get a GitHub token?"]
-	if want := []string{"github", "\x00token"}; !slices.Equal(gitHub, want) {
+	gitHub := run.ask.offered[gitHubSourceQuestion+"?"]
+	if want := []string{"github", gitHubTokenChoice}; !slices.Equal(gitHub, want) {
 		t.Errorf("GitHub choices = %q, want %q", gitHub, want)
 	}
 	secretDir := filepath.Join(run.local.Root, "local", "out", "secrets")
@@ -222,8 +222,19 @@ func TestInit(t *testing.T) {
 	}
 }
 
-// openRouterKeyQuestion is the question for the OpenRouter API key.
-const openRouterKeyQuestion = "OpenRouter API key"
+// The questions and answers that more than one test uses.
+const (
+	openRouterKeyQuestion = "OpenRouter API key"
+	// gitHubSourceQuestion asks where the GitHub token comes from.
+	// gitHubTokenChoice is the answer for a personal access token.
+	gitHubSourceQuestion = "How does the sandbox get a GitHub token"
+	gitHubTokenChoice    = "\x00token"
+	// changeQuestion asks which section of the settings to change.
+	// credentialsSection is the answer for the GitHub token and the
+	// OpenRouter key.
+	changeQuestion     = "What do you want to change?"
+	credentialsSection = "credentials"
+)
 
 // checkNotAsked fails the test for each question asked that starts with one
 // of notAsked.
@@ -260,8 +271,8 @@ func firstRun(t *testing.T) initRun {
 	local.Out = out
 	answers := signInAnswers(server.URL, caFile, "bad", goodSecret)
 	maps.Copy(answers, map[string][]string{
-		"Which zone": {"zone-a"},
-		"How does the sandbox get a GitHub token":      {"github"},
+		"Which zone":                                   {"zone-a"},
+		gitHubSourceQuestion:                           {"github"},
 		"Add an OpenRouter API key?":                   {"y"},
 		openRouterKeyQuestion:                          {"or-key"},
 		"How does the zone reach the cluster's issuer": {"quick"},
@@ -341,7 +352,6 @@ func TestInitGitHubToken(t *testing.T) {
 // Keycard. Saved secrets stay unless the answer is no.
 func TestInitRerun(t *testing.T) {
 	t.Parallel()
-	const changeQuestion = "What do you want to change?"
 	tests := []struct {
 		name      string
 		answers   map[string][]string
@@ -360,11 +370,11 @@ func TestInitRerun(t *testing.T) {
 		{
 			name: "credentials",
 			answers: map[string][]string{
-				changeQuestion: {"credentials"},
-				"How does the sandbox get a GitHub token": {"\x00token"},
-				"GitHub personal access token":            {"ghp-new"},
-				"Keep the saved OpenRouter API key?":      {"n"},
-				openRouterKeyQuestion:                     {"or-new"},
+				changeQuestion:                       {credentialsSection},
+				gitHubSourceQuestion:                 {gitHubTokenChoice},
+				"GitHub personal access token":       {"ghp-new"},
+				"Keep the saved OpenRouter API key?": {"n"},
+				openRouterKeyQuestion:                {"or-new"},
 			},
 			notAsked:  signInQuestions(),
 			wantFiles: map[string]string{"github-token": "ghp-new\n", "openrouter-api-key": "or-new\n"},
@@ -445,6 +455,42 @@ func checkTokenValues(t *testing.T, run initRun) {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("zone-setup.yaml lacks %q\n%s", want, raw)
 		}
+	}
+}
+
+// TestInitRelativeKey reruns Init from the repository root, where a saved
+// key's relative path resolves. Init must not offer to keep that key. It asks
+// again and writes the key's absolute path.
+//
+//nolint:paralleltest // t.Chdir changes the process's directory, so the test cannot run in parallel.
+func TestInitRelativeKey(t *testing.T) {
+	run := firstRun(t)
+	key := filepath.Join("local", "out", "secrets", "openrouter-api-key")
+	absKey := filepath.Join(run.local.Root, key)
+	values := filepath.Join(run.local.Root, "zone-setup.yaml")
+	raw, err := os.ReadFile(values) //nolint:gosec // G304: the path is the test's own file.
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, values, strings.ReplaceAll(string(raw), absKey, key))
+	t.Chdir(run.local.Root)
+	ask := &scriptedAsker{t: t, answers: map[string][]string{
+		changeQuestion:                 {credentialsSection},
+		gitHubSourceQuestion:           {gitHubTokenChoice},
+		"GitHub personal access token": {"ghp-new"},
+		openRouterKeyQuestion:          {"or-new"},
+	}}
+	run.local.Ask = ask
+	if _, err = run.local.Init(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	checkNotAsked(t, ask, []string{"Keep the saved OpenRouter API key?"})
+	checkFile(t, absKey, "or-new\n")
+	if raw, err = os.ReadFile(values); err != nil { //nolint:gosec // G304: the path is the test's own file.
+		t.Fatal(err)
+	}
+	if want := "secret_file: " + absKey + "\n"; !strings.Contains(string(raw), want) {
+		t.Errorf("zone-setup.yaml lacks %q\n%s", want, raw)
 	}
 }
 
