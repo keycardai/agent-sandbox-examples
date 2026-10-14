@@ -45,9 +45,10 @@ current settings and asks which part to change. Each question defaults to
 your current answer. A saved secret stays unless you answer n to "Keep the
 saved ...?". Keys `init` doesn't ask about, such as `namespace` and
 `policy_set`, keep their values. `init` drops the comments in
-`zone-setup.yaml`. The change takes effect on the next `sandbox up` or
-`sandbox run`. zone-setup does not delete what it created in Keycard for
-your old answers.
+`zone-setup.yaml`. If `zone-setup.yaml` does not parse, `init` asks every
+question and replaces the file. The change takes effect on the next
+`sandbox up` or `sandbox run`. zone-setup does not delete what it created in
+Keycard for your old answers.
 
 The demo calls GitHub, so it needs a GitHub token. With a GitHub provider in
 the zone, each user signs in to GitHub and their sandbox acts as them. With

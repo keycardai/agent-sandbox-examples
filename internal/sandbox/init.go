@@ -70,10 +70,12 @@ type wizard struct {
 }
 
 // previous holds the values file from before Init. exists reports whether
-// local/local.env or the values file exists.
+// local/local.env or the values file exists. err is the values file's parse
+// error. When err is set, values is empty and exists is false.
 type previous struct {
 	values zonesetup.Values
 	exists bool
+	err    error
 }
 
 // Init asks the operator for the settings and writes local/local.env and the
@@ -130,12 +132,16 @@ const (
 	changeNothing      = "\x00nothing"
 )
 
-// chooseChanges returns the sections to ask. On a first run that is every
-// section. When the settings files exist, it shows the current settings and
-// asks what to change. If the answer is nothing, it returns an empty map and
-// Init does not write the files.
+// chooseChanges returns the sections to ask. On a first run, or when the
+// values file does not parse, that is every section. When the settings files
+// exist, it shows the current settings and asks what to change. If the answer
+// is nothing, it returns an empty map and Init does not write the files.
 func (w *wizard) chooseChanges(ctx context.Context) (map[string]bool, error) {
 	all := map[string]bool{sectionAccount: true, sectionZone: true, sectionCredentials: true, sectionCluster: true}
+	if w.prev.err != nil {
+		_, _ = fmt.Fprintf(w.l.Out, "%s does not parse: %v\nInit asks every question and replaces it.\n",
+			w.l.valuesName(), w.prev.err)
+	}
 	if !w.prev.exists {
 		return all, nil
 	}
@@ -831,14 +837,15 @@ func (l *Local) valuesPath() string {
 	return filepath.Join(l.Root, l.valuesName())
 }
 
-// previousValues reads the values file Init replaces. It skips the
-// ParseValues checks, because Init only takes defaults from it.
+// previousValues reads the values file without the ParseValues checks.
 func (l *Local) previousValues() previous {
 	_, envErr := os.Stat(filepath.Join(l.Root, "local", "local.env"))
 	raw, err := os.ReadFile(l.valuesPath())
 	prev := previous{exists: envErr == nil || err == nil}
 	if err == nil {
-		_ = yaml.Unmarshal(raw, &prev.values)
+		if prev.err = yaml.Unmarshal(raw, &prev.values); prev.err != nil {
+			prev = previous{err: prev.err}
+		}
 	}
 	return prev
 }
