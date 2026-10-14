@@ -526,22 +526,24 @@ func checkSource(i int, resource *ResourceValues) error {
 	return checkSecretFile(fmt.Sprintf("resources[%d].secret_file", i), resource.SecretFile)
 }
 
-// checkIssuer applies checkURL and refuses a query or a fragment, which an
-// OAuth issuer must not have (RFC 8414 section 2).
+// checkIssuer applies checkURL and refuses a port. It also refuses a query
+// or a fragment, which an OAuth issuer must not have (RFC 8414 section 2).
 func checkIssuer(key, value string) error {
 	if err := checkURL(key, value); err != nil {
 		return err
 	}
 	parsed, err := url.Parse(value)
+	if err == nil && (parsed.Port() != "" || strings.HasSuffix(parsed.Host, ":")) {
+		return fmt.Errorf("%w: %s must not set a port", ErrValues, key)
+	}
 	if err != nil || parsed.RawQuery != "" || parsed.ForceQuery || strings.Contains(value, "#") {
 		return fmt.Errorf("%w: %s must not have a query or a fragment", ErrValues, key)
 	}
 	return nil
 }
 
-// checkURL requires an absolute https URL with a host, no userinfo and no
-// port. NEVER put the value in an error, because a URL can carry a
-// credential.
+// checkURL requires an absolute https URL with a host and no userinfo.
+// NEVER put the value in an error, because a URL can include a credential.
 func checkURL(key, value string) error {
 	if value == "" {
 		return fmt.Errorf("%w: %s is required", ErrValues, key)
@@ -555,9 +557,6 @@ func checkURL(key, value string) error {
 	}
 	if parsed.Scheme != "https" {
 		return fmt.Errorf("%w: %s must use https", ErrValues, key)
-	}
-	if parsed.Port() != "" || strings.HasSuffix(parsed.Host, ":") {
-		return fmt.Errorf("%w: %s must not set a port", ErrValues, key)
 	}
 	return nil
 }
