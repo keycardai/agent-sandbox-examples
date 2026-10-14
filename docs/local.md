@@ -108,9 +108,10 @@ kubeconfig context in `sandbox init`. `init` saves the context in
 - Pull images from `ghcr.io/keycardai`. With `KEYCARD_LOCAL_IMAGE_TAG` set,
   the cluster pulls the images at that tag instead of the ones the charts
   pin.
-- Enforce NetworkPolicy, and allow the privileged Pod Security level in the
-  sandbox namespace. The egress-netsetup init container adds `NET_ADMIN`
-  and `NET_RAW`.
+- Enforce NetworkPolicy. `sandbox check` fails when the cluster does not.
+  The sandbox steps do not change the cluster's network setup.
+- Allow the privileged Pod Security level in the sandbox namespace. The
+  egress-netsetup init container adds `NET_ADMIN` and `NET_RAW`.
 
 `init` also asks for the cluster's pod and service ranges and saves them in
 `KEYCARD_LOCAL_CLUSTER_CIDRS`. The sandbox NetworkPolicy and the proxy
@@ -194,7 +195,7 @@ the management API URL is not `https://api.keycard.ai`.
 | `sandbox mirror` | serves the cluster's issuer documents for the tunnel |
 | `sandbox check-issuer` | checks that a Keycard zone can verify the cluster's tokens |
 | `sandbox run` | runs `sandbox bootstrap`, imports the images, runs zone-setup and `sandbox install`, creates the user's sandbox, then runs `sandbox check` |
-| `sandbox check` | runs the checks against the running sandbox. It doesn't change the cluster. |
+| `sandbox check` | runs the checks against the running sandbox. To check that the cluster enforces NetworkPolicy, it starts a pod in the sandbox namespace that tries to connect to CoreDNS on a port the policy blocks. kubectl deletes the pod when it exits. The check changes nothing else in the cluster. |
 | `sandbox down` | deletes the local cluster. It asks first, unless you pass `--yes`. |
 
 Every ID that `sandbox run` passes on comes from the zone-setup output in
