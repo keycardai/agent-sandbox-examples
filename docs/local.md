@@ -53,10 +53,13 @@ different issuer. `down` then deletes only with `--yes`.
     go run ./cmd/sandbox check-issuer
     go run ./cmd/sandbox run
 
-A quick tunnel's URL works only while the tunnel runs. The cluster keeps
-the issuer it was created with. To keep the cluster working after `up`
-stops, start `sandbox tunnel` in its own terminal first. `up` then uses that
-tunnel.
+When `up` stops, it stops the tunnel and the mirror, and the zone can't read
+the cluster's issuer until they run again. A quick tunnel gets a new URL
+every time it starts, but the cluster keeps the issuer it was created with.
+To keep one quick tunnel across restarts of `up`, start `sandbox tunnel` in
+its own terminal first. `up` uses a quick tunnel that is already running.
+With a named tunnel, `up` always runs cloudflared itself, and the URL stays
+the same.
 
 zone-setup stops if another policy set is active. Run `sandbox run` with
 `--replace-active-policy-set` to replace it for everyone in the zone.
