@@ -1,7 +1,10 @@
 package sandbox_test
 
 import (
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
@@ -171,4 +174,54 @@ images:
 		[]error{sandbox.ErrScenario},
 		"local/answers.yaml has no answer for {repo}. Run go run ./cmd/sandbox init",
 	)
+}
+
+// TestPiSession checks that pi-session gives pi a models.json that sends
+// OpenRouter the placeholder as a bearer token, which the proxy replaces,
+// and leaves a models.json of the operator's own as it is.
+func TestPiSession(t *testing.T) {
+	t.Parallel()
+	const own = "{}\n"
+	for _, tc := range []struct {
+		name, existing, want string
+	}{
+		{name: "first run", want: `"x-api-key": "", "Authorization": "Bearer placeholder"`},
+		{name: "operator's own", existing: own, want: own},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			home, bin := t.TempDir(), t.TempDir()
+			// The clone exists, so pi-session does not run git.
+			if err := os.MkdirAll(filepath.Join(home, "work", "demo", ".git"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			//nolint:gosec // G306: the fake pi must be executable.
+			if err := os.WriteFile(filepath.Join(bin, "pi"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			models := filepath.Join(home, ".pi", "agent", "models.json")
+			if tc.existing != "" {
+				writeFile(t, models, tc.existing)
+			}
+			script, err := filepath.Abs(filepath.Join("..", "..", "scenarios", "pi", "pi-session"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.CommandContext(t.Context(), script) //nolint:gosec // G204: the script is this repository's.
+			cmd.Env = []string{
+				"HOME=" + home, "PATH=" + bin + ":/usr/bin:/bin", "SANDBOX_REPO=" + agentRepo, "SANDBOX_MODEL=model",
+			}
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("pi-session: %v\n%s", err, out)
+			}
+			raw, err := os.ReadFile(models) //nolint:gosec // G304: the path is under the test's own directory.
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(raw), tc.want) {
+				t.Errorf("models.json = %q, want it to hold %q", raw, tc.want)
+			}
+		})
+	}
 }

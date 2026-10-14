@@ -4,6 +4,25 @@
 # clone. Arguments go to pi.
 set -eu
 
+# pi's Anthropic client sends its key in x-api-key, and OpenRouter limits a
+# request with that header to one provider, which can leave no model to
+# answer it. This models.json makes pi send x-api-key empty and the
+# placeholder as a bearer token, which the proxy replaces with the user's
+# key. pi-session does not change a models.json that exists.
+models="$HOME/.pi/agent/models.json"
+if [ ! -e "$models" ]; then
+	mkdir -p "${models%/*}"
+	cat >"$models" <<'EOF'
+{
+  "providers": {
+    "openrouter": {
+      "headers": { "x-api-key": "", "Authorization": "Bearer placeholder" }
+    }
+  }
+}
+EOF
+fi
+
 dir="$HOME/work/${SANDBOX_REPO##*/}"
 if [ ! -d "$dir/.git" ]; then
 	git clone "https://github.com/$SANDBOX_REPO.git" "$dir"
