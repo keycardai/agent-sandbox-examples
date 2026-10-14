@@ -161,12 +161,16 @@ func TestParseValues(t *testing.T) {
 		},
 		{name: "a bad namespace", doc: minimal + "namespace: Agents_1\n", wantField: "namespace"},
 		{name: "a case-variant key", doc: minimal + "MANAGEMENT_API_URL: x\n", wantField: "MANAGEMENT_API_URL"},
-		{name: "a port", doc: withAPI("https://api.keycard.ai:8443"), wantField: "management_api_url must not set a port"},
+		{
+			name:  "a management port",
+			doc:   withAPI("https://api.keycard.ai:8443"),
+			check: func(v *zonesetup.Values) bool { return v.ManagementAPIURL == "https://api.keycard.ai:8443" },
+		},
 		{name: "a port with no host", doc: withAPI("https://:443"), wantField: "management_api_url"},
 		{
-			name:      "an empty management port",
-			doc:       withAPI(`"https://api.keycard.ai:"`),
-			wantField: "management_api_url must not set a port",
+			name:      "a zone port",
+			doc:       strings.Replace(minimal, "acme.keycard.cloud", "acme.keycard.cloud:8443", 1),
+			wantField: "zone_url must not set a port",
 		},
 		{name: "a loopback http url", doc: withAPI("http://127.0.0.1"), wantField: "management_api_url must use https"},
 		{
