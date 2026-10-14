@@ -183,7 +183,9 @@ Every id that `sandbox run` passes on comes from the zone-setup output in
 dials the zone at the address its host name resolves to.
 
 Set `KEYCARD_LOCAL_ZONE_ON_HOST=true` for a zone that is not on the
-internet and answers on the Docker host. A pod in the k3d cluster
+internet and answers on the Docker host. `sandbox init` sets it when the
+zone's host resolves to a loopback address. For a private address, `init`
+asks. A pod in the k3d cluster
 reaches the Docker host at the gateway of the cluster's Docker network.
 `sandbox run` reads that address on every run and adds these values:
 

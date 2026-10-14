@@ -148,7 +148,7 @@ func upCommand() *cli.Command {
 		}, runFlags()...),
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
 			run := runOptions(cmd)
-			if cmd.String("env") == "" && !cmd.Bool("print") && !local.Initialized() {
+			if !cmd.Bool("print") && !local.Initialized() {
 				if local.Ask == nil {
 					return errNotInitialized
 				}
@@ -400,7 +400,10 @@ func newLocal(cmd *cli.Command) (*sandbox.Local, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading the settings: %w", err)
 	}
-	local := &sandbox.Local{Root: root, Settings: settings, Tool: sandbox.Tool, Out: cmd.Writer, Getenv: os.Getenv}
+	local := &sandbox.Local{
+		Root: root, Settings: settings, SettingsFile: cmd.String("env"),
+		Tool: sandbox.Tool, Out: cmd.Writer, Getenv: os.Getenv,
+	}
 	if onTerminal() {
 		local.Ask = terminalAsker{}
 	}
