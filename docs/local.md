@@ -150,8 +150,9 @@ after you recreate the cluster.
 
 Set `KEYCARD_LOCAL_CA_FILE` when no public CA signed the certificate of the
 management API, the zone or the issuer. Set it to the absolute path of a
-PEM file with the roots that signed them. `sandbox init` trusts these roots
-for the management API, `sandbox check-issuer` for the issuer, and the proxy
+PEM file with the roots that signed them. `sandbox init` and `sandbox run`
+trust these roots for the management API, `sandbox check-issuer` for the
+issuer, and the proxy
 for the zone, through the chart's `zoneTrust` value. Each trusts them in
 addition to the system roots. `sandbox init` asks for this file only when
 the management API URL is not `https://api.keycard.ai`.
