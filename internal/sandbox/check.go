@@ -115,6 +115,15 @@ func (l *Local) Check(ctx context.Context, target CheckTarget) error {
 	return nil
 }
 
+// CheckSandbox runs Check against the sandbox that CheckTargetFor finds.
+func (l *Local) CheckSandbox(ctx context.Context, cluster, namespace, pod, userID string) error {
+	target, err := l.CheckTargetFor(cluster, namespace, pod, userID)
+	if err != nil {
+		return fmt.Errorf("finding the sandbox: %w", err)
+	}
+	return l.Check(ctx, target)
+}
+
 // CheckTargetFor returns the sandbox an earlier Run created for
 // KEYCARD_LOCAL_USER_EMAIL, from local/out/zone-setup.yaml. A non-empty
 // argument overrides the value from the file. The pod name defaults to the

@@ -29,6 +29,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/charmbracelet/x/term"
 	"github.com/urfave/cli/v3"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/install"
@@ -80,7 +81,7 @@ func upCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "up",
 		Usage: "set up and run the whole demo, and print the command for each step",
-		Flags: []cli.Flag{
+		Flags: append([]cli.Flag{
 			listenFlag(),
 			&cli.BoolFlag{Name: "print", Usage: "print the commands and do not run them"},
 			&cli.DurationFlag{
@@ -88,26 +89,14 @@ func upCommand() *cli.Command {
 				Value: defaultIssuerWait,
 				Usage: "how long to wait for the cluster's issuer to answer",
 			},
-			&cli.BoolFlag{
-				Name:  "skip-zone-setup",
-				Usage: "reuse the Keycard setup of the last run, in local/out/zone-setup.yaml",
-			},
-			&cli.BoolFlag{
-				Name:  zonesetup.ReplaceActiveFlag,
-				Usage: "make the sandbox policy set active, replacing the zone's active policy set",
-			},
-		},
+		}, runFlags()...),
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
 			return local.Up(ctx, sandbox.UpOptions{
-				Run: sandbox.RunOptions{
-					SkipZoneSetup: cmd.Bool("skip-zone-setup"),
-					ReplaceActive: cmd.Bool(zonesetup.ReplaceActiveFlag),
-				},
+				Run:        runOptions(cmd),
 				Listen:     cmd.String("listen"),
 				EnvFile:    cmd.String("env"),
 				Print:      cmd.Bool("print"),
 				IssuerWait: cmd.Duration("issuer-wait"),
-				Answers:    cmd.Reader,
 			})
 		}),
 	}
@@ -164,21 +153,9 @@ func runCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "run",
 		Usage: "set up the cluster and Keycard, install the sandbox and the egress proxy, and run the checks",
-		Flags: []cli.Flag{
-			&cli.BoolFlag{
-				Name:  "skip-zone-setup",
-				Usage: "reuse the Keycard setup of the last run, in local/out/zone-setup.yaml",
-			},
-			&cli.BoolFlag{
-				Name:  zonesetup.ReplaceActiveFlag,
-				Usage: "make the sandbox policy set active, replacing the zone's active policy set",
-			},
-		},
+		Flags: runFlags(),
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
-			return local.Run(ctx, sandbox.RunOptions{
-				SkipZoneSetup: cmd.Bool("skip-zone-setup"),
-				ReplaceActive: cmd.Bool(zonesetup.ReplaceActiveFlag),
-			})
+			return local.Run(ctx, runOptions(cmd))
 		}),
 	}
 }
@@ -194,13 +171,8 @@ func checkCommand() *cli.Command {
 			&cli.StringFlag{Name: "user-id", Usage: "the user's Keycard id (default from the last run)"},
 		},
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
-			target, err := local.CheckTargetFor(
-				cmd.String("cluster"), cmd.String("namespace"), cmd.String("pod"), cmd.String("user-id"),
-			)
-			if err != nil {
-				return fmt.Errorf("finding the sandbox: %w", err)
-			}
-			return local.Check(ctx, target)
+			return local.CheckSandbox(ctx,
+				cmd.String("cluster"), cmd.String("namespace"), cmd.String("pod"), cmd.String("user-id"))
 		}),
 	}
 }
@@ -214,7 +186,7 @@ func downCommand() *cli.Command {
 			&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "delete without asking"},
 		},
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
-			return local.Down(ctx, cmd.String("cluster"), cmd.Bool("yes"), cmd.Reader)
+			return local.Down(ctx, cmd.String("cluster"), cmd.Bool("yes"))
 		}),
 	}
 }
@@ -278,6 +250,27 @@ func listenFlag() *cli.StringFlag {
 	}
 }
 
+// runFlags are the flags of run. up takes them too, and passes them to run.
+func runFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.BoolFlag{
+			Name:  "skip-zone-setup",
+			Usage: "reuse the Keycard setup of the last run, in local/out/zone-setup.yaml",
+		},
+		&cli.BoolFlag{
+			Name:  zonesetup.ReplaceActiveFlag,
+			Usage: "make the sandbox policy set active, replacing the zone's active policy set",
+		},
+	}
+}
+
+func runOptions(cmd *cli.Command) sandbox.RunOptions {
+	return sandbox.RunOptions{
+		SkipZoneSetup: cmd.Bool("skip-zone-setup"),
+		ReplaceActive: cmd.Bool(zonesetup.ReplaceActiveFlag),
+	}
+}
+
 // step returns an action that runs one step on a Local built from the
 // repository and the settings file.
 func step(run func(context.Context, *cli.Command, *sandbox.Local) error) cli.ActionFunc {
@@ -311,5 +304,10 @@ func newLocal(cmd *cli.Command) (*sandbox.Local, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading the settings: %w", err)
 	}
-	return &sandbox.Local{Root: root, Settings: settings, Tool: sandbox.Tool, Out: cmd.Writer}, nil
+	local := &sandbox.Local{Root: root, Settings: settings, Tool: sandbox.Tool, Out: cmd.Writer}
+	// huh reads os.Stdin and needs a terminal.
+	if term.IsTerminal(os.Stdin.Fd()) {
+		local.Ask = terminalAsker{}
+	}
+	return local, nil
 }

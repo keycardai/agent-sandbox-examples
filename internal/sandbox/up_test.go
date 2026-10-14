@@ -3,13 +3,20 @@ package sandbox_test
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/keycardai/agent-sandbox-examples/internal/issuer"
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 )
 
@@ -33,10 +40,14 @@ func TestUpPrint(t *testing.T) {
 	tests := []struct {
 		name     string
 		settings sandbox.Settings
-		// running writes QuickIssuerFile to fake a running quick tunnel.
+		// running fakes a running quick tunnel. It writes QuickIssuerFile and
+		// locks it.
 		running bool
-		opts    sandbox.UpOptions
-		want    string
+		// killed writes QuickIssuerFile without the lock, as a killed quick
+		// tunnel leaves it.
+		killed bool
+		opts   sandbox.UpOptions
+		want   string
 	}{
 		{name: "quick tunnel", want: tunnel + rest},
 		{
@@ -45,6 +56,7 @@ func TestUpPrint(t *testing.T) {
 			want:     tunnel + rest,
 		},
 		{name: "quick tunnel already running", running: true, want: rest},
+		{name: "quick tunnel killed", killed: true, want: tunnel + rest},
 		{
 			name:     "issuer published another way",
 			settings: sandbox.Settings{sandbox.KeyIssuer: testIssuer},
@@ -67,7 +79,10 @@ func TestUpPrint(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			local, calls := newLocal(t, tc.settings, "")
-			if tc.running {
+			switch {
+			case tc.running:
+				holdIssuerFile(t, local.QuickIssuerFile(), "https://quick-brown-fox.trycloudflare.com\n")
+			case tc.killed:
 				writeFile(t, local.QuickIssuerFile(), "https://quick-brown-fox.trycloudflare.com\n")
 			}
 			out := &bytes.Buffer{}
@@ -88,62 +103,125 @@ func TestUpPrint(t *testing.T) {
 }
 
 // TestUpStops checks that Up stops at the failed step and prints the
-// commands from that step on.
+// commands from that step on, and the background steps before it.
+// IssuerWait is a minute, and only a failed discovery fetch may retry.
 func TestUpStops(t *testing.T) {
 	t.Parallel()
-	local, _ := newLocal(t, sandbox.Settings{sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer},
-		clusterTool("FAIL", "", ""))
-	out := &bytes.Buffer{}
-	local.Out = out
-	err := local.Up(t.Context(), sandbox.UpOptions{Listen: listen, Answers: strings.NewReader("")})
-	checkErr(t, err, []error{sandbox.ErrDocker}, "Is Docker running?")
-	want := leftHeader +
-		"  go run ./cmd/sandbox bootstrap\n" +
-		"  go run ./cmd/sandbox mirror --listen 127.0.0.1:8480    # in another terminal\n" +
-		"  go run ./cmd/sandbox check-issuer\n" +
-		"  go run ./cmd/sandbox run\n"
-	if !strings.HasSuffix(out.String(), want) {
-		t.Fatalf("output = %q, want it to end with %q", out, want)
+	const (
+		cmd    = "  go run ./cmd/sandbox "
+		tunnel = cmd + "tunnel --listen LISTEN    # in a terminal of its own\n"
+		rest   = cmd + "mirror --listen LISTEN    # in another terminal\n" +
+			cmd + "check-issuer\n" +
+			cmd + "run\n"
+	)
+	verifier, caFile := tlsIssuer(t)
+	tests := []struct {
+		name     string
+		settings sandbox.Settings
+		tool     string
+		// holdPort listens on the mirror's address before Up starts.
+		holdPort bool
+		want     []error
+		wantText string
+		wantLeft string
+	}{
+		{
+			name:     "Docker is down",
+			settings: sandbox.Settings{sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer},
+			tool:     clusterTool("FAIL", "", ""),
+			want:     []error{sandbox.ErrDocker},
+			wantText: "Is Docker running?",
+			wantLeft: cmd + "bootstrap\n" + rest,
+		},
+		{
+			name:     "named tunnel without an issuer",
+			settings: sandbox.Settings{sandbox.KeyCluster: cluster, sandbox.KeyTunnel: namedTunnel},
+			want:     []error{sandbox.ErrIssuer},
+			wantText: "the named tunnel " + namedTunnel + " needs KEYCARD_LOCAL_ISSUER",
+			wantLeft: tunnel + cmd + "bootstrap\n" + rest,
+		},
+		{
+			name:     "mirror's port taken",
+			settings: sandbox.Settings{sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer},
+			tool:     clusterTool(present, testIssuer, testIssuer),
+			holdPort: true,
+			want:     []error{sandbox.ErrService},
+			wantText: "address already in use",
+			wantLeft: rest,
+		},
+		{
+			// The fetch passes, and the fake cluster mints an empty token.
+			name: "token refused",
+			settings: sandbox.Settings{
+				sandbox.KeyCluster: cluster, sandbox.KeyIssuer: verifier, sandbox.KeyCAFile: caFile,
+			},
+			tool: clusterTool(present, verifier, verifier) + `case "$*" in
+*"get --raw /openid/v1/jwks") echo '{"keys":[{"kty":"RSA","kid":"k","n":"AQAB","e":"AQAB"}]}' ;;
+esac
+`,
+			want:     []error{sandbox.ErrIssuer, issuer.ErrToken},
+			wantText: "token refused",
+			wantLeft: rest,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			local, calls := newLocal(t, tc.settings, tc.tool)
+			out := &bytes.Buffer{}
+			local.Out = out
+			addr := listen
+			if tc.holdPort {
+				held, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = held.Close() }()
+				addr = held.Addr().String()
+			}
+			err := local.Up(t.Context(), sandbox.UpOptions{Listen: addr, IssuerWait: time.Minute})
+			checkErr(t, err, tc.want, tc.wantText)
+			want := leftHeader + strings.ReplaceAll(tc.wantLeft, "LISTEN", addr)
+			if !strings.HasSuffix(out.String(), want) {
+				t.Fatalf("output = %q, want it to end with %q", out, want)
+			}
+			if strings.Contains(out.String(), "does not answer yet") {
+				t.Fatalf("output = %q, want no retry", out)
+			}
+			if tc.tool == "" {
+				if got := readCalls(t, calls); got != "" {
+					t.Fatalf("calls = %q, want none", got)
+				}
+			}
+		})
 	}
 }
 
-// TestUpRecreates checks that Up asks before it deletes a cluster with
-// another issuer. Enter or y recreates the cluster. n or EOF keeps it. The
-// issuer is a closed port, so check-issuer fails at once and the commands
-// left include the mirror.
+// TestUpRecreates checks that Up asks down's question before it deletes a
+// cluster with another issuer, and deletes it only on yes. When Up keeps the
+// cluster, the commands left start with bootstrap. The issuer is a closed
+// port, so after a recreate check-issuer fails at once and the commands left
+// include the mirror. A nil ask means stdin is not a terminal.
 func TestUpRecreates(t *testing.T) {
 	t.Parallel()
 	const closed = "https://127.0.0.1:1"
-	type outcome struct {
-		want      []error
-		wantText  string
-		wantCalls []string
-		wantOut   string
-	}
-	recreated := outcome{
-		want:     []error{sandbox.ErrIssuer},
-		wantText: "discovery refused",
-		wantCalls: []string{
-			"k3d KUBERC= cluster delete asp\n",
-			"k3d KUBERC= cluster create asp ",
-			"kubectl KUBERC=off --context k3d-asp get --raw /openid/v1/jwks\n",
-		},
-		wantOut: leftHeader + "  go run ./cmd/sandbox mirror --listen 127.0.0.1:", /* port follows */
-	}
-	kept := outcome{
-		want:     []error{sandbox.ErrConfirm},
-		wantText: "the cluster has another issuer",
-		wantOut:  "Delete the cluster and create it again with the new issuer? [Y/n] ",
-	}
 	tests := []struct {
-		outcome
-
-		name, answer string
+		name     string
+		ask      *confirmAsker
+		recreate bool
+		want     []error
+		wantText string
 	}{
-		{name: "pressed Enter", answer: "\n", outcome: recreated},
-		{name: "answered y", answer: "y\n", outcome: recreated},
-		{name: "answered n", answer: "n\n", outcome: kept},
-		{name: "no answer", answer: "", outcome: kept},
+		{
+			name: "answered yes", ask: &confirmAsker{answer: true}, recreate: true,
+			want: []error{sandbox.ErrIssuer}, wantText: "discovery refused",
+		},
+		{name: "answered no", ask: &confirmAsker{}, want: []error{sandbox.ErrConfirm}, wantText: nothingDeleted},
+		{name: "no terminal", want: []error{sandbox.ErrConfirm, sandbox.ErrNoTerminal}, wantText: noTerminal},
+		{
+			name: "Ctrl-C", ask: &confirmAsker{err: sandbox.ErrInterrupted},
+			want: []error{sandbox.ErrConfirm, sandbox.ErrInterrupted}, wantText: "nothing deleted: interrupted",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -152,19 +230,30 @@ func TestUpRecreates(t *testing.T) {
 				recreateTool(closed))
 			out := &bytes.Buffer{}
 			local.Out = out
-			err := local.Up(t.Context(), sandbox.UpOptions{Listen: freeAddr(t), Answers: strings.NewReader(tc.answer)})
+			tc.ask.use(local)
+			err := local.Up(t.Context(), sandbox.UpOptions{Listen: freeAddr(t)})
 			checkErr(t, err, tc.want, tc.wantText)
-			got := readCalls(t, calls)
-			for _, want := range tc.wantCalls {
-				if !strings.Contains(got, want) {
-					t.Errorf("calls lack %q\n%s", want, got)
-				}
+			if tc.ask != nil && !slices.Equal(tc.ask.asked, []string{deleteQuestion}) {
+				t.Errorf("asked %q, want %q", tc.ask.asked, deleteQuestion)
 			}
-			if len(tc.wantCalls) == 0 && strings.Contains(got, "cluster delete") {
+			got := readCalls(t, calls)
+			wantOut := leftHeader + "  go run ./cmd/sandbox bootstrap\n"
+			if tc.recreate {
+				for _, want := range []string{
+					"k3d KUBERC= cluster delete asp\n",
+					"k3d KUBERC= cluster create asp ",
+					"kubectl KUBERC=off --context k3d-asp get --raw /openid/v1/jwks\n",
+				} {
+					if !strings.Contains(got, want) {
+						t.Errorf("calls lack %q\n%s", want, got)
+					}
+				}
+				wantOut = leftHeader + "  go run ./cmd/sandbox mirror --listen 127.0.0.1:" /* port follows */
+			} else if strings.Contains(got, "cluster delete") {
 				t.Errorf("calls = %q, want no delete", got)
 			}
-			if !strings.Contains(out.String(), tc.wantOut) {
-				t.Errorf("output lacks %q\n%s", tc.wantOut, out)
+			if !strings.Contains(out.String(), wantOut) {
+				t.Errorf("output lacks %q\n%s", wantOut, out)
 			}
 		})
 	}
@@ -187,6 +276,24 @@ case "$FAKE_TOOL $*" in
 *"create token default"*) echo 'e30.%[2]s.c2ln' ;;
 esac
 `, issuerURL, payload)
+}
+
+// tlsIssuer serves a discovery document and an empty JWKS over TLS. It
+// returns the issuer URL and a CA file that trusts the server.
+func tlsIssuer(t *testing.T) (string, string) {
+	t.Helper()
+	mux := http.NewServeMux()
+	server := httptest.NewTLSServer(mux)
+	t.Cleanup(server.Close)
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"issuer":%q,"jwks_uri":%q}`, server.URL, server.URL+"/openid/v1/jwks")
+	})
+	mux.HandleFunc("/openid/v1/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"keys":[]}`)
+	})
+	caFile := filepath.Join(t.TempDir(), "ca.pem")
+	writeFile(t, caFile, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})))
+	return server.URL, caFile
 }
 
 // freeAddr returns a loopback address with a port nothing listens on.
@@ -216,7 +323,7 @@ fi
 `+clusterTool("FAIL", "", ""))
 	out := &bytes.Buffer{}
 	local.Out = out
-	err := local.Up(t.Context(), sandbox.UpOptions{Listen: listen, Answers: strings.NewReader("")})
+	err := local.Up(t.Context(), sandbox.UpOptions{Listen: listen})
 	checkErr(t, err, []error{sandbox.ErrDocker}, "Is Docker running?")
 	if _, statErr := os.Stat(local.QuickIssuerFile()); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("issuer file after Up returned: %v, want it removed", statErr)

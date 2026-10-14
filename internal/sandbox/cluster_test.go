@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"io"
+	"slices"
 	"strings"
 	"testing"
 
@@ -156,24 +156,30 @@ func TestBootstrap(t *testing.T) {
 // The lines Down prints when the cluster is absent and when it deletes it.
 const (
 	noCluster = "There is no k3d cluster named asp. Nothing to delete.\n"
-	deleted   = "Deleted the k3d cluster asp, and removed the context k3d-asp from your kubeconfig.\n"
+	// nothingDeleted is the error text for an answer other than yes.
+	nothingDeleted = "nothing deleted"
+	deleted        = "Deleted the k3d cluster asp, and removed the context k3d-asp from your kubeconfig.\n"
+	// deleteQuestion is the question Down asks and its default, as
+	// confirmAsker records them.
+	deleteQuestion = "Delete the k3d cluster asp? [default false]"
+	// noTerminal is the error text when stdin is not a terminal.
+	noTerminal = "no terminal to ask. Pass --yes"
 )
 
 // TestDown checks that Down deletes the cluster only when it exists and the
-// operator confirms with --yes or an answer that starts with y. Ctrl-C at the
-// prompt cancels the context while the read is still blocked, and Down must
-// return without deleting.
+// operator confirms with --yes or answers yes to a question whose default is
+// no. A nil ask means stdin is not a terminal.
 func TestDown(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name, list string
 		yes        bool
-		answer     string
-		interrupt  bool
+		ask        *confirmAsker
 		want       []error
 		wantText   string
 		wantOut    string
+		wantAsked  []string
 		wantCalls  string
 	}{
 		{
@@ -182,19 +188,23 @@ func TestDown(t *testing.T) {
 		},
 		{name: "empty list", list: "[]", wantOut: noCluster, wantCalls: listCall},
 		{name: "yes", list: present, yes: true, wantOut: deleted, wantCalls: listCall + deleteCall},
-		{name: "answered y", list: present, answer: "y\n", wantOut: deleted, wantCalls: listCall + deleteCall},
 		{
-			name: "answered n", list: present, answer: "n\n",
-			want: []error{sandbox.ErrConfirm}, wantText: "nothing deleted", wantCalls: listCall,
+			name: "answered yes", list: present, ask: &confirmAsker{answer: true},
+			wantOut: deleted, wantAsked: []string{deleteQuestion}, wantCalls: listCall + deleteCall,
 		},
 		{
-			name: "no answer", list: present,
-			want: []error{sandbox.ErrConfirm}, wantText: "no answer. Pass --yes", wantCalls: listCall,
-		},
-		{
-			name: "interrupted", list: present, interrupt: true,
-			want: []error{sandbox.ErrConfirm, context.Canceled}, wantText: "interrupted, nothing deleted",
+			name: "answered no", list: present, ask: &confirmAsker{},
+			want: []error{sandbox.ErrConfirm}, wantText: nothingDeleted, wantAsked: []string{deleteQuestion},
 			wantCalls: listCall,
+		},
+		{
+			name: "no terminal", list: present,
+			want: []error{sandbox.ErrConfirm, sandbox.ErrNoTerminal}, wantText: noTerminal, wantCalls: listCall,
+		},
+		{
+			name: "interrupted", list: present, ask: &confirmAsker{err: sandbox.ErrInterrupted},
+			want: []error{sandbox.ErrConfirm, sandbox.ErrInterrupted}, wantText: "nothing deleted: interrupted",
+			wantAsked: []string{deleteQuestion}, wantCalls: listCall,
 		},
 		{
 			name: "cannot list", list: "FAIL", yes: true,
@@ -207,18 +217,14 @@ func TestDown(t *testing.T) {
 			local, calls := newLocal(t, sandbox.Settings{sandbox.KeyCluster: cluster}, clusterTool(tc.list, "", ""))
 			out := &bytes.Buffer{}
 			local.Out = out
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			var answers io.Reader = strings.NewReader(tc.answer)
-			if tc.interrupt {
-				release := make(chan struct{})
-				defer close(release)
-				answers = interruptingReader{cancel: cancel, release: release}
-			}
-			err := local.Down(ctx, "", tc.yes, answers)
+			tc.ask.use(local)
+			err := local.Down(t.Context(), "", tc.yes)
 			checkErr(t, err, tc.want, tc.wantText)
 			if !strings.Contains(out.String(), tc.wantOut) {
 				t.Errorf("output = %q, want it to contain %q", out, tc.wantOut)
+			}
+			if got := tc.ask.questions(); !slices.Equal(got, tc.wantAsked) {
+				t.Errorf("asked %q, want %q", got, tc.wantAsked)
 			}
 			if got := readCalls(t, calls); got != tc.wantCalls {
 				t.Fatalf("calls = %q, want %q", got, tc.wantCalls)
@@ -227,15 +233,30 @@ func TestDown(t *testing.T) {
 	}
 }
 
-// interruptingReader cancels the context when Down reads the answer, then
-// blocks until release closes, as a terminal does while it waits for input.
-type interruptingReader struct {
-	cancel  context.CancelFunc
-	release chan struct{}
+// confirmAsker answers every question with answer and err. It records each
+// question with its default answer. A nil confirmAsker means stdin is not a
+// terminal.
+type confirmAsker struct {
+	answer bool
+	err    error
+	asked  []string
 }
 
-func (r interruptingReader) Read([]byte) (int, error) {
-	r.cancel()
-	<-r.release
-	return 0, io.EOF
+func (a *confirmAsker) Confirm(_ context.Context, question string, value bool) (bool, error) {
+	a.asked = append(a.asked, fmt.Sprintf("%s [default %t]", question, value))
+	return a.answer, a.err
+}
+
+// use sets local.Ask to a. A nil a leaves local.Ask nil.
+func (a *confirmAsker) use(local *sandbox.Local) {
+	if a != nil {
+		local.Ask = a
+	}
+}
+
+func (a *confirmAsker) questions() []string {
+	if a == nil {
+		return nil
+	}
+	return a.asked
 }
