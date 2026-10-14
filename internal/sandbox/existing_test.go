@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -90,7 +91,7 @@ func TestRunExistingSettings(t *testing.T) {
 			sandbox.KeyClusterCIDRs,
 			"10.0.0.0",
 			sandbox.ErrSettings,
-			`"10.0.0.0" is not an address range`,
+			`KEYCARD_LOCAL_CLUSTER_CIDRS: "10.0.0.0" is not an address range`,
 		},
 	}
 	for _, tc := range tests {
@@ -227,9 +228,10 @@ func servedIssuer(t *testing.T) (string, string, string) {
 	return server.URL, trustFile(t, server), input + "." + b64(signature)
 }
 
-// TestInitExisting chooses the EKS context. Init asks for the ranges, and
-// does not ask how to publish the issuer. Init refuses a zone
-// on this machine, because the cluster cannot dial it.
+// TestInitExisting chooses the EKS context. Init asks for the ranges, refuses
+// a range without a prefix as an answer, and does not ask how to publish the
+// issuer. Init refuses a zone on this machine, because the cluster cannot
+// dial it.
 func TestInitExisting(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -250,7 +252,7 @@ func TestInitExisting(t *testing.T) {
 			local := initLocal(t, eksTool(healthy()))
 			answers := signInAnswers(server.URL, caFile, goodSecret)
 			answers["Which cluster runs the sandbox?"] = []string{eksContext}
-			answers["The cluster's pod and service ranges"] = []string{eksRanges}
+			answers["The cluster's pod and service ranges"] = []string{"10.0.0.0", eksRanges}
 			ask := &scriptedAsker{t: t, answers: answers}
 			local.Ask = ask
 
@@ -258,6 +260,13 @@ func TestInitExisting(t *testing.T) {
 			checkErr(t, err, tc.want, tc.wantText)
 			if tc.want != nil {
 				return
+			}
+			if len(ask.refused) != 1 {
+				t.Fatalf("refused answers = %v, want one", ask.refused)
+			}
+			checkErr(t, ask.refused[0], []error{sandbox.ErrAnswer}, `"10.0.0.0" is not an address range`)
+			if errors.Is(ask.refused[0], sandbox.ErrSettings) {
+				t.Errorf("refused answer = %v, want no ErrSettings", ask.refused[0])
 			}
 			for _, question := range ask.asked {
 				if strings.HasPrefix(question, "How does the zone reach") {

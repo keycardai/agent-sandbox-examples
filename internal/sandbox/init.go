@@ -1024,9 +1024,9 @@ func checkTunnelName(answer string) error {
 }
 
 func checkCIDRs(answer string) error {
-	ranges, err := ParseCIDRs(answer)
-	if err != nil {
-		return err
+	ranges, bad := parseCIDRs(answer)
+	if bad != "" {
+		return fmt.Errorf("%w: %q is not an address range such as 10.0.0.0/16", ErrAnswer, bad)
 	}
 	if len(ranges) == 0 {
 		return fmt.Errorf("%w: required", ErrAnswer)

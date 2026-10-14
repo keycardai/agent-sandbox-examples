@@ -312,9 +312,10 @@ func (l *Local) existingSettings(cfg runSettings) (runSettings, error) {
 	if cfg.zoneOnHost {
 		return cfg, fmt.Errorf("%w: %s is for a k3d cluster", ErrExisting, KeyZoneOnHost)
 	}
-	var err error
-	if cfg.clusterCIDRs, err = ParseCIDRs(l.Settings[KeyClusterCIDRs]); err != nil {
-		return cfg, err
+	var bad string
+	if cfg.clusterCIDRs, bad = parseCIDRs(l.Settings[KeyClusterCIDRs]); bad != "" {
+		return cfg, fmt.Errorf("%w: %s: %q is not an address range such as 10.0.0.0/16",
+			ErrSettings, KeyClusterCIDRs, bad)
 	}
 	if len(cfg.clusterCIDRs) == 0 {
 		return cfg, fmt.Errorf("%w: %s is empty. Set it to the cluster's pod and service ranges",
@@ -336,9 +337,10 @@ func (l *Local) checkDocker(ctx context.Context) error {
 	return nil
 }
 
-// ParseCIDRs parses a comma-separated list of address ranges. Each one must
-// be a prefix such as 10.0.0.0/16.
-func ParseCIDRs(list string) ([]string, error) {
+// parseCIDRs parses a comma-separated list of address ranges, each a prefix
+// such as 10.0.0.0/16. It also returns the first item that is not a prefix,
+// or "" when every item is one.
+func parseCIDRs(list string) ([]string, string) {
 	var out []string
 	for item := range strings.SplitSeq(list, ",") {
 		item = strings.TrimSpace(item)
@@ -347,12 +349,11 @@ func ParseCIDRs(list string) ([]string, error) {
 		}
 		prefix, err := netip.ParsePrefix(item)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %s: %q is not an address range such as 10.0.0.0/16",
-				ErrSettings, KeyClusterCIDRs, item)
+			return nil, item
 		}
 		out = append(out, prefix.Masked().String())
 	}
-	return out, nil
+	return out, ""
 }
 
 // importImages imports the three images, tagged tag, from Docker into the
