@@ -314,13 +314,7 @@ func (l *Local) serve(ctx context.Context, steps []upStep, state *upRun) error {
 	for {
 		again, err := l.confirm(waiting, "Run the checks again? No stops up.", true)
 		if err == nil && again {
-			err = l.CheckSandbox(ctx, "", "", "", "")
-			if err != nil {
-				_, _ = fmt.Fprintf(l.Out, "%v\n", err)
-			}
-			if ctx.Err() == nil {
-				state.checks = err
-			}
+			l.recheck(ctx, state)
 			continue
 		}
 		if errors.Is(err, ErrNoTerminal) {
@@ -334,6 +328,18 @@ func (l *Local) serve(ctx context.Context, steps []upStep, state *upRun) error {
 			return context.Cause(waiting) //nolint:wrapcheck // The cause is the background step's error from startService.
 		}
 		return err
+	}
+}
+
+// recheck runs the checks and prints a failure. Unless ctx ended during the
+// checks, their result goes to state.checks.
+func (l *Local) recheck(ctx context.Context, state *upRun) {
+	err := l.CheckSandbox(ctx, "", "", "", "")
+	if err != nil {
+		_, _ = fmt.Fprintf(l.Out, "%v\n", err)
+	}
+	if ctx.Err() == nil {
+		state.checks = err
 	}
 }
 
