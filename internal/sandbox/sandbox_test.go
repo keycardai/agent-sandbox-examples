@@ -245,11 +245,10 @@ func TestTunnel(t *testing.T) {
 }
 
 // TestQuickTunnel runs a fake cloudflared that prints a quick tunnel URL and
-// then waits. The URL is in QuickIssuerFile, and Tunnel holds the file's
-// lock, while cloudflared runs. Once Tunnel returns, the file is gone, unless
-// another tunnel's URL replaced it. Tunnel deletes a file that a killed
-// tunnel left. The environment has TUNNEL_NAME, which cloudflared must not
-// see.
+// then waits. While cloudflared runs, QuickIssuerFile has the URL and is
+// locked. After Tunnel returns, the file is gone unless another tunnel
+// replaced it. Tunnel deletes a file left by a killed tunnel before it
+// starts. The environment sets TUNNEL_NAME, and cloudflared must not see it.
 func TestQuickTunnel(t *testing.T) {
 	t.Parallel()
 	const (
@@ -258,7 +257,7 @@ func TestQuickTunnel(t *testing.T) {
 	)
 	tests := []struct {
 		name string
-		// killed is the issuer file a killed tunnel left before Tunnel starts.
+		// killed is the content of an issuer file left by a killed tunnel.
 		killed string
 		// replace is what another tunnel writes to the issuer file while this one runs.
 		replace string
@@ -322,9 +321,9 @@ exec sleep 60
 	}
 }
 
-// checkQuickCall fails the test unless calls is the one cloudflared call of a
-// quick tunnel, without TUNNEL_ variables. The config path is a new temporary
-// file on every run.
+// checkQuickCall fails the test unless calls is a single cloudflared call
+// that starts a quick tunnel, with no TUNNEL_ variables. The config path
+// changes on every run, so any path matches.
 func checkQuickCall(t *testing.T, calls string) {
 	t.Helper()
 	call := strings.Fields(calls)
@@ -343,8 +342,8 @@ func checkQuickCall(t *testing.T, calls string) {
 	}
 }
 
-// waitForHeld returns the content of path once a running tunnel holds its
-// lock, and fails the test after 10 seconds.
+// waitForHeld returns the content of path once a running tunnel has it
+// locked. It fails the test after 10 seconds.
 func waitForHeld(t *testing.T, path string) string {
 	t.Helper()
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
@@ -356,8 +355,8 @@ func waitForHeld(t *testing.T, path string) string {
 	return ""
 }
 
-// heldFile returns the content of path, and whether another open file holds
-// an exclusive lock on it.
+// heldFile returns the content of path, and whether another open file has an
+// exclusive lock on it.
 func heldFile(path string) (string, bool) {
 	file, err := os.Open(path) //nolint:gosec // G304: the path is the test's own file.
 	if err != nil {
@@ -394,8 +393,8 @@ func writeFile(t *testing.T, path, body string) {
 	}
 }
 
-// holdIssuerFile writes the issuer file and holds its lock until the test
-// ends, as a running quick tunnel does.
+// holdIssuerFile fakes a running quick tunnel. It writes the issuer file and
+// locks it until the test ends.
 func holdIssuerFile(t *testing.T, path, body string) {
 	t.Helper()
 	writeFile(t, path, body)
@@ -410,9 +409,9 @@ func holdIssuerFile(t *testing.T, path, body string) {
 }
 
 // TestQuickTunnelRefused checks that a quick tunnel fails when cloudflared
-// exits before it prints a URL, or when a running tunnel holds the issuer
-// file. A failed tunnel must leave the issuer file as it found it, so it does
-// not delete a running tunnel's URL.
+// exits before it prints a URL, or when a running tunnel has the issuer file
+// locked. A failed tunnel must not change the issuer file, because the file
+// may belong to a running tunnel.
 func TestQuickTunnelRefused(t *testing.T) {
 	t.Parallel()
 	const other = "https://other-tunnel.trycloudflare.com\n"
@@ -420,7 +419,8 @@ func TestQuickTunnelRefused(t *testing.T) {
 		name string
 		// body is the fake cloudflared. It is not run when file is set.
 		body string
-		// file is the issuer file a running tunnel holds before Tunnel starts.
+		// file is the content of an issuer file that a running tunnel has
+		// locked when Tunnel starts.
 		file     string
 		want     []error
 		wantText string
@@ -510,7 +510,8 @@ func TestCheckIssuer(t *testing.T) {
 		cluster, issuerURL string
 		// quick is the URL in the issuer file of a running quick tunnel.
 		quick string
-		// killed leaves the issuer file without a running tunnel.
+		// killed writes the issuer file without its lock, as a killed tunnel
+		// leaves it.
 		killed   bool
 		want     []error
 		wantText string

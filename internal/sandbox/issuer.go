@@ -34,8 +34,8 @@ func (l *Local) Mirror(ctx context.Context, cluster, issuerURL, listen string) e
 	return l.mirror(ctx, cluster, issuerURL, listener)
 }
 
-// mirror serves the issuer documents on listener, as Mirror does. It closes
-// listener.
+// mirror reads the cluster's discovery document and JWKS once, then serves
+// them on listener until ctx ends. It closes listener.
 func (l *Local) mirror(ctx context.Context, cluster, issuerURL string, listener net.Listener) error {
 	defer func() { _ = listener.Close() }()
 	cluster, err := l.cluster(cluster)

@@ -6,15 +6,14 @@ import (
 )
 
 var (
-	// ErrNoTerminal is a question asked when stdin is not a terminal.
+	// ErrNoTerminal means stdin is not a terminal, so Local cannot ask.
 	ErrNoTerminal = errors.New("no terminal to ask")
-	// ErrInterrupted is a question the operator stopped with Ctrl-C.
+	// ErrInterrupted means the operator pressed Ctrl-C at a question.
 	ErrInterrupted = errors.New("interrupted")
 )
 
-// Asker asks the operator questions on the terminal. When ctx ends, a
-// question returns an error that wraps ctx.Err(). Ctrl-C on a question
-// returns ErrInterrupted.
+// Asker asks the operator questions on the terminal. Its methods return an
+// error that wraps ctx.Err() when ctx ends, and ErrInterrupted on Ctrl-C.
 type Asker interface {
 	// Confirm asks a yes or no question. value is the default answer.
 	Confirm(ctx context.Context, question string, value bool) (bool, error)

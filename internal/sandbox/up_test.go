@@ -40,8 +40,8 @@ func TestUpPrint(t *testing.T) {
 	tests := []struct {
 		name     string
 		settings sandbox.Settings
-		// running writes QuickIssuerFile and holds its lock to fake a running
-		// quick tunnel.
+		// running fakes a running quick tunnel. It writes QuickIssuerFile and
+		// locks it.
 		running bool
 		// killed writes QuickIssuerFile without the lock, as a killed quick
 		// tunnel leaves it.
@@ -104,7 +104,7 @@ func TestUpPrint(t *testing.T) {
 
 // TestUpStops checks that Up stops at the failed step and prints the
 // commands from that step on, and the background steps before it.
-// check-issuer may retry for a minute, but only a failed discovery fetch.
+// IssuerWait is a minute, and only a failed discovery fetch may retry.
 func TestUpStops(t *testing.T) {
 	t.Parallel()
 	const (
@@ -197,11 +197,11 @@ esac
 	}
 }
 
-// TestUpRecreates checks that Up asks before it deletes a cluster with
-// another issuer, as down does, and deletes it only on yes. When it keeps
-// the cluster, the commands left start with bootstrap. The issuer is a closed
+// TestUpRecreates checks that Up asks down's question before it deletes a
+// cluster with another issuer, and deletes it only on yes. When Up keeps the
+// cluster, the commands left start with bootstrap. The issuer is a closed
 // port, so after a recreate check-issuer fails at once and the commands left
-// include the mirror. A nil ask is a stdin that is not a terminal.
+// include the mirror. A nil ask means stdin is not a terminal.
 func TestUpRecreates(t *testing.T) {
 	t.Parallel()
 	const closed = "https://127.0.0.1:1"

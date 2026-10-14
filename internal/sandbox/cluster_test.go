@@ -159,15 +159,16 @@ const (
 	// nothingDeleted is the error text for an answer other than yes.
 	nothingDeleted = "nothing deleted"
 	deleted        = "Deleted the k3d cluster asp, and removed the context k3d-asp from your kubeconfig.\n"
-	// deleteQuestion is the question Down asks. Its default is no.
+	// deleteQuestion is the question Down asks and its default, as
+	// confirmAsker records them.
 	deleteQuestion = "Delete the k3d cluster asp? [default false]"
-	// noTerminal is the error text when there is no terminal to ask.
+	// noTerminal is the error text when stdin is not a terminal.
 	noTerminal = "no terminal to ask. Pass --yes"
 )
 
 // TestDown checks that Down deletes the cluster only when it exists and the
 // operator confirms with --yes or answers yes to a question whose default is
-// no. A nil ask is a stdin that is not a terminal.
+// no. A nil ask means stdin is not a terminal.
 func TestDown(t *testing.T) {
 	t.Parallel()
 
@@ -233,8 +234,8 @@ func TestDown(t *testing.T) {
 }
 
 // confirmAsker answers every question with answer and err. It records each
-// question with its default answer. A nil confirmAsker stands for a stdin
-// that is not a terminal.
+// question with its default answer. A nil confirmAsker means stdin is not a
+// terminal.
 type confirmAsker struct {
 	answer bool
 	err    error

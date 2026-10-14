@@ -250,7 +250,7 @@ func listenFlag() *cli.StringFlag {
 	}
 }
 
-// runFlags are the flags of run, which up passes to run.
+// runFlags are the flags of run. up takes them too, and passes them to run.
 func runFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.BoolFlag{
@@ -305,7 +305,7 @@ func newLocal(cmd *cli.Command) (*sandbox.Local, error) {
 		return nil, fmt.Errorf("loading the settings: %w", err)
 	}
 	local := &sandbox.Local{Root: root, Settings: settings, Tool: sandbox.Tool, Out: cmd.Writer}
-	// huh reads os.Stdin, and only a terminal can answer it.
+	// huh reads os.Stdin and needs a terminal.
 	if term.IsTerminal(os.Stdin.Fd()) {
 		local.Ask = terminalAsker{}
 	}

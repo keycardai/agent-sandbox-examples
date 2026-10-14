@@ -127,8 +127,8 @@ type Local struct {
 	Tool func(ctx context.Context, name string, args ...string) (*exec.Cmd, error)
 	// Out receives progress lines and the output of long-running tools.
 	Out io.Writer
-	// Ask asks the operator questions. It is nil when stdin is not a
-	// terminal, and every question then fails with ErrNoTerminal.
+	// Ask asks the operator questions. When stdin is not a terminal, Ask is
+	// nil and every question returns ErrNoTerminal.
 	Ask Asker
 }
 
@@ -155,8 +155,8 @@ func (l *Local) cluster(flag string) (string, error) {
 }
 
 // issuer returns flag, else KEYCARD_LOCAL_ISSUER, else the URL in
-// QuickIssuerFile. It refuses QuickIssuerFile when no running tunnel holds
-// it, because that URL no longer works.
+// QuickIssuerFile. It refuses the file when no running tunnel has it locked,
+// because the tunnel behind that URL is not running.
 func (l *Local) issuer(flag string) (string, error) {
 	if url := cmp.Or(flag, l.Settings[KeyIssuer]); url != "" {
 		return url, nil

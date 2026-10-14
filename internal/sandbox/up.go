@@ -62,7 +62,8 @@ type upRun struct {
 	// quickTunnel is true when Up started a quick tunnel. Its URL stops
 	// working when Up stops. bootstrapped is true when bootstrap succeeded.
 	quickTunnel, bootstrapped bool
-	// checks is the result of the last checks that ran to the end.
+	// checks is the error from the last checks that finished, or nil if they
+	// passed.
 	checks error
 }
 
@@ -73,8 +74,8 @@ type upRun struct {
 //
 // After run, Up keeps the tunnel and the mirror running until ctx ends. On a
 // terminal, it asks whether to run the checks again, and stops on no. Failed
-// checks do not stop Up. When Up stops, it returns the error of the last
-// checks. Up does not delete the cluster when it stops.
+// checks do not stop Up, but when Up stops it returns the last checks' error.
+// Up does not delete the cluster when it stops.
 //
 // Up does not start a tunnel when the operator publishes the issuer or
 // already runs a quick tunnel.
@@ -144,8 +145,8 @@ func (l *Local) upSteps(opts UpOptions) []upStep {
 
 // needsTunnel reports whether Up starts a tunnel. Up starts a named tunnel
 // when KEYCARD_LOCAL_TUNNEL is set. It starts a quick tunnel when
-// KEYCARD_LOCAL_ISSUER is empty and no running quick tunnel holds
-// QuickIssuerFile. If one does, Up uses it.
+// KEYCARD_LOCAL_ISSUER is empty and no running quick tunnel has
+// QuickIssuerFile locked. Otherwise Up uses the running tunnel.
 func (l *Local) needsTunnel() bool {
 	if l.Settings[KeyTunnel] != "" {
 		return true
@@ -174,8 +175,9 @@ func (l *Local) upTunnel(ctx context.Context, state *upRun) error {
 	})
 }
 
-// upBootstrap runs bootstrap. If the cluster has another issuer, it asks to
-// delete the cluster as down does, and creates it again on y.
+// upBootstrap runs bootstrap. If the cluster has another issuer, it runs down,
+// which asks before it deletes the cluster. After a delete, it runs bootstrap
+// again.
 func (l *Local) upBootstrap(ctx context.Context, state *upRun) error {
 	err := l.Bootstrap(ctx, "", "", false)
 	if errors.Is(err, ErrOtherIssuer) {
@@ -189,8 +191,8 @@ func (l *Local) upBootstrap(ctx context.Context, state *upRun) error {
 	return err
 }
 
-// upMirror listens on opts.Listen before it starts the mirror, so a port
-// that another process holds fails the step.
+// upMirror listens on opts.Listen before it starts the mirror, so the step
+// fails when another process has the port.
 func (l *Local) upMirror(ctx context.Context, state *upRun) error {
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", state.opts.Listen)
 	if err != nil {
@@ -199,8 +201,8 @@ func (l *Local) upMirror(ctx context.Context, state *upRun) error {
 	l.startService(ctx, state, "mirror", func(ctx context.Context, service *Local) error {
 		return service.mirror(ctx, "", "", listener)
 	})
-	// The listener accepts connections before the mirror serves. Any HTTP
-	// response means the mirror serves.
+	// The listener accepts connections before the mirror serves, so wait for
+	// an HTTP response with any status.
 	client := &http.Client{Transport: &http.Transport{}, Timeout: pollEvery}
 	return waitFor(ctx, state, "the mirror on "+state.opts.Listen, func() bool {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+state.opts.Listen+"/", nil)
@@ -217,8 +219,8 @@ func (l *Local) upMirror(ctx context.Context, state *upRun) error {
 }
 
 // upCheckIssuer runs check-issuer until it passes or opts.IssuerWait runs
-// out. It retries only a failed discovery fetch, which a tunnel that is still
-// starting gives. Any other failure returns at once.
+// out. It retries only a failed discovery fetch, the error a tunnel gives
+// while it starts. It returns any other error at once.
 func (l *Local) upCheckIssuer(ctx context.Context, state *upRun) error {
 	deadline := time.Now().Add(state.opts.IssuerWait)
 	for {
@@ -331,8 +333,8 @@ func (l *Local) serve(ctx context.Context, steps []upStep, state *upRun) error {
 	}
 }
 
-// recheck runs the checks and prints a failure. Unless ctx ended during the
-// checks, their result goes to state.checks.
+// recheck runs the checks and prints any failure. It stores the result in
+// state.checks unless ctx ended during the checks.
 func (l *Local) recheck(ctx context.Context, state *upRun) {
 	err := l.CheckSandbox(ctx, "", "", "", "")
 	if err != nil {

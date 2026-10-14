@@ -20,8 +20,9 @@ func (terminalAsker) Confirm(ctx context.Context, question string, value bool) (
 	return value, asked(ctx, err)
 }
 
-// asked turns huh's errors into the errors sandbox.Asker documents. huh
-// reports an ended ctx as huh.ErrTimeout, so asked checks ctx first.
+// asked returns the error for a huh form that returned err. When ctx has
+// ended, it returns ctx's error, because huh reports that case as
+// huh.ErrTimeout. On Ctrl-C it returns sandbox.ErrInterrupted.
 func asked(ctx context.Context, err error) error {
 	switch {
 	case err == nil:

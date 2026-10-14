@@ -57,9 +57,9 @@ func Load(issuer string, discovery, jwks []byte) (*Snapshot, error) {
 	return &Snapshot{issuer: issuer, docs: docs, keys: keys}, nil
 }
 
-// Serve serves snap over plain HTTP on listener until ctx ends, for a
-// TLS-terminating proxy to publish at the issuer URL. It closes listener. It
-// writes one line to log once it serves.
+// Serve serves snap over plain HTTP on listener until ctx ends. A
+// TLS-terminating proxy publishes it at the issuer URL. Serve closes
+// listener, and writes one line to log when it starts serving.
 func Serve(ctx context.Context, snap *Snapshot, listener net.Listener, log io.Writer) error {
 	server := &http.Server{Handler: snap, ReadHeaderTimeout: readHeaderTimeout}
 	served := make(chan error, 1)

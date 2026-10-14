@@ -37,13 +37,13 @@ Before each step, `up` prints the command that runs it by hand. If a step
 fails or you press Ctrl-C, `up` prints the commands that are left. After the
 checks, `up` keeps the tunnel and the mirror running until you press Ctrl-C.
 It asks whether to run the checks again, and stops when you answer no. If
-the last checks failed, `up` exits with status 1 when it stops. If
-the cluster was created with a different issuer, `up` asks to delete the
-cluster and create it again. The default answer keeps the cluster.
+the last checks failed, `up` exits with status 1 when it stops. If the
+cluster was created with a different issuer, `up` asks to delete the cluster
+and create it again. The default answer keeps the cluster.
 
-`up` and `down` ask questions only when stdin is a terminal. Without one,
-`up` does not ask to run the checks again, and it keeps a cluster with a
-different issuer. `down` deletes only with `--yes`.
+`up` and `down` ask questions only when stdin is a terminal. If it isn't,
+`up` doesn't offer to run the checks again, and it keeps a cluster with a
+different issuer. `down` then deletes only with `--yes`.
 
 `sandbox up --print` prints the commands without running them:
 
@@ -82,13 +82,13 @@ Cloudflare says quick tunnels have no uptime guarantee and are for testing
 and development
 ([Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/)).
 The tunnel gets a new `https://<name>.trycloudflare.com` URL every time it
-starts. `sandbox tunnel` writes it to `local/out/issuer`, holds a lock on
-the file while it runs, and deletes the file when it exits. The lock goes
-away when the tunnel's process exits, even when it is killed. The other
-steps read the issuer from that file, and refuse it when no running tunnel
-holds the lock. `sandbox tunnel` refuses to start while another tunnel holds
-the file, and deletes a file that a killed tunnel left. The issuer is fixed
-when the cluster is created, so start `sandbox tunnel`
+starts. `sandbox tunnel` writes it to `local/out/issuer`, locks the file
+while it runs, and deletes the file when it exits. The lock goes away when
+the tunnel's process exits, even when it's killed. The other steps read the
+issuer from that file, and refuse it when it isn't locked. `sandbox tunnel`
+refuses to start while another tunnel has the file locked, and deletes a
+file left by a killed tunnel. The issuer is fixed when the cluster is
+created, so start `sandbox tunnel`
 before `sandbox bootstrap`. After a restart, run `sandbox down` and
 `sandbox bootstrap` again. zone-setup then creates a new provider for the
 new issuer, and keeps the old one.

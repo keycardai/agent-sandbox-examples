@@ -46,10 +46,10 @@ var (
 // With KEYCARD_LOCAL_TUNNEL empty, it starts a quick tunnel, and
 // KEYCARD_LOCAL_ISSUER must be empty. A quick tunnel gets a new
 // https://<name>.trycloudflare.com URL on every start. Tunnel writes the URL
-// to QuickIssuerFile, holds a lock on the file while it runs, and removes the
-// file when it returns. It refuses to start while another tunnel holds the
-// file, and deletes a file that no tunnel holds. The issuer is fixed when the
-// cluster is created, so a new URL needs a new cluster.
+// to QuickIssuerFile, locks the file while it runs, and removes the file when
+// it returns. It refuses to start while another tunnel has the file locked.
+// It deletes a file that is not locked. The issuer is fixed when the cluster
+// is created, so a new URL needs a new cluster.
 func (l *Local) Tunnel(ctx context.Context, listen string) error {
 	if err := l.checkTunnel(listen); err != nil {
 		return err
@@ -175,9 +175,8 @@ func writeQuickConfig() (string, error) {
 	return config.Name(), nil
 }
 
-// checkNoQuickURL creates the directory of issuerFile. It refuses an
-// issuerFile that a running tunnel holds, and deletes one that no tunnel
-// holds.
+// checkNoQuickURL creates the directory of issuerFile. It fails if a running
+// tunnel has issuerFile locked, and deletes issuerFile if it is not locked.
 func checkNoQuickURL(issuerFile string, out io.Writer) error {
 	if err := os.MkdirAll(filepath.Dir(issuerFile), dirMode); err != nil {
 		return fmt.Errorf("creating %s: %w", filepath.Dir(issuerFile), err)
@@ -198,10 +197,10 @@ func checkNoQuickURL(issuerFile string, out io.Writer) error {
 	return nil
 }
 
-// readQuickIssuer returns the URL in issuerFile, and reports whether a
-// running quick tunnel holds the file. The tunnel holds an exclusive flock on
-// the file while it runs. The kernel releases the lock when the tunnel's
-// process exits, even on SIGKILL. A missing file returns an error that wraps
+// readQuickIssuer returns the URL in issuerFile, and whether a running quick
+// tunnel has the file locked. The tunnel holds an exclusive flock on the file
+// while it runs. The kernel releases the lock when the tunnel's process
+// exits, even on SIGKILL. If the file does not exist, the error wraps
 // fs.ErrNotExist.
 func readQuickIssuer(issuerFile string) (string, bool, error) {
 	file, err := os.Open(issuerFile) //nolint:gosec // G304: issuerFile is the tunnel step's own file.
@@ -235,10 +234,10 @@ func exitedEarly(ctx context.Context, err error) error {
 	return fmt.Errorf("%w: cloudflared exited before it printed a trycloudflare.com URL: %w", ErrTunnel, err)
 }
 
-// forgetQuickURL waits for the log scan to end, then deletes issuerFile if it
-// still holds the URL published, and then closes lock. It does nothing when
-// published is empty. The file goes before the lock, so no reader sees the
-// file without the lock while the tunnel runs.
+// forgetQuickURL waits for the log scan to end. If issuerFile still has the
+// published URL, it deletes the file. Then it closes lock. Deleting first
+// means a reader never finds the file unlocked while the tunnel runs. It does
+// nothing when published is empty.
 func forgetQuickURL(issuerFile, published string, lock *os.File, out io.Writer, scanned <-chan struct{}) {
 	<-scanned
 	if published == "" {
@@ -255,9 +254,9 @@ func forgetQuickURL(issuerFile, published string, lock *os.File, out io.Writer, 
 }
 
 // publishQuickURL writes url to issuerFile through a hard link, so the file
-// appears whole or not at all. It fails if issuerFile exists. The file it
-// returns holds an exclusive flock on issuerFile, taken before the link.
-// Close it after removing issuerFile.
+// appears whole or not at all. It fails if issuerFile exists. It locks the
+// file before the link, and returns the locked file. Close it after removing
+// issuerFile.
 func publishQuickURL(issuerFile, url string) (*os.File, error) {
 	tmp, err := os.CreateTemp(filepath.Dir(issuerFile), ".issuer-*")
 	if err != nil {
