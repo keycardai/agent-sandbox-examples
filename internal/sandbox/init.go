@@ -69,7 +69,7 @@ type wizard struct {
 }
 
 // previous holds the values file from before Init. exists reports whether
-// local/local.env or the values file exists. err is the values file's parse
+// the settings file or the values file exists. err is the values file's parse
 // error. When err is set, values is empty and exists is false.
 type previous struct {
 	values zonesetup.Values
@@ -77,8 +77,8 @@ type previous struct {
 	err    error
 }
 
-// Init asks the operator for the settings and writes local/local.env and the
-// zone-setup values file. Secrets the operator types go in 0600 files under
+// Init asks the operator for the settings and writes the settings file and
+// the zone-setup values file. Secrets the operator types go in 0600 files under
 // local/out/secrets, and the values file names them. Each question defaults
 // to the value in the existing files. Init keeps the keys it does not ask
 // about, such as namespace and policy_set.
@@ -144,8 +144,8 @@ func (w *wizard) chooseChanges(ctx context.Context) (map[string]bool, error) {
 	if !w.prev.exists {
 		return all, nil
 	}
-	_, _ = fmt.Fprintf(w.l.Out, "Your current settings, from local/local.env and %s:\n\n%s\n",
-		w.l.valuesName(), w.summary())
+	_, _ = fmt.Fprintf(w.l.Out, "Your current settings, from %s and %s:\n\n%s\n",
+		w.l.settingsName(), w.l.valuesName(), w.summary())
 	choice, err := w.choose(ctx, "What do you want to change?", []Option{
 		{Label: "Nothing. Keep these settings.", Value: changeNothing},
 		{Label: "Everything. Answer each question again, starting from these answers.", Value: changeEverything},
@@ -158,7 +158,7 @@ func (w *wizard) chooseChanges(ctx context.Context) (map[string]bool, error) {
 	case err != nil:
 		return nil, err
 	case choice == changeNothing:
-		_, _ = fmt.Fprintf(w.l.Out, "Kept local/local.env and %s as they are.\n", w.l.valuesName())
+		_, _ = fmt.Fprintf(w.l.Out, "Kept %s and %s as they are.\n", w.l.settingsName(), w.l.valuesName())
 		return map[string]bool{}, nil
 	case choice == changeEverything:
 		return all, nil
@@ -759,7 +759,7 @@ func (w *wizard) askReplaceActive(ctx context.Context) (bool, error) {
 		strings.Join(others, ", "), zonesetup.DefaultPolicySetName), false)
 }
 
-// write writes the values file and local/local.env. It refuses a setting
+// write writes the values file and the settings file. It refuses a setting
 // with a line break, which would add a line to local.env.
 func (w *wizard) write() error {
 	w.env[KeyCluster] = cmp.Or(w.l.Settings[KeyCluster], defaultCluster)
@@ -783,10 +783,10 @@ func (w *wizard) write() error {
 	return w.l.writeSettings(w.env)
 }
 
-// Initialized reports whether local/local.env and the values file both
+// Initialized reports whether the settings file and the values file both
 // exist.
 func (l *Local) Initialized() bool {
-	for _, path := range []string{filepath.Join(l.Root, "local", "local.env"), l.valuesPath()} {
+	for _, path := range []string{l.settingsPath(), l.valuesPath()} {
 		if _, err := os.Stat(path); err != nil {
 			return false
 		}
@@ -794,7 +794,7 @@ func (l *Local) Initialized() bool {
 	return true
 }
 
-// writeSettings writes local/local.env from local/local.env.example, with
+// writeSettings writes the settings file from local/local.env.example, with
 // each key set to its value in settings.
 func (l *Local) writeSettings(settings Settings) error {
 	example, err := os.ReadFile(filepath.Join(l.Root, "local", "local.env.example"))
@@ -810,11 +810,10 @@ func (l *Local) writeSettings(settings Settings) error {
 		}
 		out.WriteString(line + "\n")
 	}
-	path := filepath.Join(l.Root, "local", "local.env")
-	if err = os.WriteFile(path, out.Bytes(), fileMode); err != nil {
-		return fmt.Errorf("writing %s: %w", path, err)
+	if err = os.WriteFile(l.settingsPath(), out.Bytes(), fileMode); err != nil {
+		return fmt.Errorf("writing %s: %w", l.settingsPath(), err)
 	}
-	_, _ = fmt.Fprintln(l.Out, "Wrote local/local.env.")
+	_, _ = fmt.Fprintf(l.Out, "Wrote %s.\n", l.settingsName())
 	return nil
 }
 
@@ -833,6 +832,16 @@ func (l *Local) writeSecret(name, secret string) (string, error) {
 	return path, nil
 }
 
+// settingsName returns the settings file's path as the operator named it, or
+// local/local.env.
+func (l *Local) settingsName() string {
+	return cmp.Or(l.SettingsFile, filepath.Join("local", "local.env"))
+}
+
+func (l *Local) settingsPath() string {
+	return cmp.Or(l.SettingsFile, filepath.Join(l.Root, "local", "local.env"))
+}
+
 // valuesName returns the values file's path relative to the repository root.
 func (l *Local) valuesName() string {
 	return cmp.Or(l.Settings[KeyZoneSetupValues], zoneSetupFile)
@@ -844,7 +853,7 @@ func (l *Local) valuesPath() string {
 
 // previousValues reads the values file without the ParseValues checks.
 func (l *Local) previousValues() previous {
-	_, envErr := os.Stat(filepath.Join(l.Root, "local", "local.env"))
+	_, envErr := os.Stat(l.settingsPath())
 	raw, err := os.ReadFile(l.valuesPath())
 	prev := previous{exists: envErr == nil || err == nil}
 	if err == nil {
