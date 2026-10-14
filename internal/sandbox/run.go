@@ -260,13 +260,12 @@ func (l *Local) k3dCluster(ctx context.Context, cfg runSettings) error {
 	return l.importImages(ctx, cfg.cluster, cfg.imageTag)
 }
 
+// runSettings validates local.env before it reads the issuer. For an
+// existing cluster, reading the issuer is the first call to the cluster.
 func (l *Local) runSettings(ctx context.Context) (runSettings, error) {
 	var cfg runSettings
 	var err error
 	if cfg.cluster, err = l.cluster(""); err != nil {
-		return cfg, err
-	}
-	if cfg.issuerURL, err = l.clusterIssuer(ctx, cfg.cluster, ""); err != nil {
 		return cfg, err
 	}
 	cfg.zoneURL, cfg.email = l.Settings[KeyZoneURL], l.Settings[KeyUserEmail]
@@ -289,15 +288,20 @@ func (l *Local) runSettings(ctx context.Context) (runSettings, error) {
 		return cfg, err
 	}
 	cfg.imageTag = l.Settings[KeyImageTag]
-	if l.Existing() {
-		return l.existingSettings(cfg)
+	if cfg, err = l.existingSettings(cfg); err != nil {
+		return cfg, err
 	}
-	return cfg, nil
+	cfg.issuerURL, err = l.clusterIssuer(ctx, cfg.cluster, "")
+	return cfg, err
 }
 
-// existingSettings adds the cluster's ranges for an existing cluster.
-// KEYCARD_LOCAL_ZONE_ON_HOST works only with k3d.
+// existingSettings adds the cluster's ranges for an existing cluster, and
+// returns cfg unchanged for k3d. KEYCARD_LOCAL_ZONE_ON_HOST works only with
+// k3d.
 func (l *Local) existingSettings(cfg runSettings) (runSettings, error) {
+	if !l.Existing() {
+		return cfg, nil
+	}
 	if cfg.zoneOnHost {
 		return cfg, fmt.Errorf("%w: %s is for a k3d cluster", ErrExisting, KeyZoneOnHost)
 	}

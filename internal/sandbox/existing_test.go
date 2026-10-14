@@ -69,8 +69,7 @@ func TestExistingRefuses(t *testing.T) {
 }
 
 // TestRunExistingSettings checks that Run refuses settings it cannot use
-// for an existing cluster. Run reads the cluster's issuer before it checks
-// the settings, so each case expects that one kubectl call.
+// for an existing cluster before it calls the cluster.
 func TestRunExistingSettings(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -101,9 +100,8 @@ func TestRunExistingSettings(t *testing.T) {
 			settings[tc.key] = tc.value
 			local, calls := newLocal(t, settings, eksTool(healthy()))
 			checkErr(t, local.Run(t.Context(), sandbox.RunOptions{}), []error{tc.want}, tc.wantText)
-			want := "kubectl KUBERC=off --context " + eksContext + " get --raw /.well-known/openid-configuration\n"
-			if got := readCalls(t, calls); got != want {
-				t.Fatalf("calls = %q, want %q", got, want)
+			if got := readCalls(t, calls); got != "" {
+				t.Fatalf("calls = %q, want none", got)
 			}
 		})
 	}
