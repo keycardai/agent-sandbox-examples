@@ -82,11 +82,13 @@ Cloudflare says quick tunnels have no uptime guarantee and are for testing
 and development
 ([Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/)).
 The tunnel gets a new `https://<name>.trycloudflare.com` URL every time it
-starts. `sandbox tunnel` writes it to `local/out/issuer` and deletes the
-file when it exits. It refuses to start while that file exists. If a killed
-tunnel left the file behind, delete it. The other steps read the issuer from
-that file. The
-issuer is fixed when the cluster is created, so start `sandbox tunnel`
+starts. `sandbox tunnel` writes it to `local/out/issuer`, holds a lock on
+the file while it runs, and deletes the file when it exits. The lock goes
+away when the tunnel's process exits, even when it is killed. The other
+steps read the issuer from that file, and refuse it when no running tunnel
+holds the lock. `sandbox tunnel` refuses to start while another tunnel holds
+the file, and deletes a file that a killed tunnel left. The issuer is fixed
+when the cluster is created, so start `sandbox tunnel`
 before `sandbox bootstrap`. After a restart, run `sandbox down` and
 `sandbox bootstrap` again. zone-setup then creates a new provider for the
 new issuer, and keeps the old one.

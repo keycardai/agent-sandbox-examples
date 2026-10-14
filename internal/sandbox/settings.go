@@ -155,14 +155,21 @@ func (l *Local) cluster(flag string) (string, error) {
 }
 
 // issuer returns flag, else KEYCARD_LOCAL_ISSUER, else the URL in
-// QuickIssuerFile.
+// QuickIssuerFile. It refuses QuickIssuerFile when no running tunnel holds
+// it, because that URL no longer works.
 func (l *Local) issuer(flag string) (string, error) {
 	if url := cmp.Or(flag, l.Settings[KeyIssuer]); url != "" {
 		return url, nil
 	}
-	raw, err := os.ReadFile(l.QuickIssuerFile())
-	if url := strings.TrimSpace(string(raw)); err == nil && url != "" {
+	url, running, err := readQuickIssuer(l.QuickIssuerFile())
+	switch {
+	case err == nil && !running:
+		return "", fmt.Errorf("%w: the quick tunnel that wrote %s is not running. "+
+			"Run `go run ./cmd/sandbox tunnel` in another terminal", ErrIssuer, l.QuickIssuerFile())
+	case err == nil && url != "":
 		return url, nil
+	case err != nil && !errors.Is(err, fs.ErrNotExist):
+		return "", fmt.Errorf("%w: %w", ErrIssuer, err)
 	}
 	return "", fmt.Errorf("%w: no issuer. Set %s, pass --issuer, "+
 		"or run `go run ./cmd/sandbox tunnel` in another terminal", ErrIssuer, KeyIssuer)

@@ -40,10 +40,14 @@ func TestUpPrint(t *testing.T) {
 	tests := []struct {
 		name     string
 		settings sandbox.Settings
-		// running writes QuickIssuerFile to fake a running quick tunnel.
+		// running writes QuickIssuerFile and holds its lock to fake a running
+		// quick tunnel.
 		running bool
-		opts    sandbox.UpOptions
-		want    string
+		// killed writes QuickIssuerFile without the lock, as a killed quick
+		// tunnel leaves it.
+		killed bool
+		opts   sandbox.UpOptions
+		want   string
 	}{
 		{name: "quick tunnel", want: tunnel + rest},
 		{
@@ -52,6 +56,7 @@ func TestUpPrint(t *testing.T) {
 			want:     tunnel + rest,
 		},
 		{name: "quick tunnel already running", running: true, want: rest},
+		{name: "quick tunnel killed", killed: true, want: tunnel + rest},
 		{
 			name:     "issuer published another way",
 			settings: sandbox.Settings{sandbox.KeyIssuer: testIssuer},
@@ -74,7 +79,10 @@ func TestUpPrint(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			local, calls := newLocal(t, tc.settings, "")
-			if tc.running {
+			switch {
+			case tc.running:
+				holdIssuerFile(t, local.QuickIssuerFile(), "https://quick-brown-fox.trycloudflare.com\n")
+			case tc.killed:
 				writeFile(t, local.QuickIssuerFile(), "https://quick-brown-fox.trycloudflare.com\n")
 			}
 			out := &bytes.Buffer{}

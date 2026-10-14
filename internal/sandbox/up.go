@@ -144,8 +144,8 @@ func (l *Local) upSteps(opts UpOptions) []upStep {
 
 // needsTunnel reports whether Up starts a tunnel. Up starts a named tunnel
 // when KEYCARD_LOCAL_TUNNEL is set. It starts a quick tunnel when
-// KEYCARD_LOCAL_ISSUER is empty and QuickIssuerFile does not exist. If the
-// file exists, the operator's quick tunnel is running and Up uses it.
+// KEYCARD_LOCAL_ISSUER is empty and no running quick tunnel holds
+// QuickIssuerFile. If one does, Up uses it.
 func (l *Local) needsTunnel() bool {
 	if l.Settings[KeyTunnel] != "" {
 		return true
@@ -153,8 +153,8 @@ func (l *Local) needsTunnel() bool {
 	if l.Settings[KeyIssuer] != "" {
 		return false
 	}
-	_, err := os.Stat(l.QuickIssuerFile())
-	return err != nil
+	_, running, err := readQuickIssuer(l.QuickIssuerFile())
+	return err != nil || !running
 }
 
 func (l *Local) upTunnel(ctx context.Context, state *upRun) error {
@@ -169,8 +169,8 @@ func (l *Local) upTunnel(ctx context.Context, state *upRun) error {
 		return nil
 	}
 	return waitFor(ctx, state, "the quick tunnel's URL", func() bool {
-		_, err := os.Stat(l.QuickIssuerFile())
-		return err == nil
+		_, running, err := readQuickIssuer(l.QuickIssuerFile())
+		return err == nil && running
 	})
 }
 
