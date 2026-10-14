@@ -27,6 +27,9 @@ var (
 	ErrAPI = errors.New("management API")
 	// ErrAuth is a service account the token endpoint did not accept.
 	ErrAuth = errors.New("service account token")
+	// ErrRefused is a client ID and secret the token endpoint refused with
+	// HTTP 400 or 401. An error that wraps ErrRefused also wraps ErrAuth.
+	ErrRefused = errors.New("refused")
 	// ErrApplicationAmbiguous is an application identifier more than one
 	// application in the zone has.
 	ErrApplicationAmbiguous = errors.New("application ambiguous")

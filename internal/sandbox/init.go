@@ -360,7 +360,8 @@ func (w *wizard) confirm(ctx context.Context, question string, value bool) (bool
 
 // login asks for the management API URL, the extra trusted roots if the API
 // is not production, and the service account, then signs in. It asks for the
-// account again until the API accepts it.
+// account again while the token endpoint refuses it. Any other error stops
+// Init. A typed secret goes in a 0600 file once the sign-in succeeds.
 func (w *wizard) login(ctx context.Context) error {
 	var err error
 	w.out.ManagementAPIURL, err = w.input(ctx, "Keycard management API URL",
@@ -368,10 +369,42 @@ func (w *wizard) login(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// A non-production management API, such as localdev, may use a private
-	// CA. For production, keep the current setting without asking.
+	if err = w.askRoots(ctx); err != nil {
+		return err
+	}
+	clientID := w.prev.values.ManagementServiceAccount.ClientID
+	useSaved := true
+	for {
+		account, secret, typed, err := w.askAccount(ctx, clientID, useSaved)
+		if err != nil {
+			return err
+		}
+		w.org, err = zonesetup.Login(ctx, w.out.ManagementAPIURL, account.ClientID, secret, w.roots)
+		if errors.Is(err, zonesetup.ErrRefused) {
+			_, _ = fmt.Fprintf(w.l.Out, "%v\nTry again.\n", err)
+			clientID, useSaved = account.ClientID, false
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("signing in: %w", err)
+		}
+		if typed {
+			if account.ClientSecretFile, err = w.l.writeSecret("management-client-secret", secret); err != nil {
+				return err
+			}
+		}
+		w.out.ManagementServiceAccount = account
+		return nil
+	}
+}
+
+// askRoots asks for the extra trusted roots. A non-production management
+// API, such as localdev, may use a private CA. For production, it keeps the
+// current setting without asking.
+func (w *wizard) askRoots(ctx context.Context) error {
 	caFile := w.l.Settings[KeyCAFile]
 	if w.out.ManagementAPIURL != defaultManagementAPI {
+		var err error
 		caFile, err = w.input(ctx, "PEM file of extra trusted roots, as an absolute path. "+
 			"Leave empty if this API's certificate comes from a public CA.",
 			caFile, checkCAFile)
@@ -380,61 +413,49 @@ func (w *wizard) login(ctx context.Context) error {
 		}
 	}
 	w.env[KeyCAFile] = caFile
-	if w.roots, err = rootsFrom(caFile); err != nil {
-		return err
-	}
-	for {
-		account, secret, err := w.askAccount(ctx)
-		if err != nil {
-			return err
-		}
-		clientID := account.ClientID
-		w.org, err = zonesetup.Login(ctx, w.out.ManagementAPIURL, clientID, secret, w.roots)
-		if err == nil {
-			w.out.ManagementServiceAccount = account
-			return nil
-		}
-		if !errors.Is(err, zonesetup.ErrAuth) {
-			return fmt.Errorf("signing in: %w", err)
-		}
-		_, _ = fmt.Fprintf(w.l.Out, "%v\nTry again.\n", err)
-		w.prev.values.ManagementServiceAccount = zonesetup.ManagementServiceAccountValues{ClientID: clientID}
-	}
+	roots, err := rootsFrom(caFile)
+	w.roots = roots
+	return err
 }
 
-// askAccount asks for the service account and returns it with its secret.
-// The secret comes from the environment variable the values file names, from
-// the file it names, or from the operator. A typed secret goes in a 0600
-// file.
-func (w *wizard) askAccount(ctx context.Context) (zonesetup.ManagementServiceAccountValues, string, error) {
+// askAccount asks for the service account and returns it, its secret, and
+// whether the operator typed the secret. When useSaved is true and the
+// environment variable or the file the values file names holds a secret, it
+// offers that secret.
+func (w *wizard) askAccount(
+	ctx context.Context,
+	clientID string,
+	useSaved bool,
+) (zonesetup.ManagementServiceAccountValues, string, bool, error) {
+	var account zonesetup.ManagementServiceAccountValues
 	saved := w.prev.values.ManagementServiceAccount
-	clientID, err := w.input(ctx, "Organization service account client ID", saved.ClientID, required)
+	clientID, err := w.input(ctx, "Organization service account client ID", clientID, required)
 	if err != nil {
-		return zonesetup.ManagementServiceAccountValues{}, "", err
+		return account, "", false, err
 	}
-	account := zonesetup.ManagementServiceAccountValues{ClientID: clientID}
-	secret := w.savedSecret(saved)
+	account.ClientID = clientID
+	secret := ""
+	if useSaved {
+		secret = w.savedSecret(saved)
+	}
 	switch {
 	case secret != "" && saved.ClientSecretFile == "":
 		_, _ = fmt.Fprintf(w.l.Out, "Using the client secret from %s.\n",
 			cmp.Or(saved.ClientSecretEnv, zonesetup.DefaultManagementSecretEnv))
 		account.ClientSecretEnv = saved.ClientSecretEnv
-		return account, secret, nil
+		return account, secret, false, nil
 	case secret != "" && clientID == saved.ClientID:
 		keep, keepErr := w.confirm(ctx, "Keep the saved client secret?", true)
 		if keepErr != nil {
-			return zonesetup.ManagementServiceAccountValues{}, "", keepErr
+			return account, "", false, keepErr
 		}
 		if keep {
 			account.ClientSecretFile = saved.ClientSecretFile
-			return account, secret, nil
+			return account, secret, false, nil
 		}
 	}
-	if secret, err = w.secret(ctx, "Service account client secret", required); err != nil {
-		return zonesetup.ManagementServiceAccountValues{}, "", err
-	}
-	account.ClientSecretFile, err = w.l.writeSecret("management-client-secret", secret)
-	return account, secret, err
+	secret, err = w.secret(ctx, "Service account client secret", required)
+	return account, secret, true, err
 }
 
 // chooseZone asks for one of the zones the service account can see, or a

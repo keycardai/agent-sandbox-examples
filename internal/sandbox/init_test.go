@@ -16,11 +16,12 @@ import (
 	"testing"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
+	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
 // scriptedAsker answers a question with the next answer under the key the
-// question starts with. With no answer left, it keeps the default. It
-// records every question.
+// question starts with. With no answer left, it keeps the default, and Secret
+// returns errStop. It records every question.
 type scriptedAsker struct {
 	t       *testing.T
 	answers map[string][]string
@@ -39,10 +40,17 @@ func (a *scriptedAsker) Input(_ context.Context, question, value string, check f
 	return value, nil
 }
 
+// errStop is the error Secret returns when it has no answer left, as when the
+// operator presses Ctrl-C.
+var errStop = errors.New("stopped")
+
 func (a *scriptedAsker) Secret(_ context.Context, question string, check func(string) error) (string, error) {
 	answer, ok := a.next(question)
-	if !ok || check(answer) != nil {
-		a.t.Fatalf("%q: no usable answer", question)
+	if !ok {
+		return "", errStop
+	}
+	if check(answer) != nil {
+		a.t.Fatalf("%q: the answer %q is refused", question, answer)
 	}
 	return answer, nil
 }
@@ -105,10 +113,10 @@ const (
 // API with each secret in turn, and choose its user after one more listing.
 func signInAnswers(serverURL, caFile string, secrets ...string) map[string][]string {
 	return map[string][]string{
-		"Keycard management API URL":             {serverURL},
+		apiURLQuestion:                           {serverURL},
 		"PEM file of extra trusted roots":        {caFile},
 		"Organization service account client ID": {"sa-1"},
-		"Service account client secret":          secrets,
+		secretQuestion:                           secrets,
 		"Which user":                             {"\x00again", email},
 	}
 }
@@ -225,6 +233,8 @@ func TestInit(t *testing.T) {
 
 // The questions and answers that more than one test uses.
 const (
+	apiURLQuestion        = "Keycard management API URL"
+	secretQuestion        = "Service account client secret"
 	openRouterKeyQuestion = "OpenRouter API key"
 	// gitHubSourceQuestion asks where the GitHub token comes from.
 	// gitHubTokenChoice is the answer for a personal access token.
@@ -354,12 +364,16 @@ func TestInitGitHubToken(t *testing.T) {
 // prepare, the test runs it on the first run's files before the second run.
 func TestInitRerun(t *testing.T) {
 	t.Parallel()
-	const changeCluster = "cluster"
+	const (
+		changeCluster = "cluster"
+		changeAccount = "account"
+	)
 	tests := []struct {
 		name      string
 		prepare   func(t *testing.T, run initRun)
 		answers   map[string][]string
 		notAsked  []string
+		wantErr   error
 		wantFiles map[string]string // secret file name: content
 		check     func(t *testing.T, run initRun)
 	}{
@@ -367,7 +381,7 @@ func TestInitRerun(t *testing.T) {
 		{
 			name:      "everything, keeping the secrets",
 			answers:   map[string][]string{changeQuestion: {"\x00everything"}},
-			notAsked:  []string{"Service account client secret", openRouterKeyQuestion},
+			notAsked:  []string{secretQuestion, openRouterKeyQuestion},
 			wantFiles: map[string]string{"management-client-secret": "good\n", "openrouter-api-key": "or-key\n"},
 			check:     checkValuesKept,
 		},
@@ -396,6 +410,26 @@ func TestInitRerun(t *testing.T) {
 			check:    checkNamedTunnel,
 		},
 		{
+			name: "account, with a refused secret, then Ctrl-C",
+			answers: map[string][]string{
+				changeQuestion:                  {changeAccount},
+				"Keep the saved client secret?": {"n"},
+				secretQuestion:                  {"bad"},
+			},
+			wantErr:   errStop,
+			wantFiles: map[string]string{"management-client-secret": "good\n"},
+			check:     checkValuesKept,
+		},
+		{
+			name: "account, at an API that does not answer",
+			answers: map[string][]string{
+				changeQuestion: {changeAccount},
+				apiURLQuestion: {"https://127.0.0.1:1"},
+			},
+			wantErr: zonesetup.ErrAuth,
+			check:   checkValuesKept,
+		},
+		{
 			name:     "cluster, in another values file",
 			prepare:  renameValues,
 			answers:  map[string][]string{changeQuestion: {changeCluster}},
@@ -413,7 +447,7 @@ func TestInitRerun(t *testing.T) {
 			name:     "credentials, in a hand-written values file",
 			prepare:  handWritten,
 			answers:  map[string][]string{changeQuestion: {credentialsSection}},
-			notAsked: append(signInQuestions(), "Service account client secret", openRouterKeyQuestion),
+			notAsked: append(signInQuestions(), secretQuestion, openRouterKeyQuestion),
 			check:    checkHandWrittenKept,
 		},
 	}
@@ -427,8 +461,9 @@ func TestInitRerun(t *testing.T) {
 			run.out.Reset()
 			ask := &scriptedAsker{t: t, answers: tc.answers}
 			run.local.Ask = ask
-			if _, err := run.local.Init(t.Context()); err != nil {
-				t.Fatal(err)
+			_, err := run.local.Init(t.Context())
+			if !errors.Is(err, tc.wantErr) || errors.Is(err, zonesetup.ErrRefused) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
 			}
 			checkNotAsked(t, ask, tc.notAsked)
 			for name, want := range tc.wantFiles {
@@ -535,7 +570,7 @@ func checkRenamedValues(t *testing.T, run initRun) {
 
 // signInQuestions returns the questions that sign in and choose the zone.
 func signInQuestions() []string {
-	return []string{"Keycard management API URL", "Organization service account client ID", "Which zone"}
+	return []string{apiURLQuestion, "Organization service account client ID", "Which zone"}
 }
 
 // checkKept requires the summary of the first run's settings, and the

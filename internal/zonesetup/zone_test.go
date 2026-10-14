@@ -518,7 +518,7 @@ func TestConnect(t *testing.T) {
 			wantCalls: map[string]int{getACall: 1},
 		},
 		{
-			name: "wrong secret", zoneID: zoneA, secret: "wrong", wantErr: zonesetup.ErrAuth,
+			name: "wrong secret", zoneID: zoneA, secret: "wrong", wantErr: zonesetup.ErrRefused,
 			wantCalls: map[string]int{exchangeCall: 1, getACall: 0},
 		},
 		{
