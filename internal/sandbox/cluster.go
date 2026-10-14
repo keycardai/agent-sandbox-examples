@@ -51,13 +51,15 @@ var (
 // An empty cluster or issuerURL comes from the settings.
 func (l *Local) Bootstrap(ctx context.Context, cluster, issuerURL string, dryRun bool) error {
 	err := l.bootstrap(ctx, cluster, issuerURL, dryRun)
-	if errors.Is(err, ErrOtherIssuer) {
-		// bootstrap checked the name before it found the cluster.
-		cluster, _ = l.cluster(cluster)
-		return fmt.Errorf("%w. Delete the cluster with\n"+
-			"    go run ./cmd/sandbox down --cluster %s, or bootstrap with its issuer", err, cluster)
+	if !errors.Is(err, ErrOtherIssuer) {
+		return err
 	}
-	return err
+	name, nameErr := l.cluster(cluster)
+	if nameErr != nil {
+		return fmt.Errorf("%w. Delete the cluster, or bootstrap with its issuer", err)
+	}
+	return fmt.Errorf("%w. Delete the cluster with\n"+
+		"    go run ./cmd/sandbox down --cluster %s, or bootstrap with its issuer", err, name)
 }
 
 // bootstrap is Bootstrap without the advice to delete the cluster. up uses
