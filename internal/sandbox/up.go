@@ -179,13 +179,13 @@ func (l *Local) upTunnel(ctx context.Context, state *upRun) error {
 // which asks before it deletes the cluster. After a delete, it runs bootstrap
 // again.
 func (l *Local) upBootstrap(ctx context.Context, state *upRun) error {
-	err := l.Bootstrap(ctx, "", "", false)
+	err := l.bootstrap(ctx, "", "", false)
 	if errors.Is(err, ErrOtherIssuer) {
 		_, _ = fmt.Fprintf(l.Out, "%v\n\n", err)
 		if err = l.Down(ctx, "", false); err != nil {
 			return err
 		}
-		err = l.Bootstrap(ctx, "", "", false)
+		err = l.bootstrap(ctx, "", "", false)
 	}
 	state.bootstrapped = err == nil
 	return err

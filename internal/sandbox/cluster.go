@@ -41,14 +41,30 @@ var (
 // Bootstrap creates the k3d cluster with the ServiceAccount issuer set on its
 // API server. It then checks that a token the cluster mints has that issuer.
 //
-// Bootstrap keeps an existing cluster. It returns ErrIssuer when that
-// cluster's discovery document has another issuer or jwks_uri.
+// Bootstrap keeps an existing cluster. It returns ErrOtherIssuer when that
+// cluster's discovery document has another issuer or jwks_uri. The error
+// says how to delete the cluster.
 //
 // With dryRun, Bootstrap checks the settings and prints the k3d command. It
 // does not run a tool.
 //
 // An empty cluster or issuerURL comes from the settings.
 func (l *Local) Bootstrap(ctx context.Context, cluster, issuerURL string, dryRun bool) error {
+	err := l.bootstrap(ctx, cluster, issuerURL, dryRun)
+	if !errors.Is(err, ErrOtherIssuer) {
+		return err
+	}
+	name, nameErr := l.cluster(cluster)
+	if nameErr != nil {
+		return fmt.Errorf("%w. Delete the cluster, or bootstrap with its issuer", err)
+	}
+	return fmt.Errorf("%w. Delete the cluster with\n"+
+		"    go run ./cmd/sandbox down --cluster %s, or bootstrap with its issuer", err, name)
+}
+
+// bootstrap is Bootstrap without the advice to delete the cluster. up uses
+// it, because up asks to delete the cluster itself.
+func (l *Local) bootstrap(ctx context.Context, cluster, issuerURL string, dryRun bool) error {
 	cluster, err := l.cluster(cluster)
 	if err != nil {
 		return err
@@ -226,9 +242,8 @@ func (l *Local) checkDiscovery(ctx context.Context, cluster, issuerURL, jwksURI 
 		return fmt.Errorf("%w: %w: cluster %s was created with other settings:\n\n"+
 			"    issuer   : %s (wanted %s)\n"+
 			"    jwks_uri : %s (wanted %s)\n\n"+
-			"    k3d sets them only when it creates a cluster. Delete the cluster with\n"+
-			"    go run ./cmd/sandbox down --cluster %s, or bootstrap with its issuer",
-			ErrIssuer, ErrOtherIssuer, cluster, doc.Issuer, issuerURL, doc.JWKSURI, jwksURI, cluster)
+			"    k3d sets them only when it creates a cluster",
+			ErrIssuer, ErrOtherIssuer, cluster, doc.Issuer, issuerURL, doc.JWKSURI, jwksURI)
 	}
 	return nil
 }
