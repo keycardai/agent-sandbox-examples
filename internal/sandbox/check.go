@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"os/exec"
 	"slices"
 	"strconv"
@@ -47,6 +48,29 @@ const (
 	curlCouldNotResolve = 6
 	curlSSLConnect      = 35
 	curlPeerFailedCA    = 60
+	// probePod is the pod the NetworkPolicy check starts in the sandbox
+	// namespace. The NetworkPolicy selects every pod there.
+	probePod = "keycard-netpol-probe"
+	// probeOverrides keeps the probe pod from mounting a ServiceAccount
+	// token, and ends it after 120 seconds.
+	probeOverrides = `{"spec":{"automountServiceAccountToken":false,"activeDeadlineSeconds":120}}`
+	// probeScript connects to $1 up to 10 times, 2 seconds apart, and prints
+	// probeMarker and curl's exit code. It stops at the first failed
+	// connection. A policy engine can enforce the policy on a new pod a few
+	// seconds after the pod starts.
+	probeScript = `for i in 1 2 3 4 5 6 7 8 9 10; do
+curl -sS -o /dev/null --globoff --noproxy '*' --connect-timeout 5 "http://$1/"; code=$?
+[ "$code" -ne 0 ] && break; sleep 2
+done
+echo ` + probeMarker + `$code`
+	// probeName starts each line the NetworkPolicy check prints.
+	probeName = "NetworkPolicy: "
+	// probeMarker separates curl's output from its exit code.
+	probeMarker = "__probe_exit__:"
+	// curlConnectFailed and curlTimedOut are curl's exit codes for a
+	// connection that was refused or rejected, and a connect timeout.
+	curlConnectFailed = 7
+	curlTimedOut      = 28
 	// proxyLogLines is how many lines of the proxy's log a check reads.
 	proxyLogLines = "--tail=500"
 	// clockSkew is how far the cluster's clock may run behind this host's.
@@ -81,8 +105,9 @@ type proxyRecord struct {
 }
 
 // Check runs the end-to-end checks against a running sandbox and prints each
-// result. It does not write to the cluster. It returns ErrCheck when an
-// automated check fails. It also prints two manual checks.
+// result. It returns ErrCheck when an automated check fails. It also prints
+// two manual checks. The only thing it writes to the cluster is the
+// NetworkPolicy check's probe pod, which kubectl deletes when it exits.
 //
 // The automated checks:
 //   - An allowed destination without a credential returns 200.
@@ -92,6 +117,7 @@ type proxyRecord struct {
 //     the zone-setup values file has an OpenRouter resource.
 //   - The proxy blocks a destination that no endpoint lists, and logs the reason.
 //   - The pod runs as the ServiceAccount the credential is bound to.
+//   - The cluster enforces the sandbox NetworkPolicy.
 func (l *Local) Check(ctx context.Context, target CheckTarget) error {
 	checks, failures := 0, 0
 	report := func(passed bool, line string) {
@@ -110,6 +136,7 @@ func (l *Local) Check(ctx context.Context, target CheckTarget) error {
 	}
 	report(l.checkDenied(ctx, target, since))
 	report(l.checkServiceAccount(ctx, target))
+	report(l.checkNetworkPolicy(ctx, target))
 	_, _ = fmt.Fprintf(l.Out, `
   MANUAL  Open the zone's event log. Expect one credentials:issue event for
           the credentialed check, with subject %[1]s
@@ -286,6 +313,71 @@ func (l *Local) checkServiceAccount(ctx context.Context, target CheckTarget) (bo
 		return true, "the pod runs as the ServiceAccount " + account
 	}
 	return false, fmt.Sprintf("the pod runs as the ServiceAccount %q, want %q", out, target.UserID)
+}
+
+// checkNetworkPolicy starts a pod in the sandbox namespace, from the agent's
+// image, that connects to CoreDNS on its liveness probe port. The pod has no
+// netsetup or proxy, so only the NetworkPolicy can block it. The policy
+// allows only port 53 to CoreDNS. The check fails when the pod connects.
+// sandbox does not change the cluster's network setup.
+func (l *Local) checkNetworkPolicy(ctx context.Context, target CheckTarget) (bool, string) {
+	address, problem := l.coreDNS(ctx, target.Cluster)
+	if problem != "" {
+		return false, probeName + problem
+	}
+	image, err := l.kubectl(ctx, target.Cluster, nil, "--namespace", target.Namespace, "get", "pod", target.Pod,
+		"-o", `jsonpath={.spec.containers[?(@.name=="agent")].image}`)
+	if err != nil || len(image) == 0 {
+		return false, fmt.Sprintf("%sreading the agent image of %s failed: %v", probeName, target.Pod, err)
+	}
+	out, err := l.kubectl(ctx, target.Cluster, nil, "--namespace", target.Namespace, "run", probePod,
+		"--image", string(image), "--restart=Never", "--rm", "--stdin", "--quiet",
+		"--overrides", probeOverrides, "--command", "--", "sh", "-c", probeScript, "probe", address)
+	if err != nil {
+		return false, fmt.Sprintf("%sthe probe pod %s failed: %v", probeName, probePod, err)
+	}
+	return probeResult(target.Namespace, address, out)
+}
+
+// coreDNS returns the address and liveness probe port of a running CoreDNS
+// pod. CoreDNS answers on that port while the pod runs, so a failed
+// connection to it means the NetworkPolicy blocked it. When it cannot find
+// them, coreDNS returns why instead.
+func (l *Local) coreDNS(ctx context.Context, cluster string) (string, string) {
+	out, err := l.kubectl(ctx, cluster, nil, "--namespace", "kube-system", "get", "pods",
+		"--selector", "k8s-app=kube-dns", "--field-selector", "status.phase=Running", "-o",
+		"jsonpath={.items[0].status.podIP} {.items[0].spec.containers[0].livenessProbe.httpGet.port}")
+	if err != nil {
+		return "", fmt.Sprintf("finding a running CoreDNS pod in kube-system failed: %v", err)
+	}
+	ip, port, _ := strings.Cut(string(out), " ")
+	addr, ipErr := netip.ParseAddr(ip)
+	number, portErr := strconv.ParseUint(port, 10, 16)
+	if ipErr != nil || portErr != nil {
+		return "", fmt.Sprintf("want the IP and the numeric liveness probe port of a running CoreDNS pod "+
+			"in kube-system, got %q", out)
+	}
+	return netip.AddrPortFrom(addr, uint16(number)).String(), ""
+}
+
+// probeResult reads curl's exit code from the probe pod's output. A refused,
+// rejected or timed out connection passes.
+func probeResult(namespace, address string, out []byte) (bool, string) {
+	_, code, _ := strings.Cut(string(out), probeMarker)
+	switch exit, err := strconv.Atoi(strings.TrimSpace(code)); {
+	case err != nil:
+		return false, fmt.Sprintf("%sthe probe pod did not print curl's exit code: %q", probeName, out)
+	case exit == curlConnectFailed || exit == curlTimedOut:
+		return true, fmt.Sprintf("%sa pod in %s could not connect to CoreDNS at %s (curl exit %d)",
+			probeName, namespace, address, exit)
+	case exit == 0:
+		return false, fmt.Sprintf("%sa pod in %s connected to CoreDNS at %s. "+
+			"The cluster does not enforce NetworkPolicy, so only netsetup and the proxy restrict "+
+			"the sandbox's egress", probeName, namespace, address)
+	default:
+		return false, fmt.Sprintf("%sthe probe's curl to %s exited %d, want %d or %d",
+			probeName, address, exit, curlConnectFailed, curlTimedOut)
+	}
 }
 
 // fetch runs a curl command in the agent container that prints the body,

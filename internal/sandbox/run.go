@@ -260,13 +260,12 @@ func (l *Local) k3dCluster(ctx context.Context, cfg runSettings) error {
 	return l.importImages(ctx, cfg.cluster, cfg.imageTag)
 }
 
+// runSettings validates local.env before it reads the issuer. For an
+// existing cluster, reading the issuer is the first call to the cluster.
 func (l *Local) runSettings(ctx context.Context) (runSettings, error) {
 	var cfg runSettings
 	var err error
 	if cfg.cluster, err = l.cluster(""); err != nil {
-		return cfg, err
-	}
-	if cfg.issuerURL, err = l.clusterIssuer(ctx, cfg.cluster, ""); err != nil {
 		return cfg, err
 	}
 	cfg.zoneURL, cfg.email = l.Settings[KeyZoneURL], l.Settings[KeyUserEmail]
@@ -288,22 +287,35 @@ func (l *Local) runSettings(ctx context.Context) (runSettings, error) {
 	if cfg.caFile, err = l.caFile(); err != nil {
 		return cfg, err
 	}
-	cfg.imageTag = l.Settings[KeyImageTag]
-	if l.Existing() {
-		return l.existingSettings(cfg)
+	// Kubernetes sets imagePullPolicy to Always for an image tagged latest
+	// (https://kubernetes.io/docs/concepts/containers/images/#imagepullpolicy-defaulting).
+	// On k3d the node would then pull instead of running the images Run
+	// imports.
+	if cfg.imageTag = l.Settings[KeyImageTag]; cfg.imageTag == "latest" {
+		return cfg, fmt.Errorf("%w: %s must not be latest. Leave it empty to run the images the charts pin",
+			ErrSettings, KeyImageTag)
 	}
-	return cfg, nil
+	if cfg, err = l.existingSettings(cfg); err != nil {
+		return cfg, err
+	}
+	cfg.issuerURL, err = l.clusterIssuer(ctx, cfg.cluster, "")
+	return cfg, err
 }
 
-// existingSettings adds the cluster's ranges for an existing cluster.
-// KEYCARD_LOCAL_ZONE_ON_HOST works only with k3d.
+// existingSettings adds the cluster's ranges for an existing cluster, and
+// returns cfg unchanged for k3d. KEYCARD_LOCAL_ZONE_ON_HOST works only with
+// k3d.
 func (l *Local) existingSettings(cfg runSettings) (runSettings, error) {
+	if !l.Existing() {
+		return cfg, nil
+	}
 	if cfg.zoneOnHost {
 		return cfg, fmt.Errorf("%w: %s is for a k3d cluster", ErrExisting, KeyZoneOnHost)
 	}
-	var err error
-	if cfg.clusterCIDRs, err = ParseCIDRs(l.Settings[KeyClusterCIDRs]); err != nil {
-		return cfg, err
+	var bad string
+	if cfg.clusterCIDRs, bad = parseCIDRs(l.Settings[KeyClusterCIDRs]); bad != "" {
+		return cfg, fmt.Errorf("%w: %s: %q is not an address range such as 10.0.0.0/16",
+			ErrSettings, KeyClusterCIDRs, bad)
 	}
 	if len(cfg.clusterCIDRs) == 0 {
 		return cfg, fmt.Errorf("%w: %s is empty. Set it to the cluster's pod and service ranges",
@@ -325,9 +337,10 @@ func (l *Local) checkDocker(ctx context.Context) error {
 	return nil
 }
 
-// ParseCIDRs parses a comma-separated list of address ranges. Each one must
-// be a prefix such as 10.0.0.0/16.
-func ParseCIDRs(list string) ([]string, error) {
+// parseCIDRs parses a comma-separated list of address ranges, each a prefix
+// such as 10.0.0.0/16. It also returns the first item that is not a prefix,
+// or "" when every item is one.
+func parseCIDRs(list string) ([]string, string) {
 	var out []string
 	for item := range strings.SplitSeq(list, ",") {
 		item = strings.TrimSpace(item)
@@ -336,18 +349,15 @@ func ParseCIDRs(list string) ([]string, error) {
 		}
 		prefix, err := netip.ParsePrefix(item)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %s: %q is not an address range such as 10.0.0.0/16",
-				ErrSettings, KeyClusterCIDRs, item)
+			return nil, item
 		}
 		out = append(out, prefix.Masked().String())
 	}
-	return out, nil
+	return out, ""
 }
 
 // importImages imports the three images, tagged tag, from Docker into the
 // cluster. It fails before the import if Docker does not have one of them.
-// A tag other than latest defaults imagePullPolicy to IfNotPresent, so the
-// node runs the imported images and does not pull.
 func (l *Local) importImages(ctx context.Context, cluster, tag string) error {
 	var missing []string
 	for _, image := range images(tag) {

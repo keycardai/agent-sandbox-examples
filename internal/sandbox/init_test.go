@@ -20,23 +20,32 @@ import (
 
 // scriptedAsker answers a question with the next answer under the key the
 // question starts with. With no answer left, it keeps the default, and Secret
-// returns errStop. It records every question.
+// returns errStop. It records every question. Input asks again after a
+// refused answer, as the terminal asker does, and records the refusal.
 type scriptedAsker struct {
 	t       *testing.T
 	answers map[string][]string
 	asked   []string
+	refused []error
 	// offered holds the values of the choices each question offered.
 	offered map[string][]string
 }
 
 func (a *scriptedAsker) Input(_ context.Context, question, value string, check func(string) error) (string, error) {
-	if answer, ok := a.next(question); ok {
-		value = answer
+	for {
+		answer, ok := a.next(question)
+		if ok {
+			value = answer
+		}
+		err := check(value)
+		if err == nil {
+			return value, nil
+		}
+		if !ok {
+			a.t.Fatalf("%q: the answer %q is refused: %v", question, value, err)
+		}
+		a.refused = append(a.refused, err)
 	}
-	if err := check(value); err != nil {
-		a.t.Fatalf("%q: the answer %q is refused: %v", question, value, err)
-	}
-	return value, nil
 }
 
 // errStop is the error Secret returns when it has no answer left, as when the

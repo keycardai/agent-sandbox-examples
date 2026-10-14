@@ -17,7 +17,10 @@ const (
 	userID    = "user1abc"
 	namespace = "agents"
 	checkOK   = "every automated check passed"
-	oneFailed = "1 of 4"
+	oneFailed = "1 of 5"
+	// coreDNS is the address and liveness probe port of the CoreDNS pod the
+	// NetworkPolicy probe connects to.
+	coreDNS = "10.42.0.5:8080"
 	// The fake proxy log replaces @NOW@ with the current time.
 	deniedLine = `{"ts":"@NOW@","destination":{"host":"example.com","port":53},` +
 		`"decision":{"verdict":"deny","reason":"no_matching_endpoint"}}`
@@ -65,6 +68,11 @@ type fakeSandbox struct {
 	tlsFailOnce bool
 	// missingImage is an image docker image inspect does not find.
 	missingImage string
+	// coreDNS is what kubectl prints for the CoreDNS pod's IP and liveness
+	// probe port.
+	coreDNS string
+	// probeExit is curl's exit code in the NetworkPolicy probe pod.
+	probeExit int
 }
 
 // healthy returns a sandbox that passes every check.
@@ -72,7 +80,7 @@ func healthy() fakeSandbox {
 	return fakeSandbox{
 		allowed: "200", githubStatus: "200", githubBody: `{"login":"octocat"}`, deniedExit: 6,
 		openRouterStatus: "200", openRouterBody: `{"data":{"label":"sk-or-v1-abc...xyz"}}`,
-		logs: deniedLine, serviceAccount: userID,
+		logs: deniedLine, serviceAccount: userID, coreDNS: "10.42.0.5 8080", probeExit: 7,
 	}
 }
 
@@ -97,10 +105,14 @@ case "$FAKE_TOOL $*" in
 *"logs %[2]s -c egress-proxy"*) printf '%%s\n' '%[8]s' | sed "s/@NOW@/$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)/g" ;;
 *"get pod %[2]s -o jsonpath={.spec.serviceAccountName}") printf '%%s' '%[9]s' ;;
 *"get namespace %[12]s -o jsonpath="*) printf privileged ;;
+*"--namespace kube-system get pods --selector k8s-app=kube-dns "*) printf '%[13]s' ;;
+*"get pod %[2]s -o jsonpath={.spec.containers[?(@.name==\"agent\")].image}") printf sandbox-base ;;
+*"--namespace %[12]s run keycard-netpol-probe --image sandbox-base "*" probe %[15]s")
+	printf '__probe_exit__:%[14]d\n' ;;
 *" apply "*) echo "applied" ;;
 esac
 `, f.missingImage, userID, tlsFail, f.allowed, f.githubBody, f.githubStatus, f.deniedExit, f.logs, f.serviceAccount,
-		f.openRouterBody, f.openRouterStatus, namespace)
+		f.openRouterBody, f.openRouterStatus, namespace, f.coreDNS, f.probeExit, coreDNS)
 }
 
 // TestCheck runs the checks against a fake sandbox. A failing check prints
@@ -128,6 +140,8 @@ func TestCheck(t *testing.T) {
 				`  PASS  credentialed: https://api.github.com/user named the GitHub account "octocat"` + "\n",
 				"  PASS  denied: https://example.com/ was blocked: no_matching_endpoint\n",
 				"  PASS  the pod runs as the ServiceAccount " + userID + "\n",
+				"  PASS  NetworkPolicy: a pod in " + namespace + " could not connect to CoreDNS at " + coreDNS +
+					" (curl exit 7)\n",
 				"MANUAL  Open the zone's event log.",
 				checkOK,
 			},
@@ -151,7 +165,7 @@ func TestCheck(t *testing.T) {
 			}),
 			openRouter: true,
 			want:       []error{sandbox.ErrCheck},
-			wantText:   "1 of 5",
+			wantText:   "1 of 6",
 			wantOut: []string{
 				"  FAIL  credentialed: https://openrouter.ai/api/v1/key returned 502 (proxy: exchange_denied: access_denied)\n",
 			},
@@ -238,6 +252,36 @@ func TestCheck(t *testing.T) {
 			wantText: oneFailed,
 			wantOut:  []string{`  FAIL  the pod runs as the ServiceAccount "default", want "` + userID + `"` + "\n"},
 		},
+		{
+			name:    "policy engine drops the probe",
+			sandbox: with(func(f *fakeSandbox) { f.probeExit = 28 }),
+			wantOut: []string{"  PASS  NetworkPolicy: a pod in " + namespace + " could not connect to CoreDNS at " +
+				coreDNS + " (curl exit 28)\n", checkOK},
+		},
+		{
+			name:     "NetworkPolicy not enforced",
+			sandbox:  with(func(f *fakeSandbox) { f.probeExit = 0 }),
+			want:     []error{sandbox.ErrCheck},
+			wantText: oneFailed,
+			wantOut: []string{"  FAIL  NetworkPolicy: a pod in " + namespace + " connected to CoreDNS at " + coreDNS +
+				". The cluster does not enforce NetworkPolicy, so only netsetup and the proxy restrict " +
+				"the sandbox's egress\n"},
+		},
+		{
+			name:     "probe has no curl",
+			sandbox:  with(func(f *fakeSandbox) { f.probeExit = 127 }),
+			want:     []error{sandbox.ErrCheck},
+			wantText: oneFailed,
+			wantOut:  []string{"  FAIL  NetworkPolicy: the probe's curl to " + coreDNS + " exited 127, want 7 or 28\n"},
+		},
+		{
+			name:     "CoreDNS liveness probe port is named",
+			sandbox:  with(func(f *fakeSandbox) { f.coreDNS = "10.42.0.5 health" }),
+			want:     []error{sandbox.ErrCheck},
+			wantText: oneFailed,
+			wantOut: []string{"  FAIL  NetworkPolicy: want the IP and the numeric liveness probe " +
+				`port of a running CoreDNS pod in kube-system, got "10.42.0.5 health"` + "\n"},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -299,6 +343,7 @@ func TestRunSettings(t *testing.T) {
 			"yes",
 			`KEYCARD_LOCAL_ZONE_ON_HOST must be true or empty (got "yes")`,
 		},
+		{"image tag latest", sandbox.KeyImageTag, "latest", "KEYCARD_LOCAL_IMAGE_TAG must not be latest"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

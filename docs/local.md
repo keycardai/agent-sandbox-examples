@@ -40,7 +40,8 @@ The cluster pulls `egress-netsetup`, `egress-proxy` and `sandbox-base` from
 `ghcr.io/keycardai`, at the release digests the charts pin. To run images
 you built in the egress-proxy repository, tag them
 `ghcr.io/keycardai/<name>:local` and set `KEYCARD_LOCAL_IMAGE_TAG=local`.
-`sandbox run` then imports them into the k3d cluster.
+`sandbox run` then imports them into the k3d cluster. `sandbox run` refuses
+the tag `latest`, because Kubernetes always pulls an image with that tag.
 
 To change something, run `go run ./cmd/sandbox init` again. It shows your
 current settings and asks which part to change. Each question defaults to
@@ -108,9 +109,10 @@ kubeconfig context in `sandbox init`. `init` saves the context in
 - Pull images from `ghcr.io/keycardai`. With `KEYCARD_LOCAL_IMAGE_TAG` set,
   the cluster pulls the images at that tag instead of the ones the charts
   pin.
-- Enforce NetworkPolicy, and allow the privileged Pod Security level in the
-  sandbox namespace. The egress-netsetup init container adds `NET_ADMIN`
-  and `NET_RAW`.
+- Enforce NetworkPolicy. `sandbox check` fails when the cluster does not.
+  The sandbox steps do not change the cluster's network setup.
+- Allow the privileged Pod Security level in the sandbox namespace. The
+  egress-netsetup init container adds `NET_ADMIN` and `NET_RAW`.
 
 `init` also asks for the cluster's pod and service ranges and saves them in
 `KEYCARD_LOCAL_CLUSTER_CIDRS`. The sandbox NetworkPolicy and the proxy
@@ -193,8 +195,8 @@ the management API URL is not `https://api.keycard.ai`.
 | `sandbox bootstrap` | creates the local k3d cluster with the issuer, or checks the one you have |
 | `sandbox mirror` | serves the cluster's issuer documents for the tunnel |
 | `sandbox check-issuer` | checks that a Keycard zone can verify the cluster's tokens |
-| `sandbox run` | runs `sandbox bootstrap`, imports the images, runs zone-setup and `sandbox install`, creates the user's sandbox, then runs `sandbox check` |
-| `sandbox check` | runs the checks against the running sandbox. It doesn't change the cluster. |
+| `sandbox run` | for k3d, runs `sandbox bootstrap`, and imports the images when `KEYCARD_LOCAL_IMAGE_TAG` is set. Then it runs zone-setup and `sandbox install`, creates the user's sandbox, and runs `sandbox check` |
+| `sandbox check` | runs the checks against the running sandbox. To check that the cluster enforces NetworkPolicy, it starts a pod in the sandbox namespace that tries to connect to CoreDNS on a port the policy blocks. kubectl deletes the pod when it exits. The check changes nothing else in the cluster. |
 | `sandbox down` | deletes the local cluster. It asks first, unless you pass `--yes`. |
 
 Every ID that `sandbox run` passes on comes from the zone-setup output in
@@ -205,8 +207,9 @@ Every ID that `sandbox run` passes on comes from the zone-setup output in
 `sandbox run` writes `local/out/install.values.yaml` and
 `local/out/sandbox.values.yaml`. The charts read them after
 `local/values/install.yaml` and `local/values/sandbox.yaml`. They set
-`zoneURL`, and `zoneTrust` when `KEYCARD_LOCAL_CA_FILE` is set. The proxy
-dials the zone at the address its host name resolves to.
+`zoneURL`, `zoneTrust` when `KEYCARD_LOCAL_CA_FILE` is set, the images when
+`KEYCARD_LOCAL_IMAGE_TAG` is set, and the cluster's ranges for an existing
+cluster. The proxy dials the zone at the address its host name resolves to.
 
 Set `KEYCARD_LOCAL_ZONE_ON_HOST=true` for a zone that is not on the
 internet and answers on the Docker host. `sandbox init` sets it when the

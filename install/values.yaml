@@ -27,9 +27,8 @@ hostAliases: []
 
 # The sandbox pod's images. Each egress-proxy release publishes them under
 # its version tag (docs/containers.md in egress-proxy), and lists their
-# digests in the release's digests.txt. The defaults pin v0.2.1 by digest.
-# The proxy reads listen.dns_port, which the sandbox chart writes, from
-# v0.2.0 on.
+# digests in the release's digests.txt. The proxy reads listen.dns_port,
+# which the sandbox chart writes, from v0.2.0 on.
 images:
   netsetup: ghcr.io/keycardai/egress-netsetup:v0.2.1@sha256:cff8c7a98ebfadfb514ccc0840cfb7a67994711f7e7c405d309613e4611b5b33
   proxy: ghcr.io/keycardai/egress-proxy:v0.2.1@sha256:79684cf9b059d8e2f1719b108a05251bb47ef3bebb39759fd1811ec36b9ff7d2
