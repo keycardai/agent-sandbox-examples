@@ -85,6 +85,9 @@ type wizard struct {
 	answers scenarioAnswers
 	// demos holds, for each demo, the other people with an agent in it.
 	demos map[string][]string
+	// typed holds the secrets typed in this Init, by name. They go in the
+	// store with the settings, so that an Init that stops keeps none.
+	typed map[string]string
 }
 
 // previous holds the settings from before Init, as zone-setup's values,
@@ -178,7 +181,7 @@ func (l *Local) InitSections(ctx context.Context, sections ...string) (InitResul
 // newWizard returns a wizard that asks with l.Ask and starts from the
 // settings.
 func (l *Local) newWizard() *wizard {
-	w := &wizard{l: l, ask: l.Ask, prev: l.previousValues(), env: Settings{}}
+	w := &wizard{l: l, ask: l.Ask, prev: l.previousValues(), env: Settings{}, typed: map[string]string{}}
 	w.out = w.prev.values
 	w.demos = maps.Clone(w.prev.agents.Demos)
 	return w
@@ -570,8 +573,8 @@ func (w *wizard) login(ctx context.Context) error {
 
 // signIn asks for the service account and signs in. It asks for the account
 // again while the token endpoint refuses it, unless the environment holds
-// the whole account. Any other error stops Init. A typed secret goes in the
-// store once the sign-in succeeds.
+// the whole account. Any other error stops Init. It keeps a typed secret
+// once the sign-in succeeds.
 func (w *wizard) signIn(ctx context.Context) error {
 	clientID := w.prev.values.ManagementServiceAccount.ClientID
 	for useSaved := true; ; useSaved = false {
@@ -593,7 +596,7 @@ func (w *wizard) signIn(ctx context.Context) error {
 			return fmt.Errorf("signing in: %w", err)
 		}
 		if typed {
-			w.l.Store.setSecret(managementSecret, secret)
+			w.typed[managementSecret] = secret
 		}
 		w.out.ManagementServiceAccount = account
 		return nil
@@ -1093,7 +1096,7 @@ func (w *wizard) staticToken(
 	if err != nil {
 		return "", err
 	}
-	w.l.Store.setSecret(name, secret)
+	w.typed[name] = secret
 	return secretEnv(name), nil
 }
 
@@ -1251,8 +1254,8 @@ func (w *wizard) askReplaceActive(ctx context.Context) (bool, error) {
 		false)
 }
 
-// write keeps what setup asked in the store as the config, and saves it
-// when save is set.
+// write keeps what setup asked in the store as the config, with the
+// secrets typed in this Init, and saves it when save is set.
 func (w *wizard) write(save bool) error {
 	agents := ConfigAgents{Default: w.env[KeyUserEmail], Demos: w.demos}
 	w.answers.keepUsers(agents.everyone())
@@ -1261,6 +1264,9 @@ func (w *wizard) write(save bool) error {
 	store := w.l.Store
 	if store == nil {
 		return fmt.Errorf("%w: there is no store for the settings", ErrSettings)
+	}
+	for name, secret := range w.typed {
+		store.setSecret(name, secret)
 	}
 	store.setConfig(configFrom(w.env, &w.out, w.answers, w.demos))
 	if !save {

@@ -7,6 +7,7 @@ package page
 
 import (
 	"cmp"
+	"image/color"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,8 +22,11 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/style"
 )
 
-// SourceActivity names the activity log. StepSource names a step's log.
-const SourceActivity = "activity"
+// The logs the pages show, by name, besides those StepSource names.
+const (
+	SourceSetup    = "setup"
+	SourceActivity = "activity"
+)
 
 // The containers of the sandbox's pod, and the state of one that finished.
 const (
@@ -40,10 +44,12 @@ const (
 	shortID = 8
 	// half halves a size, to center or split it.
 	half = 2
-	// wordQuit, wordKeys and wordAgent are words several pages show.
-	wordQuit  = "quit"
-	wordKeys  = "keys"
-	wordAgent = "agent"
+	// wordQuit, wordKeys, wordChoose and wordAgent are words several pages
+	// show.
+	wordQuit   = "quit"
+	wordKeys   = "keys"
+	wordChoose = "choose"
+	wordAgent  = "agent"
 )
 
 // StepState is where one bring-up step is.
@@ -82,8 +88,10 @@ type Shared struct {
 	Session *sandbox.Session
 	Styles  style.Styles
 	Keys    component.KeyMap
-	// Width and Height are the window's.
+	// Width and Height are the window's, and Background the terminal's
+	// background, once it reports it.
 	Width, Height int
+	Background    color.Color
 	// Frame counts the redraws, and turns the spinners.
 	Frame int
 	// Logs holds every log.
@@ -112,8 +120,23 @@ type Shared struct {
 	// Traffic holds the proxy's decisions, from its audit log.
 	Traffic proxylog.Store
 
-	// Loaded is the demo the settings name, read once.
-	Loaded *sandbox.Scenario
+	// Describe says what each section of the settings holds, and Problems
+	// what would stop the bring-up.
+	Describe map[string]string
+	Problems []error
+
+	// SetupErr is why the last setup failed, until the next one starts.
+	SetupErr error
+	// Launched names the demo the last bring-up started with, or the one
+	// the settings named when the TUI started.
+	Launched string
+
+	// Loaded is the demo the settings name, read once. Demos is every demo
+	// in the checkout that loads, read once, and DemosErr says why any did
+	// not load.
+	Loaded   *sandbox.Scenario
+	Demos    []*sandbox.Scenario
+	DemosErr error
 }
 
 // NewShared returns what the pages share for a session, with the steps of
@@ -122,6 +145,7 @@ func NewShared(session *sandbox.Session) *Shared {
 	shared := &Shared{Session: session, Styles: style.New(true), Keys: component.NewKeyMap()}
 	shared.Logs = component.NewLogView(func(_ string, lines []string) []string { return lines })
 	shared.ResetSteps()
+	shared.Launched = shared.CurrentDemo()
 	return shared
 }
 
@@ -137,6 +161,17 @@ func (s *Shared) ResetSteps() {
 	s.StepCursor = min(s.StepCursor, max(len(s.Steps)-1, 0))
 }
 
+// RefreshSettings reads the settings and their problems again.
+func (s *Shared) RefreshSettings() {
+	s.Describe = s.Session.Describe()
+	s.Problems = s.Session.Problems()
+}
+
+// FirstRun reports whether the settings were never written.
+func (s *Shared) FirstRun() bool {
+	return !s.Session.Local().Initialized()
+}
+
 // Record adds an event to the activity log: the time, a mark and what
 // happened. ✓ is done, ✕ failed, ▸ started and • a note.
 func (s *Shared) Record(mark, text string) {
@@ -146,6 +181,12 @@ func (s *Shared) Record(mark, text string) {
 // Notify shows text in the footer for a while.
 func (s *Shared) Notify(text string, isErr bool) {
 	s.Toast = component.Toast{Text: text, Err: isErr, Until: time.Now().Add(toastFor)}
+}
+
+// Page draws a full screen: the header band with title, the body under it,
+// and the footer with the keys that apply.
+func (s *Shared) Page(title, body string, hints []component.Hint) string {
+	return s.PageUnder(component.Band(s.Styles, s.Width, s.Styles.BandLabel.Render(title), ""), body, hints)
 }
 
 // PageUnder draws a body under header and over the footer, indented, and
@@ -170,6 +211,15 @@ func (s *Shared) Scenario() *sandbox.Scenario {
 	}
 	s.Loaded = scenario
 	return scenario
+}
+
+// DemoList returns the checkout's demos that load, read once, sorted by
+// name.
+func (s *Shared) DemoList() []*sandbox.Scenario {
+	if s.Demos == nil && s.DemosErr == nil {
+		s.Demos, s.DemosErr = sandbox.Scenarios(s.Session.Local().Root)
+	}
+	return s.Demos
 }
 
 // SelectedAgent returns the agent the session has selected, and its index
@@ -247,6 +297,11 @@ func (s *Shared) AgentActionName() string {
 		return "agent log"
 	}
 	return "open agent"
+}
+
+// CurrentDemo names the demo the settings name.
+func (s *Shared) CurrentDemo() string {
+	return cmp.Or(s.Session.Local().Settings[sandbox.KeyScenario], sandbox.DefaultScenario)
 }
 
 func (s *Shared) spinner() string { return component.Spinner(s.Frame) }

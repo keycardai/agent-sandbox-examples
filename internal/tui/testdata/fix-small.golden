@@ -1,0 +1,22 @@
+ keycard sandbox   setup needs a fix
+
+
+  One setting needs a fix before the next bring-up.
+
+  ! Demo              A credential of the demo has no value.
+                      values file: zone-setup.yaml: resources[2]: set
+                      exactly one of credential_provider, secret_env and
+                      secret_file
+
+  This machine is ready
+    ✓ Docker            OrbStack, engine 29.4.0
+    ✓ Sandbox images    the release v0.2.1 from ghcr.io/keycardai
+    ✓ Tools             k3d, kubectl, helm and cloudflared, as mise.toml pins
+                        them
+    ✓ Keycard account   KEYCARD_CLIENT_ID and KEYCARD_CLIENT_SECRET are set
+
+   enter  Fix the settings
+
+
+
+  enter  fix the settings   e  all settings   r  check again   q  quit

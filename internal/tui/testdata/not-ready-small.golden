@@ -1,0 +1,22 @@
+ keycard sandbox   welcome
+
+
+  Run an AI agent that never holds a secret.
+
+  The agent runs in a local Kubernetes cluster. Every HTTPS request it makes
+  goes through the egress proxy, which asks your Keycard zone for the user's
+  credential and adds it on the way out.
+
+  This machine is not ready
+    ✕ Docker            Docker is not running
+                        Start OrbStack or Docker Desktop.
+    ✓ Sandbox images    the release v0.2.1 from ghcr.io/keycardai
+    ✓ Tools             k3d, kubectl, helm, cloudflared (from mise.toml)
+    ✓ Keycard account   from KEYCARD_CLIENT_ID and KEYCARD_CLIENT_SECRET
+
+  Fix what failed before you launch. Press r to check again.
+
+   enter  Start setup
+
+
+  enter  start setup   r  check again   q  quit

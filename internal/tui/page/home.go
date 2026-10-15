@@ -63,12 +63,14 @@ func (h *Home) Hints() []component.Hint {
 	case shared.FailedStep() != nil:
 		return []component.Hint{
 			{Key: "u", Desc: "try again"},
+			{Key: "e", Desc: "settings"},
 			{Key: "?", Desc: wordKeys},
 			{Key: "q", Desc: wordQuit},
 		}
 	case shared.SandboxUp():
 		return []component.Hint{
 			{Key: "a", Desc: shared.AgentActionName()},
+			{Key: "p", Desc: "switch demo"},
 			{Key: "o", Desc: "zone events"},
 			{Key: "x", Desc: "shell"},
 			{Key: "?", Desc: wordKeys},
@@ -77,6 +79,7 @@ func (h *Home) Hints() []component.Hint {
 	}
 	return []component.Hint{
 		{Key: "u", Desc: "bring up"},
+		{Key: "e", Desc: "settings"},
 		{Key: "?", Desc: wordKeys},
 		{Key: "q", Desc: wordQuit},
 	}
@@ -128,6 +131,7 @@ func (h *Home) failed(row *StepRow) string {
 	}
 	lines = append(lines, "",
 		shared.actionLine("u", "Start again from: "+shared.Steps[shared.ResumeIndex()].Step.Title),
+		shared.actionLine("e", "Change the settings"),
 		"")
 	for _, step := range shared.Steps {
 		lines = append(lines, shared.stepLine(step, min(shared.bodyWidth(), readWidth)))
@@ -152,6 +156,7 @@ func (h *Home) down() string {
 		shared.para(theme.Muted, why),
 		"",
 		shared.actionLine("u", "Bring it up. The first time takes a few minutes."),
+		shared.actionLine("e", "Change the settings"),
 		"",
 		h.contextLine(),
 	}, "\n")
@@ -260,6 +265,9 @@ func (h *Home) actions() []string {
 		shared.actionLine("o", "Open the zone's events in the Keycard console"),
 		shared.actionLine("x", "Open a shell in the agent"),
 	)
+	if others := h.otherDemos(); len(others) > 0 {
+		actions = append(actions, shared.actionLine("p", "Switch to another demo: "+strings.Join(others, " or ")))
+	}
 	return actions
 }
 
@@ -271,6 +279,17 @@ func (h *Home) checksScore() string {
 		}
 	}
 	return ""
+}
+
+// otherDemos names the checkout's demos besides the current one.
+func (h *Home) otherDemos() []string {
+	names := []string{}
+	for _, scenario := range h.shared.DemoList() {
+		if scenario.Name != h.shared.CurrentDemo() {
+			names = append(names, scenario.Name)
+		}
+	}
+	return names
 }
 
 // contextLine names the demo, the zone, the user and the cluster.
@@ -343,17 +362,14 @@ func HintFor(err error) string {
 			"restart OrbStack or Docker Desktop, then press u."},
 		{sandbox.ErrOtherIssuer, "The cluster belongs to an older tunnel URL. Press u and recreate it."},
 		{sandbox.ErrBrokenCluster, "Creating the cluster stopped partway. Press u and recreate it."},
-		{zonesetup.ErrPolicySetActive, "Run sandbox init, and allow replacing the active policy set."},
+		{zonesetup.ErrPolicySetActive, "Press e, choose Zone and user, and allow replacing the active policy set."},
 		{zonesetup.ErrAuth, "Keycard refused the service account. Check KEYCARD_CLIENT_ID and KEYCARD_CLIENT_SECRET."},
-		{zonesetup.ErrMissingSecret, "A credential has no value. Run sandbox init to enter it."},
-		{zonesetup.ErrValues, "A setting is missing. Run sandbox init to give each credential a value."},
+		{zonesetup.ErrMissingSecret, "A credential has no value. Press e and choose Demo to enter it."},
+		{zonesetup.ErrValues, "A setting is missing. Press e and choose Demo to give each credential a value."},
 		{zonesetup.ErrUserNotFound, "The user has not signed in to the zone yet. Invite them in the Keycard console."},
-		{
-			zonesetup.ErrProviderNotFound,
-			"The zone lacks a provider the demo names. Run sandbox init and choose the demo again.",
-		},
-		{sandbox.ErrSettings, "Run sandbox init to set the sandbox up."},
-		{sandbox.ErrScenario, "Run sandbox init and choose a demo."},
+		{zonesetup.ErrProviderNotFound, "The zone lacks a provider the demo names. Press e and choose Demo."},
+		{sandbox.ErrSettings, "Press e to set the sandbox up."},
+		{sandbox.ErrScenario, "Press e and choose Demo."},
 		{sandbox.ErrService, "Read the service's log: local/out/tunnel.log or local/out/mirror.log."},
 		{
 			sandbox.ErrIssuer,

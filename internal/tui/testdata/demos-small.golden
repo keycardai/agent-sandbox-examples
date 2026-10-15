@@ -1,0 +1,22 @@
+ keycard sandbox   home                                                    ● up
+
+  ● ada@example.com's agent is running
+  It╭──────────────────────────────────────────────────────────────────────╮ld
+  an│                                                                      │l
+  on│  Switch the demo                                                     │
+    │  Setup asks for the demo's credentials, then enter brings the        │
+  WH│  sandbox up with it.                                                 │
+    │                                                                      │:31…
+    │  ▸ pi      pi coding agent                                           │
+    │            You chat with it in the terminal: a opens pi-session.     │doe…
+    │            Asks for GitHub, OpenRouter API key, GitHub repository    │· 1…
+    │            for pi to work in.                                        │
+    │    slack   Slack agent for GitHub and Linear                         │
+    │    smoke   Smoke checks  ● running now                               │rst…
+    │                                                                      │
+  TR│   ↑↓  choose    enter  switch    esc  cancel                         │
+    │                                                                      │acc…
+    ╰──────────────────────────────────────────────────────────────────────╯
+     x  Open a shell in the agent
+     p  Switch to another demo: pi or slack
+  a  open pi-session   p  switch demo   o  zone events   x  shell   ?  keys   …

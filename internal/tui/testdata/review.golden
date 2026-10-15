@@ -1,0 +1,42 @@
+ keycard sandbox   setup · review
+
+
+
+
+
+
+
+           ✓  Keycard account                                  Ready to launch
+           │  https://api.keycard.ai                           Setup keeps your answers until you quit. Launching sets the sandbox up with
+           │                                                   them.
+           ✓  Zone and user
+           │  Sandbox Test                                     Launching
+           │  ada@example.com                                    1  Creates a local cluster, and a tunnel so Keycard can reach it
+           │                                                     2  Sets up your zone: the sandbox's app, access rules and credentials
+           ✓  Demo                                               3  Starts the agent, and checks that it works
+           │  Check the proxy with GitHub and OpenRouter         It takes two to four minutes the first time. You can watch each step.
+           │  (smoke)
+           │                                                    enter  Launch    e  Change a setting
+           ✓  Credentials
+           │  One personal access token that everyone
+           │  shares. The agent acts as its owner.
+           │  GitHub personal access token saved
+           │  Add an OpenRouter API key? Yes
+           │  OpenRouter API key saved
+           │
+           ✓  Cluster
+              On this machine, in a new local cluster
+              A Cloudflare quick tunnel. No account
+              needed, but each start gets a new URL and a
+              new cluster.
+
+
+
+
+
+
+
+
+
+
+  enter  launch   e  change a setting   esc  dashboard   q  quit

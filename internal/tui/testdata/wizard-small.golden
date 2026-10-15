@@ -1,0 +1,22 @@
+ keycard sandbox   setup · step 3 of 5
+
+  Demo
+  Pick what the agent does, from the demos in this checkout.
+
+  › Using the client ID from KEYCARD_CLIENT_ID.
+  › Using the client secret from KEYCARD_CLIENT_SECRET.
+  › Signed in to Keycard as the organization Acme.
+
+  Which demo?
+  ╭──────────────────────────────────────────────────────────────────────────╮
+  │ ▸ Smoke checks (smoke)                                                   │
+  │   pi coding agent (pi)                                                   │
+  │   Slack agent for GitHub and Linear (slack)                              │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+  ↑↓  choose   enter  continue   esc  stop setup

@@ -60,6 +60,12 @@ type (
 		plain bool
 		err   error
 	}
+	setupDoneMsg struct {
+		result   sandbox.InitResult
+		err      error
+		describe map[string]string
+		problems []error
+	}
 	eventsMsg struct {
 		url string
 		err error
@@ -84,11 +90,12 @@ func pollTick() tea.Cmd {
 // sandbox is up even when a check fails.
 func (m *model) startBringUp(from int, recreate bool) {
 	shared := m.shared
-	if shared.Running || m.acting != "" || from >= len(shared.Steps) {
+	if shared.Running || m.acting != "" || m.asking || from >= len(shared.Steps) {
 		return
 	}
 	ctx, cancel := context.WithCancel(m.ctx)
 	shared.Running, m.cancel, shared.RunFrom = true, cancel, from
+	shared.Launched = shared.CurrentDemo()
 	if from == 0 {
 		shared.Record("▸", "Bring-up started")
 	} else {
@@ -275,6 +282,10 @@ func (m *model) stop() {
 func (m *model) toggleBringUp() {
 	if !m.shared.Running {
 		if m.busy() {
+			return
+		}
+		if len(m.shared.Problems) > 0 {
+			m.shared.Notify("Fix the settings first. Press e to open them.", true)
 			return
 		}
 		from := m.shared.ResumeIndex()
@@ -540,6 +551,94 @@ func readRecords(stdout io.Reader, store *proxylog.Store) {
 			store.Add(record)
 		}
 	})
+}
+
+// startSetup runs the wizard for the sections in the background, with
+// preset's answers. Its questions come back as page.AskMsg, its steps as
+// page.SectionMsg, and its notes go to the setup log. Once it is done, the
+// same goroutine reads the settings again, since that reads the keychain.
+func (m *model) startSetup(preset map[string]string, ids ...string) {
+	shared := m.shared
+	stop := make(chan struct{})
+	ctx, cancel := context.WithCancel(m.ctx)
+	m.asking, m.stopAsking, m.cancelSetup = true, stop, cancel
+	shared.SetupErr = nil
+	log := shared.Logs.Log(page.SourceSetup)
+	log.Reset()
+	local := *shared.Session.Local()
+	local.Out = log
+	local.Ask = page.Asker{Send: m.bus.Send, Done: stop, Preset: preset, Log: log}
+	session, out := shared.Session, m.bus
+	shared.Record("▸", "Setup started")
+	m.jobs.Go(func() {
+		var done setupDoneMsg
+		defer func() {
+			if r := recover(); r != nil {
+				done.err = fmt.Errorf("%w: %v", errPanic, r)
+			}
+			done.describe, done.problems = session.Describe(), session.Problems()
+			out.Send(done)
+		}()
+		done.result, done.err = local.InitSections(ctx, ids...)
+		if done.err == nil {
+			session.Reload()
+		}
+	})
+}
+
+// onSetupDone takes the new settings and shows the review. A setup that
+// stopped goes back where it started. The answer about the zone's policy
+// set holds until a setup looks at the zone again.
+func (m *model) onSetupDone(msg setupDoneMsg) {
+	shared := m.shared
+	m.asking, m.stopAsking = false, nil
+	if m.cancelSetup != nil {
+		m.cancelSetup()
+	}
+	if m.overlay.kind == overlayQuestion {
+		m.overlay = overlay{}
+	}
+	m.setup.Drop()
+	shared.Describe, shared.Problems = msg.describe, msg.problems
+	if msg.err != nil {
+		m.screen = m.wizardBack
+		if errors.Is(msg.err, sandbox.ErrInterrupted) || errors.Is(msg.err, context.Canceled) {
+			shared.Record("•", "Setup stopped without saving")
+		} else {
+			shared.SetupErr = msg.err
+			shared.Record("✕", "Setup failed: "+component.FirstLine(msg.err.Error()))
+			shared.Notify("Setup stopped: "+component.FirstLine(msg.err.Error()), true)
+		}
+		return
+	}
+	if m.setup.Asked(sandbox.SectionZone) || m.setup.Asked(sandbox.SectionPolicy) {
+		shared.Session.ReplaceActive = msg.result.ReplaceActive
+	}
+	m.setup.Finish()
+	shared.ResetSteps()
+	if msg.result.Saved {
+		shared.Record("✓", "Saved the settings")
+	} else {
+		shared.Record("✓", "Kept the settings for this session")
+	}
+	m.screen = screenReview
+}
+
+// stopSetup ends the wizard without writing the settings: the question
+// goes, and what the setup waits on stops.
+func (m *model) stopSetup() {
+	if !m.asking || m.stopAsking == nil {
+		return
+	}
+	close(m.stopAsking)
+	m.stopAsking = nil
+	if m.cancelSetup != nil {
+		m.cancelSetup()
+	}
+	m.setup.Drop()
+	if m.overlay.kind == overlayQuestion {
+		m.overlay = overlay{}
+	}
 }
 
 // openEvents opens the zone's event log in the console, where the zone

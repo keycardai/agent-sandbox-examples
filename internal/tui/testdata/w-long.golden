@@ -1,0 +1,42 @@
+ keycard sandbox   setup · step 2 of 5
+
+
+
+
+
+
+
+                   ○  Keycard account                  Zone and user
+                   │                                   A zone is a Keycard workspace with its own users and apps. Pick one you use
+                   ●  Zone and user                    for testing, because the sandbox turns on its own access rules there. Then
+                   │                                   pick who the agent acts as, usually you. Every demo has an agent for them.
+                   ○  Demo                             Only people who have signed in to the zone are listed.
+                   │
+                   ○  Credentials                      Which zone does the sandbox use?
+                   │                                   ╭──────────────────────────────────────────────────────────────────────────╮
+                   ○  Cluster                          │ ▸ zone-01  https://zone-01.keycard.cloud                                 │
+                                                       │   zone-02  https://zone-02.keycard.cloud                                 │
+                                                       │   zone-03  https://zone-03.keycard.cloud                                 │
+                                                       │   zone-04  https://zone-04.keycard.cloud                                 │
+                                                       │   zone-05  https://zone-05.keycard.cloud                                 │
+                                                       │   zone-06  https://zone-06.keycard.cloud                                 │
+                                                       │   zone-07  https://zone-07.keycard.cloud                                 │
+                                                       │   zone-08  https://zone-08.keycard.cloud                                 │
+                                                       │   zone-09  https://zone-09.keycard.cloud                                 │
+                                                       │   zone-10  https://zone-10.keycard.cloud                                 │
+                                                       ╰──────────────────────────────────────────────────────────────────────────╯
+                                                       ↑↓ scrolls through all 12.
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ↑↓  choose   enter  continue   esc  stop setup

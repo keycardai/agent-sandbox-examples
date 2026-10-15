@@ -1,14 +1,15 @@
-// Package tui is the sandbox's terminal UI. It brings the sandbox up one
-// step at a time, with the settings `sandbox init` saved. Then Home says
-// what Keycard did for the agent and what to try. The tunnel and the
-// mirror run as services, so quitting the TUI leaves the sandbox up, and
-// starting it again shows it.
+// Package tui is the sandbox's terminal UI. It sets the sandbox up through
+// the same questions as `sandbox init`, and brings it up one step at a
+// time. Then Home says what Keycard did for the agent and what to try. The
+// tunnel and the mirror run as services, so quitting the TUI leaves the
+// sandbox up, and starting it again shows it.
 //
 // The root model in this package routes each message and key, and does
-// the work in the background: the bring-up, the actions, the polling and
-// the logs it follows. Home is in the page package, which draws it and
-// keeps its state. The component package draws the parts of the screen,
-// style holds the colors, and proxylog reads the egress proxy's audit log.
+// the work that spans the screens: the bring-up, the actions, the polling
+// and the logs it follows. Each screen is in the page package,
+// which draws it and keeps its state. The component package draws the
+// parts the screens share, style holds the colors, and proxylog reads the
+// egress proxy's audit log.
 package tui
 
 import (
@@ -38,6 +39,22 @@ const (
 	shutdownWait = 5 * time.Second
 )
 
+// screen is what fills the TUI.
+type screen int
+
+const (
+	// screenDashboard shows the sandbox's Home.
+	screenDashboard screen = iota
+	// screenWelcome greets a first run, or says what the settings lack.
+	screenWelcome
+	// screenWizard asks the setup's questions one step at a time.
+	screenWizard
+	// screenReview shows what setup chose, before the launch.
+	screenReview
+	// screenSettings lists the settings to change one.
+	screenSettings
+)
+
 // Options configure the TUI.
 type Options struct {
 	// Session runs the steps. Its Local must have Getenv set, so that setup
@@ -56,16 +73,21 @@ type model struct {
 	ctx  context.Context //nolint:containedctx // The model owns its background work, which ends with Run's context.
 	jobs sync.WaitGroup
 
+	screen  screen
 	overlay overlay
 
-	home *page.Home
+	welcome  *page.Welcome
+	setup    *page.Setup
+	settings *page.Settings
+	home     *page.Home
+	demos    *page.Demos
 
 	// cancel stops a running bring-up, and downAfterBringUp stops
 	// everything once the bring-up has stopped.
 	cancel           context.CancelFunc
 	downAfterBringUp bool
 	// acting names the action that runs, or is "". One action runs at a
-	// time, and never with a bring-up.
+	// time, and never with a bring-up or the setup.
 	acting string
 	// polling counts the reads of the sandbox on their way. The next poll
 	// starts pollEvery after the last read comes back, and tickPlanned is
@@ -77,12 +99,22 @@ type model struct {
 	// shownPod is the selected agent's pod, which Home shows.
 	shownPod string
 
+	// asking is set while the setup wizard runs. stopAsking ends its
+	// questions, and cancelSetup the work it waits on.
+	asking      bool
+	stopAsking  chan struct{}
+	cancelSetup context.CancelFunc
+	// wizardBack is the screen to go back to when the wizard stops, and
+	// settingsBack the one the settings came from, where esc goes back to.
+	wizardBack   screen
+	settingsBack screen
+
 	// quitAfterAction quits once the running action is done.
 	quitAfterAction bool
 }
 
-// overlay is what covers the screen: nothing, the help, a confirmation or
-// the quit dialog.
+// overlay is what covers the screen: nothing, the help, a confirmation, a
+// setup question, the quit dialog or the list of demos.
 type overlay struct {
 	kind    overlayKind
 	title   string
@@ -99,7 +131,11 @@ const (
 	overlayNone overlayKind = iota
 	overlayHelp
 	overlayConfirm
+	// overlayQuestion is the setup's question, which the setup page keeps.
+	// It is part of the wizard's screen.
+	overlayQuestion
 	overlayQuit
+	overlayDemo
 )
 
 // bus queues messages from background work for Update, so that a step
@@ -118,6 +154,9 @@ func Run(ctx context.Context, opts Options) error {
 	ctx, cancel := context.WithCancel(ctx)
 	root := newModel(ctx, opts.Session)
 	defer root.shutdown(cancel)
+	// Reading the settings' problems reads the keychain, which can wait for
+	// the operator, so it runs before the program starts.
+	root.shared.RefreshSettings()
 	if _, err := tea.NewProgram(root, tea.WithContext(ctx)).Run(); err != nil {
 		return fmt.Errorf("running the program: %w", err)
 	}
@@ -129,14 +168,19 @@ func Run(ctx context.Context, opts Options) error {
 func newModel(ctx context.Context, session *sandbox.Session) *model {
 	shared := page.NewShared(session)
 	root := &model{shared: shared, bus: newBus(), help: help.New(), ctx: ctx}
+	root.welcome = page.NewWelcome(shared)
+	root.setup = page.NewSetup(shared)
+	root.settings = page.NewSettings(shared)
 	root.home = page.NewHome(shared)
+	root.demos = page.NewDemos(shared)
 	return root
 }
 
-// shutdown cancels the work in the background with cancel, and waits up to
-// shutdownWait for the work to end.
+// shutdown cancels the work in the background with cancel, ends the setup,
+// and waits up to shutdownWait for the work to end.
 func (m *model) shutdown(cancel context.CancelFunc) {
 	cancel()
+	m.stopSetup()
 	done := make(chan struct{})
 	go func() {
 		m.jobs.Wait()

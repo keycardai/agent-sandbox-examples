@@ -1,0 +1,22 @@
+ keycard sandbox   setup · step 6 of 6
+
+  Save
+  Saved settings come back the next time you start the sandbox. Without
+  saving, setup asks for them again next time.
+
+  Save these settings for next time?
+  Yes saves them in ~/.config/keycard/sandbox.yaml, and the secrets you typed
+  in the macOS keychain. No keeps them until you quit.
+
+    Yes     No
+  y or n answers it.
+
+
+
+
+
+
+
+
+
+  ←→  choose   enter  continue   esc  stop setup

@@ -21,7 +21,7 @@ type KeyMap struct {
 	// Moving around.
 	Up, Down key.Binding
 	// Actions on the sandbox.
-	Start, Checks, Agent, Shell, Restart, Events, StopAll key.Binding
+	Start, Checks, Agent, Shell, Restart, Events, Setup, Demo, StopAll key.Binding
 	// The log pane.
 	Follow, Wrap, Top, Bottom, Search key.Binding
 	// The TUI.
@@ -42,6 +42,8 @@ func NewKeyMap() KeyMap {
 		Shell:   bind([]string{"x"}, "x", "shell in agent"),
 		Restart: bind([]string{"R"}, "R", "restart agent pod"),
 		Events:  bind([]string{"o"}, "o", "zone events"),
+		Setup:   bind([]string{"e"}, "e", "settings"),
+		Demo:    bind([]string{"p"}, "p", "switch demo"),
 		StopAll: bind([]string{"D"}, "D", "stop everything"),
 		Follow:  bind([]string{"f"}, "f", "follow"),
 		Wrap:    bind([]string{"w"}, "w", "wrap"),
@@ -57,7 +59,8 @@ func NewKeyMap() KeyMap {
 // All returns the bindings ? shows, in groups.
 func (k KeyMap) All() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Start, k.Agent, k.Shell, k.Checks, k.Events, k.Restart, k.StopAll},
+		{k.Up, k.Down},
+		{k.Start, k.Agent, k.Shell, k.Checks, k.Events, k.Restart, k.Demo, k.Setup, k.StopAll},
 		{k.Help, k.Back, k.Quit},
 	}
 }

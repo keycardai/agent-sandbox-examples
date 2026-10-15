@@ -16,21 +16,41 @@ zone fetches `<issuer>/.well-known/openid-configuration` and compares its
 
 ## The TUI
 
-On a terminal, `go run ./cmd/sandbox` opens the TUI, once
-`go run ./cmd/sandbox init` has saved settings the bring-up can use.
-Without them, it says what is missing and does not open. The TUI brings
-the sandbox up one step at a time, and then shows what runs.
+On a terminal, `go run ./cmd/sandbox` opens the TUI. It sets the sandbox
+up, brings it up one step at a time, and then shows what runs:
 
-Home shows the bring-up as it runs, or where it stopped and why. Once the
-agent runs, Home says what Keycard did for each of the demo's endpoints,
-which hosts the proxy blocked, what to try next, and the latest activity.
+    export KEYCARD_CLIENT_ID=...
+    export KEYCARD_CLIENT_SECRET=...
+    go run ./cmd/sandbox
+
+With the two variables set, setup does not ask for the service account and
+does not save its secret.
+
+The first time, a welcome screen says what the sandbox does and checks the
+machine: Docker, the three images, the tools `mise.toml` pins, and the
+Keycard account. Enter starts the setup, which asks the same questions as
+`sandbox init`, one step at a time, and shows what you chose under each
+step. A review lists the settings before the launch. When a saved setting
+stops the bring-up, such as a credential with no value, the TUI says which
+one and asks only that step's questions.
+
+After the launch, Home shows the bring-up as it runs, or where it stopped
+and why. Once the agent runs, Home says what Keycard did for each of the
+demo's endpoints, which hosts the proxy blocked, what to try next, and the
+latest activity.
 
 `u` brings the sandbox up, or starts again at the step that failed. `a`
 hands the terminal to the demo's agent, such as pi, and the TUI comes back
 when it exits. `o` opens the zone's events in the Keycard console,
 where the zone records each credential it issues. `x` opens a shell in the
-agent, `c` runs the checks, `R` restarts the agent's pod, and `?` lists
-every key.
+agent, `c` runs the checks, `R` restarts the agent's pod, `e` opens the
+settings, and `?` lists every key.
+
+`p` switches the demo. It lists each demo with what it does and what setup
+asks for it. Choosing one asks that demo's questions, such as pi's
+OpenRouter key and repository, then shows the review. Enter there brings the
+sandbox up with the new demo: it sets the zone up for the demo's resources,
+and replaces the agent's pod.
 
 The tunnel and the mirror run as background processes. Quitting the TUI
 leaves the sandbox up, and the TUI shows it again when it starts. The quick
@@ -48,7 +68,8 @@ tunnel keeps its URL, so the cluster keeps working. `D` in the TUI, or
   `v0.2.1` of the three images (`ghcr.io/keycardai/egress-netsetup`,
   `ghcr.io/keycardai/egress-proxy` and `ghcr.io/keycardai/sandbox-base`)
   by digest, and the cluster pulls them. They are public, so Docker pulls
-  them without `docker login`.
+  them without `docker login`. The welcome screen says which release the
+  sandbox will run.
 
 Then:
 
@@ -112,8 +133,8 @@ the people and the demo's credentials from the zone-setup values file that
 `KEYCARD_LOCAL_ZONE_SETUP_VALUES` names, as `zone-setup.example.yaml`
 documents, and the other settings from their variables.
 
-`go run ./cmd/sandbox forget` deletes the saved settings and their secrets in
-the keychain.
+`go run ./cmd/sandbox forget`, or `F` on the TUI's settings, deletes the
+saved settings and their secrets in the keychain.
 
 Each demo is a scenario in `scenarios/`. The `smoke` scenario runs an idle
 agent and the checks. It calls GitHub, so it needs a GitHub token. With a

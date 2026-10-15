@@ -1,0 +1,42 @@
+ keycard sandbox   home                                                                                                                          ● up
+
+  ● ada@example.com's agent is running
+  It acts as ada@example.com in zone wvqowjom…keycard.cloud, and does not hold any secrets. The egress proxy asks
+  Keycard for ada@example.com's credential on each request, and adds it on the way out.
+
+  WHAT KEYCARD DID
+    ✓ GitHub       api.github.com           1 request, credential added · hh:mm:ss
+    · GitHub git   github.com               not used yet
+    ✕ OpenRouter   openrouter.ai/api/v1     No credential: Keycard's policy does not allow it · hh:mm:ss
+    ✓ pypi.org               ╭──────────────────────────────────────────────────────────────────────────────────────────╮
+    · files.pythonhosted.org │                                                                                          │
+    ✕ Blocked      example.co│  Switch the demo                                                                         │
+    · DNS          3 lookups,│  Setup asks for the demo's credentials, then enter brings the sandbox up with it.        │
+                             │                                                                                          │
+  TRY IT                     │  ▸ pi      pi coding agent                                                               │
+     a  Open pi-session in th│            You chat with it in the terminal: a opens pi-session.                         │
+     o  Open the zone's event│            Asks for GitHub, OpenRouter API key, GitHub repository for pi to work in.     │
+     x  Open a shell in the a│                                                                                          │
+     p  Switch to another dem│    slack   Slack agent for GitHub and Linear                                             │
+                             │            It runs in the background and answers you where it listens. Run sandbox logs  │
+  RECENT ACTIVITY            │            to follow its log.                                                            │
+    hh:mm:ss  ▸ Bring-up star│            Asks for Slack bot token, Slack member ID, GitHub, Linear personal API key.   │
+    hh:mm:ss  ✓ Start the tun│                                                                                          │
+    hh:mm:ss  ✓ Install the c│    smoke   Smoke checks  ● running now                                                   │
+    hh:mm:ss  ✓ Checks: 6 of │            It runs the checks, then stays idle. c runs them again.                       │
+    hh:mm:ss  ✓ The sandbox i│            Asks for nothing.                                                             │
+                             │                                                                                          │
+                             │   ↑↓  choose    enter  switch    esc  cancel                                             │
+                             │                                                                                          │
+                             ╰──────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+  a  open pi-session   p  switch demo   o  zone events   x  shell   ?  keys   q  quit
