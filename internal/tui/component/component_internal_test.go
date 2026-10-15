@@ -58,6 +58,27 @@ func TestLogRing(t *testing.T) {
 	}
 }
 
+// TestPicker keeps the cursor on an item, and chooses nothing from an
+// empty list.
+func TestPicker(t *testing.T) {
+	t.Parallel()
+	keys, down := NewKeyMap(), tea.KeyPressMsg{Code: tea.KeyDown}
+	enter := tea.KeyPressMsg{Code: tea.KeyEnter}
+	picker := &Picker{}
+	if picker.Update(down, keys, 0) != PickNone || picker.Update(enter, keys, 0) != PickNone || picker.Cursor != 0 {
+		t.Errorf("an empty list: cursor %d, or enter chose; want 0 and nothing chosen", picker.Cursor)
+	}
+	for range 5 {
+		picker.Update(down, keys, 3)
+	}
+	if picker.Cursor != 2 {
+		t.Errorf("cursor = %d after moving past the end of 3 items, want 2", picker.Cursor)
+	}
+	if picker.Update(enter, keys, 1) != PickChosen || picker.Cursor != 0 {
+		t.Errorf("cursor = %d once the list has 1 item, want 0 and the item chosen", picker.Cursor)
+	}
+}
+
 // TestLogPlain keeps a line's text and drops what would reach the terminal
 // as a command: a title, a cursor move, a DCS string, a bell, a backspace.
 func TestLogPlain(t *testing.T) {

@@ -26,15 +26,17 @@ type Picker struct {
 	Cursor int
 }
 
-// Update moves the cursor through n items, and says whether msg chose the
-// item under it or closed the list.
-func (p *Picker) Update(msg tea.KeyPressMsg, keys KeyMap, n int) Pick {
+// Update moves the cursor through count items, and says whether msg chose
+// the item under it or closed the list. The cursor stays an index of the
+// items, and 0 when there are none. An empty list chooses nothing.
+func (p *Picker) Update(msg tea.KeyPressMsg, keys KeyMap, count int) Pick {
+	p.Cursor = max(min(p.Cursor, count-1), 0)
 	switch {
 	case key.Matches(msg, keys.Up):
 		p.Cursor = max(p.Cursor-1, 0)
 	case key.Matches(msg, keys.Down):
-		p.Cursor = min(p.Cursor+1, n-1)
-	case msg.String() == KeyEnter:
+		p.Cursor = max(min(p.Cursor+1, count-1), 0)
+	case msg.String() == KeyEnter && count > 0:
 		return PickChosen
 	case key.Matches(msg, keys.Back), msg.String() == "q":
 		return PickClosed
