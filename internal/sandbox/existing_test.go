@@ -99,7 +99,7 @@ func TestRunExistingSettings(t *testing.T) {
 			sandbox.KeyScenario,
 			agentName,
 			sandbox.ErrExisting,
-			"the scenario agent runs ghcr.io/keycardai/sandbox-agent:local, which is built on this machine",
+			"the scenario agent runs " + agentImage(t) + ", which is built on this machine",
 		},
 	}
 	for _, tc := range tests {

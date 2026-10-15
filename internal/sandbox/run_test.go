@@ -447,6 +447,7 @@ func TestCheckTargetFor(t *testing.T) {
 // whose agent exited, so the controller creates it again.
 func TestRun(t *testing.T) {
 	t.Parallel()
+	image := agentImage(t)
 	const (
 		images = "ghcr.io/keycardai/egress-netsetup:local ghcr.io/keycardai/egress-proxy:local" +
 			" ghcr.io/keycardai/sandbox-base:local"
@@ -553,16 +554,16 @@ func TestRun(t *testing.T) {
 			output:   zoneSetupOutput,
 			scenario: true,
 			wantCalls: []string{
-				bootstrapped + "docker KUBERC= build --tag ghcr.io/keycardai/sandbox-agent:local --build-arg BASE_IMAGE=" +
+				bootstrapped + "docker KUBERC= build --tag " + image + " --build-arg BASE_IMAGE=" +
 					pinnedImages()[2] + " ",
-				"/scenarios/agent\nk3d KUBERC= image import --cluster asp ghcr.io/keycardai/sandbox-agent:local\n",
+				"/scenarios/agent\nk3d KUBERC= image import --cluster asp " + image + "\n",
 			},
 			wantOut: []string{
-				"Built the image ghcr.io/keycardai/sandbox-agent:local.\n",
-				"Imported ghcr.io/keycardai/sandbox-agent:local into the k3d cluster asp.\n",
+				"Built the image " + image + ".\n",
+				"Imported " + image + " into the k3d cluster asp.\n",
 			},
 			wantManifest: []string{
-				"image: ghcr.io/keycardai/sandbox-agent:local\n",
+				"image: " + image + "\n",
 				"- name: \"REPO\"\n", "value: \"https://github.com/octo/demo.git\"\n",
 				"url: https://api.example.com\n",
 			},
