@@ -63,7 +63,8 @@ var (
 	// ErrResourceAmbiguous is a resource identifier more than one resource
 	// in the zone has.
 	ErrResourceAmbiguous = errors.New("resource ambiguous")
-	// ErrValues is a values file that cannot be used as written.
+	// ErrValues is a values file that cannot be used as written. An error
+	// about one field is a *FieldError too.
 	ErrValues = errors.New("values file")
 	// ErrUserAmbiguous is an email more than one user in the zone has.
 	ErrUserAmbiguous = errors.New("user ambiguous")
@@ -423,7 +424,7 @@ func (v *Values) checkConnection() error {
 		return err
 	}
 	if v.ZoneURL == "" && v.ZoneID == "" {
-		return fmt.Errorf("%w: one of zone_url or zone_id is required", ErrValues)
+		return onField("zone_url", fmt.Errorf("%w: one of zone_url or zone_id is required", ErrValues))
 	}
 	if v.ZoneURL != "" {
 		if err := checkIssuer("zone_url", v.ZoneURL); err != nil {
@@ -435,14 +436,17 @@ func (v *Values) checkConnection() error {
 
 func (v *Values) checkManagementServiceAccount() error {
 	if v.ManagementServiceAccount.ClientID == "" {
-		return fmt.Errorf("%w: management_service_account.client_id is required", ErrValues)
+		return onField("management_service_account.client_id",
+			fmt.Errorf("%w: management_service_account.client_id is required", ErrValues))
 	}
 	if v.ManagementServiceAccount.ClientSecretEnv == "" && v.ManagementServiceAccount.ClientSecretFile == "" {
 		v.ManagementServiceAccount.ClientSecretEnv = DefaultManagementSecretEnv
 	}
 	if v.ManagementServiceAccount.ClientSecretEnv != "" &&
 		!envNameRE.MatchString(v.ManagementServiceAccount.ClientSecretEnv) {
-		return fmt.Errorf("%w: management_service_account.client_secret_env is not an environment variable name", ErrValues)
+		return onField("management_service_account.client_secret_env", fmt.Errorf(
+			"%w: management_service_account.client_secret_env is not an environment variable name", ErrValues,
+		))
 	}
 	return checkSecretFile("management_service_account.client_secret_file", v.ManagementServiceAccount.ClientSecretFile)
 }
@@ -451,7 +455,7 @@ func (v *Values) checkManagementServiceAccount() error {
 // file run from different directories, so each must find the same file.
 func checkSecretFile(key, path string) error {
 	if path != "" && !filepath.IsAbs(path) {
-		return fmt.Errorf("%w: %s must be an absolute path (got %q)", ErrValues, key, path)
+		return onField(key, fmt.Errorf("%w: %s must be an absolute path (got %q)", ErrValues, key, path))
 	}
 	return nil
 }
@@ -464,7 +468,7 @@ func (v *Values) checkSandbox() error {
 		v.Namespace = DefaultNamespace
 	}
 	if !namespaceRE.MatchString(v.Namespace) || len(v.Namespace) > maxNamespaceLength {
-		return fmt.Errorf("%w: namespace is not a DNS-1123 label", ErrValues)
+		return onField("namespace", fmt.Errorf("%w: namespace is not a DNS-1123 label", ErrValues))
 	}
 	if v.PolicySet == "" {
 		v.PolicySet = DefaultPolicySetName
@@ -475,11 +479,12 @@ func (v *Values) checkSandbox() error {
 func (v *Values) checkUsers() error {
 	seen := map[string]bool{}
 	for i, user := range v.Users {
+		field := fmt.Sprintf("users[%d].email", i)
 		if parsed, err := mail.ParseAddress(user.Email); err != nil || parsed.Address != user.Email {
-			return fmt.Errorf("%w: users[%d].email is not a bare email address", ErrValues, i)
+			return onField(field, fmt.Errorf("%w: %s is not a bare email address", ErrValues, field))
 		}
 		if seen[user.Email] {
-			return fmt.Errorf("%w: users[%d].email is listed twice", ErrValues, i)
+			return onField(field, fmt.Errorf("%w: %s is listed twice", ErrValues, field))
 		}
 		seen[user.Email] = true
 	}
@@ -490,11 +495,12 @@ func (v *Values) checkResources() error {
 	seen := map[string]bool{}
 	for i := range v.Resources {
 		resource := &v.Resources[i]
+		field := fmt.Sprintf("resources[%d].identifier", i)
 		if resource.Identifier == "" {
-			return fmt.Errorf("%w: resources[%d].identifier is required", ErrValues, i)
+			return onField(field, fmt.Errorf("%w: %s is required", ErrValues, field))
 		}
 		if seen[resource.Identifier] {
-			return fmt.Errorf("%w: resources[%d].identifier is listed twice", ErrValues, i)
+			return onField(field, fmt.Errorf("%w: %s is listed twice", ErrValues, field))
 		}
 		seen[resource.Identifier] = true
 		if resource.Name == "" {
@@ -517,11 +523,13 @@ func checkSource(i int, resource *ResourceValues) error {
 		}
 	}
 	if set != 1 {
-		return fmt.Errorf("%w: resources[%d]: set exactly one of credential_provider, secret_env and secret_file",
-			ErrValues, i)
+		return onField(fmt.Sprintf("resources[%d]", i), fmt.Errorf(
+			"%w: resources[%d]: set exactly one of credential_provider, secret_env and secret_file", ErrValues, i,
+		))
 	}
 	if resource.SecretEnv != "" && !envNameRE.MatchString(resource.SecretEnv) {
-		return fmt.Errorf("%w: resources[%d].secret_env is not an environment variable name", ErrValues, i)
+		field := fmt.Sprintf("resources[%d].secret_env", i)
+		return onField(field, fmt.Errorf("%w: %s is not an environment variable name", ErrValues, field))
 	}
 	return checkSecretFile(fmt.Sprintf("resources[%d].secret_file", i), resource.SecretFile)
 }
@@ -534,10 +542,10 @@ func checkIssuer(key, value string) error {
 	}
 	parsed, err := url.Parse(value)
 	if err == nil && (parsed.Port() != "" || strings.HasSuffix(parsed.Host, ":")) {
-		return fmt.Errorf("%w: %s must not set a port", ErrValues, key)
+		return onField(key, fmt.Errorf("%w: %s must not set a port", ErrValues, key))
 	}
 	if err != nil || parsed.RawQuery != "" || parsed.ForceQuery || strings.Contains(value, "#") {
-		return fmt.Errorf("%w: %s must not have a query or a fragment", ErrValues, key)
+		return onField(key, fmt.Errorf("%w: %s must not have a query or a fragment", ErrValues, key))
 	}
 	return nil
 }
@@ -546,17 +554,17 @@ func checkIssuer(key, value string) error {
 // NEVER put the value in an error, because a URL can include a credential.
 func checkURL(key, value string) error {
 	if value == "" {
-		return fmt.Errorf("%w: %s is required", ErrValues, key)
+		return onField(key, fmt.Errorf("%w: %s is required", ErrValues, key))
 	}
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Hostname() == "" {
-		return fmt.Errorf("%w: %s is not an absolute URL with a host", ErrValues, key)
+		return onField(key, fmt.Errorf("%w: %s is not an absolute URL with a host", ErrValues, key))
 	}
 	if parsed.User != nil {
-		return fmt.Errorf("%w: %s must not carry userinfo", ErrValues, key)
+		return onField(key, fmt.Errorf("%w: %s must not carry userinfo", ErrValues, key))
 	}
 	if parsed.Scheme != "https" {
-		return fmt.Errorf("%w: %s must use https", ErrValues, key)
+		return onField(key, fmt.Errorf("%w: %s must use https", ErrValues, key))
 	}
 	return nil
 }
@@ -606,13 +614,14 @@ func managementSecret(
 	readFile func(string) ([]byte, error),
 ) (string, error) {
 	if account.ClientSecretFile != "" {
+		const field = "management_service_account.client_secret_file"
 		raw, err := readFile(account.ClientSecretFile)
 		if err != nil {
-			return "", fmt.Errorf("%w: management_service_account.client_secret_file %s", ErrMissingSecret, readFailure(err))
+			return "", onField(field, fmt.Errorf("%w: %s %s", ErrMissingSecret, field, readFailure(err)))
 		}
 		secret := strings.TrimSpace(string(raw))
 		if secret == "" {
-			return "", fmt.Errorf("%w: management_service_account.client_secret_file is empty", ErrMissingSecret)
+			return "", onField(field, fmt.Errorf("%w: %s is empty", ErrMissingSecret, field))
 		}
 		return secret, nil
 	}
@@ -638,4 +647,22 @@ func readFailure(err error) string {
 	default:
 		return "cannot be read"
 	}
+}
+
+// FieldError is an error about one field of the values file, such as
+// resources[2].identifier. It wraps ErrValues, or ErrMissingSecret for a
+// secret file the field names.
+type FieldError struct {
+	// Field is the field's path in the values file.
+	Field string
+	err   error
+}
+
+func (e *FieldError) Error() string { return e.err.Error() }
+
+func (e *FieldError) Unwrap() error { return e.err }
+
+// onField returns err as an error about field.
+func onField(field string, err error) error {
+	return &FieldError{Field: field, err: err}
 }

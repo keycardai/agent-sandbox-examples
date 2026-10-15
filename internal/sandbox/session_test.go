@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
+	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
 // publishedIssuer is an issuer the operator publishes.
@@ -93,6 +94,41 @@ func TestSessionProblems(t *testing.T) {
 	problems = session.Problems()
 	if len(problems) != 1 || !strings.Contains(problems[0].Error(), "resources[2]") {
 		t.Errorf("problems = %v, want one about resources[2]", problems)
+	}
+}
+
+// errMentionsFields is an error that names fields without being about one.
+var errMentionsFields = errors.New("zone_url users resources[0] management_service_account")
+
+// TestProblemSection sends a values file problem to the section that asks
+// for its field, whatever else the error says. Text that only mentions a
+// field names no section.
+func TestProblemSection(t *testing.T) {
+	t.Parallel()
+	const valid = "management_api_url: https://api.keycard.ai\nzone_url: https://acme.keycard.cloud\n" +
+		"management_service_account:\n  client_id: sa-1\nissuer_url: https://issuer.example.com\n"
+	parse := func(doc string) error {
+		t.Helper()
+		_, err := zonesetup.ParseValues(strings.NewReader(doc))
+		if err == nil {
+			t.Fatalf("ParseValues(%q) passed, want an error", doc)
+		}
+		return fmt.Errorf("the check for users@zone_url.example: %w", err)
+	}
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"api url", parse(strings.Replace(valid, "https://api", "http://api", 1)), sandbox.SectionAccount},
+		{"user", parse(valid + "users:\n  - email: not an email\n"), sandbox.SectionZone},
+		{"resource", parse(valid + "resources:\n  - name: GitHub\n"), sandbox.SectionScenario},
+		{"sign-in", fmt.Errorf("%w: invalid_client", zonesetup.ErrAuth), sandbox.SectionAccount},
+		{"mentions fields", errMentionsFields, ""},
+	} {
+		if got := sandbox.ProblemSection(tc.err); got != tc.want {
+			t.Errorf("%s: ProblemSection(%v) = %q, want %q", tc.name, tc.err, got, tc.want)
+		}
 	}
 }
 

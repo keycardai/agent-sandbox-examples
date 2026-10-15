@@ -422,24 +422,45 @@ func (s *Session) Problems() []error {
 	}
 	problems = append(problems, local.agentProblems(users)...)
 	if local.Settings[KeyZoneURL] == "" || local.Settings[KeyUserEmail] == "" {
-		problems = append(problems, fmt.Errorf("%w: the zone or the user is missing", ErrSettings))
+		problems = append(problems, fmt.Errorf("%w: %w", ErrSettings, errNoZoneOrUser))
 	}
 	return problems
 }
 
+// errNoZoneOrUser is settings without a zone or a user.
+var errNoZoneOrUser = errors.New("the zone or the user is missing")
+
 // ProblemSection names the setup section that fixes a problem Problems
-// returned, or "" when setup should ask every section.
+// returned, or "" when setup should ask every section. A values file
+// problem about one field goes to the section that asks for that field.
 func ProblemSection(err error) string {
-	text := err.Error()
+	var field *zonesetup.FieldError
 	switch {
-	case strings.Contains(text, "management_service_account"), errors.Is(err, zonesetup.ErrAuth):
+	case errors.Is(err, zonesetup.ErrAuth):
 		return SectionAccount
-	case strings.Contains(text, "resources["), errors.Is(err, zonesetup.ErrMissingSecret),
-		errors.Is(err, ErrScenario):
+	case errors.As(err, &field):
+		return fieldSection(field.Field)
+	case errors.Is(err, zonesetup.ErrMissingSecret), errors.Is(err, ErrScenario):
 		return SectionScenario
-	case strings.Contains(text, "zone_"), strings.Contains(text, "users"),
-		strings.Contains(text, "the zone or the user"):
+	case errors.Is(err, errNoZoneOrUser):
 		return SectionZone
+	}
+	return ""
+}
+
+// fieldSection names the setup section that asks for a field of the
+// values file, such as resources[2].identifier, or "" for none.
+func fieldSection(field string) string {
+	if end := strings.IndexAny(field, ".["); end >= 0 {
+		field = field[:end]
+	}
+	switch field {
+	case "management_api_url", "management_service_account":
+		return SectionAccount
+	case "zone_url", "zone_id", "users":
+		return SectionZone
+	case "resources":
+		return SectionScenario
 	}
 	return ""
 }
