@@ -33,11 +33,13 @@ const (
 	// default.
 	removeQuestion = "Remove k3d-asp-tools, left over from an earlier k3d cluster asp? [default false]"
 	// createFails is a k3d create that fails. With LOG_COLORS=false it logs
-	// logfmt, as k3d does, and otherwise it logs nothing.
+	// logfmt, as k3d does, and otherwise it logs nothing. Before the error,
+	// it warns with a node's fatal log line in the message, as k3d does.
 	createFails = `[[ "$FAKE_TOOL $1 $2" == "k3d cluster create" ]] && {
 	if [[ ${LOG_COLORS:-} == false ]]; then
 		at='time="2026-10-15T11:56:37-04:00"'
 		printf '%s level=info msg="Prep: Network"\n' "$at"
+		printf '%s level=warning msg="node log: time=\\"...\\" level=fatal msg=\\"server failed\\""\n' "$at"
 		printf '%s level=error msg="Failed Cluster Start: port \\"6443\\" is in use"\n' "$at"
 		printf '%s level=fatal msg="Cluster creation FAILED, all changes have been rolled back!"\n' "$at"
 	fi
