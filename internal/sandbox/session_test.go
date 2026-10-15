@@ -132,6 +132,20 @@ func TestProblemSection(t *testing.T) {
 	}
 }
 
+// TestSessionIssuerServiceStopped stops waiting for the issuer once the
+// mirror the steps start is not running, instead of retrying until
+// IssuerWait runs out.
+func TestSessionIssuerServiceStopped(t *testing.T) {
+	t.Parallel()
+	local, _ := newLocal(t, sandbox.Settings{sandbox.KeyCluster: cluster, sandbox.KeyIssuer: "https://127.0.0.1:1"}, "")
+	start := time.Now()
+	err := local.NewSession("127.0.0.1:8480", time.Minute).Run(t.Context(), sandbox.StepIssuer, &bytes.Buffer{})
+	checkErr(t, err, []error{sandbox.ErrService}, "the mirror is not running")
+	if elapsed := time.Since(start); elapsed > 20*time.Second {
+		t.Errorf("the issuer step took %s, want it to stop once it sees the mirror stopped", elapsed)
+	}
+}
+
 // TestSessionPods reads the pods and their containers from kubectl.
 func TestSessionPods(t *testing.T) {
 	t.Parallel()

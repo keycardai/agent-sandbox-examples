@@ -750,9 +750,43 @@ func answers(ctx context.Context, address string) bool {
 	return true
 }
 
-// runIssuer checks the issuer until it passes or IssuerWait runs out.
+// runIssuer checks the issuer until it passes or IssuerWait runs out. It
+// stops early when the tunnel or the mirror the steps start is not running,
+// because the issuer cannot answer without them.
 func (s *Session) runIssuer(ctx context.Context, local *Local) error {
-	return local.checkIssuerUntil(ctx, s.IssuerWait, nil)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	return local.checkIssuerUntil(ctx, s.IssuerWait, s.watchServices(ctx, local))
+}
+
+// watchServices sends an error once a service the steps start is not
+// running. It stops watching when ctx ends.
+func (s *Session) watchServices(ctx context.Context, local *Local) <-chan error {
+	services := map[StepID]string{StepTunnel: ServiceTunnel, StepMirror: ServiceMirror}
+	var names []string
+	for _, step := range s.Steps() {
+		if name, ok := services[step.ID]; ok {
+			names = append(names, name)
+		}
+	}
+	stopped := make(chan error, 1)
+	go func() {
+		for {
+			for _, name := range names {
+				if !local.ServiceStatus(name).Running {
+					stopped <- fmt.Errorf("%w: the %s is not running. Its log is %s",
+						ErrService, name, local.serviceFile(name, ".log"))
+					return
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(pollEvery):
+			}
+		}
+	}()
+	return stopped
 }
 
 func (s *Session) runImages(ctx context.Context, local *Local) error {
