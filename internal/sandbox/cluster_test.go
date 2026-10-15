@@ -111,6 +111,18 @@ func TestBootstrapDryRun(t *testing.T) {
 const deleteAdvice = "k3d sets them only when it creates a cluster. Delete the cluster with\n" +
 	"    go run ./cmd/sandbox down --cluster asp, or bootstrap with its issuer"
 
+// noContext makes kubectl fail as it does for a kubeconfig without the
+// cluster's context, which a k3d create that stopped partway leaves.
+const noContext = `case "$*" in *"get --raw /.well-known/openid-configuration")
+	echo 'error: context "k3d-asp" does not exist' >&2; exit 1 ;;
+esac
+`
+
+// brokenAdvice ends the error from Bootstrap for a cluster without a
+// kubeconfig context. It does not suggest the cluster's issuer.
+const brokenAdvice = ", as when creating the cluster stopped partway. Delete the cluster with\n" +
+	"    go run ./cmd/sandbox down --cluster asp"
+
 // TestBootstrap checks that Bootstrap creates a missing cluster or checks an
 // existing one, then checks the iss of a minted token.
 func TestBootstrap(t *testing.T) {
@@ -146,6 +158,12 @@ func TestBootstrap(t *testing.T) {
 			name: "present with another issuer", list: present, discovered: other,
 			want:      []error{sandbox.ErrIssuer, sandbox.ErrOtherIssuer},
 			wantText:  deleteAdvice,
+			wantCalls: listCall + discoveryCall,
+		},
+		{
+			name: "present without a kubeconfig context", list: present, before: noContext,
+			want:      []error{sandbox.ErrBrokenCluster},
+			wantText:  "your kubeconfig has no context k3d-asp" + brokenAdvice,
 			wantCalls: listCall + discoveryCall,
 		},
 		{

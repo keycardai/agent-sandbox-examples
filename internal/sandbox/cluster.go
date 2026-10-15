@@ -29,6 +29,9 @@ var (
 	// ErrOtherIssuer is an existing cluster created with another issuer.
 	// An error that wraps it also wraps ErrIssuer.
 	ErrOtherIssuer = errors.New("cluster has another issuer")
+	// ErrBrokenCluster is a k3d cluster that k3d lists but kubectl cannot
+	// use, because the kubeconfig has no context for it.
+	ErrBrokenCluster = errors.New("cluster is not usable")
 )
 
 var (
@@ -50,8 +53,9 @@ var (
 // API server. It then checks that a token the cluster mints has that issuer.
 //
 // Bootstrap keeps an existing cluster. It returns ErrOtherIssuer when that
-// cluster's discovery document has another issuer or jwks_uri. The error
-// says how to delete the cluster.
+// cluster's discovery document has another issuer or jwks_uri, and
+// ErrBrokenCluster when the kubeconfig has no context for it. The error says
+// how to delete the cluster.
 //
 // With dryRun, Bootstrap checks the settings and prints the k3d command. It
 // does not run a tool.
@@ -59,15 +63,17 @@ var (
 // An empty cluster or issuerURL comes from the settings.
 func (l *Local) Bootstrap(ctx context.Context, cluster, issuerURL string, dryRun bool) error {
 	err := l.bootstrap(ctx, cluster, issuerURL, dryRun)
-	if !errors.Is(err, ErrOtherIssuer) {
+	if !errors.Is(err, ErrOtherIssuer) && !errors.Is(err, ErrBrokenCluster) {
 		return err
 	}
-	name, nameErr := l.cluster(cluster)
-	if nameErr != nil {
-		return fmt.Errorf("%w. Delete the cluster, or bootstrap with its issuer", err)
+	advice := "Delete the cluster"
+	if name, nameErr := l.cluster(cluster); nameErr == nil {
+		advice += " with\n    go run ./cmd/sandbox down --cluster " + name
 	}
-	return fmt.Errorf("%w. Delete the cluster with\n"+
-		"    go run ./cmd/sandbox down --cluster %s, or bootstrap with its issuer", err, name)
+	if errors.Is(err, ErrOtherIssuer) {
+		advice += ", or bootstrap with its issuer"
+	}
+	return fmt.Errorf("%w. %s", err, advice)
 }
 
 // bootstrap is Bootstrap without the advice to delete the cluster. up uses
@@ -267,9 +273,14 @@ func (l *Local) clusterExists(ctx context.Context, cluster string) (bool, error)
 }
 
 // checkDiscovery returns ErrIssuer when the cluster's discovery document has
-// an issuer other than issuerURL or a jwks_uri other than jwksURI.
+// an issuer other than issuerURL or a jwks_uri other than jwksURI. It returns
+// ErrBrokenCluster when the kubeconfig has no context for the cluster.
 func (l *Local) checkDiscovery(ctx context.Context, cluster, issuerURL, jwksURI string) error {
 	raw, err := l.kubectl(ctx, cluster, nil, "get", "--raw", "/.well-known/openid-configuration")
+	if err != nil && strings.Contains(err.Error(), fmt.Sprintf("context %q does not exist", l.kubeContext(cluster))) {
+		return fmt.Errorf("%w: k3d lists the cluster %s, but your kubeconfig has no context %s, "+
+			"as when creating the cluster stopped partway", ErrBrokenCluster, cluster, l.kubeContext(cluster))
+	}
 	if err != nil {
 		return fmt.Errorf("reading the cluster's discovery document to check its issuer: %w", err)
 	}

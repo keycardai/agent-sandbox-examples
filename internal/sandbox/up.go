@@ -199,12 +199,12 @@ func (l *Local) upTunnel(ctx context.Context, state *upRun) error {
 	})
 }
 
-// upBootstrap runs bootstrap. If the cluster has another issuer, it runs down,
-// which asks before it deletes the cluster. After a delete, it runs bootstrap
-// again.
+// upBootstrap runs bootstrap. If the cluster has another issuer, or the
+// kubeconfig has no context for it, it runs down, which asks before it
+// deletes the cluster. After a delete, it runs bootstrap again.
 func (l *Local) upBootstrap(ctx context.Context, state *upRun) error {
 	err := l.bootstrap(ctx, "", "", false)
-	if errors.Is(err, ErrOtherIssuer) {
+	if errors.Is(err, ErrOtherIssuer) || errors.Is(err, ErrBrokenCluster) {
 		_, _ = fmt.Fprintf(l.Out, "%v\n\n", err)
 		if err = l.Down(ctx, "", false); err != nil {
 			return err
