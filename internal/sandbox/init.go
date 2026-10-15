@@ -137,9 +137,7 @@ func (l *Local) Init(ctx context.Context) (InitResult, error) {
 		return InitResult{Saved: l.Store.Saved()}, fmt.Errorf("%w. Run %s in a terminal", ErrNoTerminal,
 			l.Command("init"))
 	}
-	w := &wizard{l: l, ask: l.Ask, prev: l.previousValues(), env: Settings{}}
-	w.out = w.prev.values
-	w.demos = maps.Clone(w.prev.agents.Demos)
+	w := l.newWizard()
 	change, err := w.chooseChanges(ctx)
 	switch {
 	case err != nil:
@@ -158,6 +156,32 @@ func (l *Local) Init(ctx context.Context) (InitResult, error) {
 	}
 	_, _ = fmt.Fprintf(l.Out, "\nTo start the sandbox, run:\n\n  %s\n", next)
 	return result, nil
+}
+
+// InitSections is Init without its first question on a rerun: it asks
+// only the sections named, or every section when none is. The sections
+// are SectionAccount, SectionZone, SectionScenario and SectionCluster.
+func (l *Local) InitSections(ctx context.Context, sections ...string) (InitResult, error) {
+	if l.Ask == nil {
+		return InitResult{Saved: l.Store.Saved()}, ErrNoTerminal
+	}
+	change := map[string]bool{}
+	for _, section := range sections {
+		change[section] = true
+	}
+	if len(change) == 0 {
+		change = allSections()
+	}
+	return l.newWizard().run(ctx, change)
+}
+
+// newWizard returns a wizard that asks with l.Ask and starts from the
+// settings.
+func (l *Local) newWizard() *wizard {
+	w := &wizard{l: l, ask: l.Ask, prev: l.previousValues(), env: Settings{}}
+	w.out = w.prev.values
+	w.demos = maps.Clone(w.prev.agents.Demos)
+	return w
 }
 
 // run asks the sections in change, asks whether to replace the zone's
@@ -196,16 +220,24 @@ func (w *wizard) askSave(ctx context.Context) (bool, error) {
 	case store.Saved():
 		return true, nil
 	}
+	w.section(SectionSave)
 	return w.confirm(ctx, QuestionSave+" Yes saves them in "+HomeRelative(store.Path())+", and the secrets you typed in "+
 		store.KeychainWhere()+". No keeps them until you quit.", true)
 }
 
 // The sections of the settings, in the order Init asks them.
 const (
-	SectionAccount   = "account"
-	SectionZone      = "zone"
-	SectionScenario  = "scenario"
-	SectionCluster   = "cluster"
+	SectionAccount  = "account"
+	SectionZone     = "zone"
+	SectionScenario = "scenario"
+	SectionCluster  = "cluster"
+	// SectionCredentials and SectionPolicy are parts of the scenario and
+	// zone sections that a SectionAsker hears about. They cannot be asked
+	// on their own.
+	SectionCredentials = "credentials"
+	SectionPolicy      = "policy"
+	// SectionSave is the question whether to save the settings.
+	SectionSave      = "save"
 	changeEverything = "\x00everything"
 	changeNothing    = "\x00nothing"
 )
@@ -356,6 +388,7 @@ func (w *wizard) runSections(ctx context.Context, change map[string]bool) error 
 	} {
 		run := section.keep
 		if change[section.name] || (section.name == SectionScenario && w.zoneChanged()) {
+			w.section(section.name)
 			run = section.ask
 		}
 		if err := run(ctx); err != nil {
@@ -458,13 +491,18 @@ func (w *wizard) keepZone(ctx context.Context) error {
 // settings. It asks the demo's per-user inputs of anyone without an answer,
 // such as someone just given an agent.
 func (w *wizard) keepScenario(ctx context.Context) error {
-	w.env[KeyScenario] = w.l.Settings[KeyScenario]
-	w.answers = w.l.answers()
+	w.keepAnswers()
 	scenario, err := w.l.scenario()
 	if err != nil {
 		return fmt.Errorf("%w. Change the demo to fix it", err)
 	}
 	return w.askPerUserInputs(ctx, scenario, true)
+}
+
+// keepAnswers keeps the demo and its answers from the settings.
+func (w *wizard) keepAnswers() {
+	w.env[KeyScenario] = w.l.Settings[KeyScenario]
+	w.answers = w.l.answers()
 }
 
 // keepCluster keeps the cluster and the issuer settings.
@@ -473,6 +511,13 @@ func (w *wizard) keepCluster(context.Context) error {
 		w.env[key] = w.l.Settings[key]
 	}
 	return nil
+}
+
+// section tells a SectionAsker that the next questions are about id.
+func (w *wizard) section(id string) {
+	if asker, ok := w.ask.(SectionAsker); ok {
+		asker.Section(id)
+	}
 }
 
 func (w *wizard) input(ctx context.Context, question, value string, check func(string) error) (string, error) {
@@ -510,6 +555,7 @@ func (w *wizard) confirm(ctx context.Context, question string, value bool) (bool
 // login asks for the management API URL, the extra trusted roots if the API
 // is not production, and the service account, then signs in.
 func (w *wizard) login(ctx context.Context) error {
+	w.section(SectionAccount)
 	var err error
 	w.out.ManagementAPIURL, err = w.input(ctx, "Keycard API URL",
 		cmp.Or(w.prev.values.ManagementAPIURL, defaultManagementAPI), checkHTTPS)
@@ -780,6 +826,7 @@ func (w *wizard) chooseScenario(ctx context.Context) error {
 	w.env[KeyScenario] = choice
 	w.answers = w.l.answers()
 	w.out.Resources = nil
+	w.section(SectionCredentials)
 	scenario := scenarios[slices.IndexFunc(scenarios, func(s *Scenario) bool { return s.Name == choice })]
 	if err = w.askInputs(ctx, scenario); err != nil {
 		return err
@@ -1197,6 +1244,7 @@ func (w *wizard) askReplaceActive(ctx context.Context) (bool, error) {
 	if len(others) == 0 {
 		return false, nil
 	}
+	w.section(SectionPolicy)
 	current := strings.Join(others, ", ")
 	return w.confirm(ctx, fmt.Sprintf("Turn on the sandbox's access rules in this zone? The zone uses the policy set "+
 		"%s now. A zone uses one set at a time, so %s stops applying to everyone in the zone.", current, current),

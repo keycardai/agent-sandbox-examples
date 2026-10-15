@@ -156,7 +156,7 @@ func (in *Install) checkExistingLevels(ctx context.Context) error {
 			return fmt.Errorf("%w: namespace %s sets pod-security.kubernetes.io/%s=%s, and sandboxes need privileged. "+
 				"If that is acceptable, run: kubectl --context %s label namespace %s "+
 				"pod-security.kubernetes.io/%s=privileged --overwrite",
-				ErrInstall, in.Namespace, mode, level, shellQuote(in.Context), in.Namespace, mode)
+				ErrInstall, in.Namespace, mode, level, ShellQuote(in.Context), in.Namespace, mode)
 		}
 	}
 	return nil
@@ -210,8 +210,8 @@ func (in *Install) command(ctx context.Context, tool string, args ...string) (*e
 	return cmd, nil
 }
 
-// shellQuote quotes s for a POSIX shell, so a printed command can be pasted.
-func shellQuote(s string) string {
+// ShellQuote quotes s for a POSIX shell, so a printed command can be pasted.
+func ShellQuote(s string) string {
 	if shellSafe.MatchString(s) {
 		return s
 	}

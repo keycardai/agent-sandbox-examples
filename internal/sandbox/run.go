@@ -578,7 +578,11 @@ func (l *Local) pinnedBase() (string, error) {
 func (l *Local) zoneSetup(ctx context.Context, cfg runSettings, opts RunOptions) (*zonesetup.Output, error) {
 	outFile := filepath.Join(l.outDir(), "zone-setup.yaml")
 	if opts.SkipZoneSetup {
-		return l.readZoneSetup()
+		out, err := l.readZoneSetup()
+		if err != nil {
+			return nil, fmt.Errorf("%w. Run without --skip-zone-setup", err)
+		}
+		return out, nil
 	}
 	l.step("Running zone-setup against " + cfg.zoneURL)
 	values, err := l.zoneSetupValues(cfg.issuerURL, "the cluster's issuer")
@@ -612,19 +616,23 @@ func (l *Local) zoneSetup(ctx context.Context, cfg runSettings, opts RunOptions)
 }
 
 // readZoneSetup reads the zone-setup output an earlier run wrote. It refuses
-// a field it does not know and an empty field the sandbox needs.
+// a field it does not know and an empty field the sandbox needs. When no run
+// wrote one, the error wraps fs.ErrNotExist.
 func (l *Local) readZoneSetup() (*zonesetup.Output, error) {
 	outFile := filepath.Join(l.outDir(), "zone-setup.yaml")
 	raw, err := os.ReadFile(outFile) //nolint:gosec // G304: the path is under this checkout's local/out.
-	if err != nil || len(raw) == 0 {
-		return nil, fmt.Errorf("%w: %s is missing or empty. Run without --skip-zone-setup", ErrZoneSetup, outFile)
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("%w: %w", ErrZoneSetup, err)
+	case len(raw) == 0:
+		return nil, fmt.Errorf("%w: %s is empty", ErrZoneSetup, outFile)
 	}
 	var out zonesetup.Output
 	if err = yaml.UnmarshalStrict(raw, &out); err != nil {
 		return nil, fmt.Errorf("%w: %s: %w", ErrZoneSetup, outFile, err)
 	}
 	if key := missingField(&out); key != "" {
-		return nil, fmt.Errorf("%w: %s has no %s. Run without --skip-zone-setup", ErrZoneSetup, outFile, key)
+		return nil, fmt.Errorf("%w: %s has no %s", ErrZoneSetup, outFile, key)
 	}
 	return &out, nil
 }
