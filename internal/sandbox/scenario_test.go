@@ -47,6 +47,42 @@ func addScenario(t *testing.T, root, name, body string, dockerfile bool) {
 	}
 }
 
+// agentImage is the image LoadScenario names for agentScenario with a
+// Dockerfile.
+func agentImage(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	addScenario(t, root, agentName, agentScenario, true)
+	scenario, err := sandbox.LoadScenario(root, agentName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scenario.Image
+}
+
+// TestScenarioImage checks that the tag of a scenario's image follows its
+// files, so that run replaces the pod after an edit to one of them.
+func TestScenarioImage(t *testing.T) {
+	t.Parallel()
+	before := agentImage(t)
+	if !strings.HasPrefix(before, "ghcr.io/keycardai/sandbox-"+agentName+":local-") {
+		t.Fatalf("image = %q, want sandbox-%s tagged local-<digest>", before, agentName)
+	}
+	if again := agentImage(t); again != before {
+		t.Errorf("the same files gave %q, then %q", before, again)
+	}
+	root := t.TempDir()
+	addScenario(t, root, agentName, agentScenario, true)
+	writeFile(t, filepath.Join(root, "scenarios", agentName, "Dockerfile"), "FROM ghcr.io/keycardai/sandbox-base:v2\n")
+	scenario, err := sandbox.LoadScenario(root, agentName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scenario.Image == before {
+		t.Errorf("an edited Dockerfile kept the image %q", before)
+	}
+}
+
 // TestLoadScenario checks that LoadScenario refuses each scenario it cannot
 // use, including one whose agent.env names a secret input.
 func TestLoadScenario(t *testing.T) {
@@ -146,7 +182,7 @@ func TestScenarioValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = `agent:
+	want := `agent:
   args:
   - sleep
   - infinity
@@ -162,7 +198,7 @@ endpoints:
       template: Bearer {credential}
   url: https://api.example.com
 images:
-  agent: ghcr.io/keycardai/sandbox-agent:local
+  agent: ` + scenario.Image + `
 `
 	if string(got) != want {
 		t.Errorf("values = %q, want %q", got, want)

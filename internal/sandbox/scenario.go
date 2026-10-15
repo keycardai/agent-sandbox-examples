@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -130,9 +132,51 @@ func LoadScenario(root, name string) (*Scenario, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if _, err = os.Stat(filepath.Join(dir, "Dockerfile")); err == nil {
-		scenario.Image = imageRegistry + "sandbox-" + name + ":local"
+		// The tag follows the build context. An edit to the scenario's files
+		// changes the sandbox's template, and run then replaces the pod,
+		// which otherwise keeps running the old image.
+		digest, err := contextDigest(dir)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrScenario, err)
+		}
+		scenario.Image = imageRegistry + "sandbox-" + name + ":local-" + digest
 	}
 	return scenario, nil
+}
+
+// contextDigest returns the first 12 hex digits of a SHA-256 over the path,
+// permissions and contents of each file under dir. It follows links.
+func contextDigest(dir string) (string, error) {
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", fmt.Errorf("reading the build context %s: %w", dir, err)
+	}
+	sum := sha256.New()
+	//nolint:wrapcheck // The error after the walk names the build context.
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			return err
+		}
+		raw, err := os.ReadFile(path) //nolint:gosec // G304: the path is a file of the scenario.
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(sum, "%s\x00%o\x00%d\x00", filepath.ToSlash(rel), info.Mode().Perm(), len(raw))
+		_, _ = sum.Write(raw)
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("reading the build context %s: %w", dir, err)
+	}
+	return hex.EncodeToString(sum.Sum(nil))[:12], nil
 }
 
 // Scenarios loads every scenario under root, sorted by name.

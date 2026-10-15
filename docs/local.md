@@ -148,8 +148,9 @@ from the agent, so every scenario must list `pypi.org` and GitHub in
 `endpoints`.
 
 With a `Dockerfile`, `sandbox run` builds the agent image from the
-scenario's directory, tags it `ghcr.io/keycardai/sandbox-<name>:local`, and
-imports it into the k3d cluster. The build gets the sandbox-base image as
+scenario's directory, tags it `ghcr.io/keycardai/sandbox-<name>:local-<digest>`,
+and imports it into the k3d cluster. The digest covers every file in the
+directory. The build gets the sandbox-base image as
 the `BASE_IMAGE` build argument: the one the charts pin, or
 `ghcr.io/keycardai/sandbox-base:<tag>` with `KEYCARD_LOCAL_IMAGE_TAG` set.
 The Dockerfile declares `ARG BASE_IMAGE` and builds `FROM ${BASE_IMAGE}`.
@@ -160,7 +161,8 @@ sandbox-base.
 `local/out/scenario.values.yaml`, and passes it to both charts after the
 other values files. The sandbox controller does not change a pod that
 exists. When the sandbox's template changes, such as after you choose
-another demo, `run` deletes the pod and the controller creates it again.
+another demo or change a file in the scenario's directory, `run` deletes the
+pod and the controller creates it again.
 `run` also replaces a pod whose agent exited.
 
 ## The pi scenario
