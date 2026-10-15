@@ -133,7 +133,18 @@ def run(text):
     return "I don't know that command.\n" + HELP
 
 
+def describe(err):
+    """Returns the message of a Failed, and the type and message of any
+    other exception."""
+    if isinstance(err, Failed):
+        return str(err)
+    return f"{type(err).__name__}: {err}"
+
+
 def main():
+    """Polls until the pod stops. An error in a poll, a command or a reply
+    is logged, and the agent polls again. Only a failure to open the direct
+    message ends it."""
     channel = slack("conversations.open", users=USER)["channel"]["id"]
     # Only messages after start-up get an answer.
     last = f"{time.time():.6f}"
@@ -141,24 +152,25 @@ def main():
     while True:
         try:
             history = slack("conversations.history", channel=channel, oldest=last, limit=15)
-        except Failed as err:
-            log(str(err))
+            messages = sorted(history["messages"], key=lambda m: float(m["ts"]))
+        except Exception as err:
+            log(describe(err))
             time.sleep(POLL_SECONDS)
             continue
-        for message in sorted(history["messages"], key=lambda m: float(m["ts"])):
+        for message in messages:
             last = max(last, message["ts"], key=float)
             if message.get("user") != USER or message.get("subtype") or message.get("bot_id"):
                 continue
             log(f"command: {message.get('text', '')}")
             try:
                 reply = run(message.get("text", ""))
-            except Failed as err:
-                reply = f"That failed: {err}"
+            except Exception as err:
+                reply = f"That failed: {describe(err)}"
             log(reply)
             try:
                 slack("chat.postMessage", channel=channel, text=reply)
-            except Failed as err:
-                log(str(err))
+            except Exception as err:
+                log(describe(err))
         time.sleep(POLL_SECONDS)
 
 
