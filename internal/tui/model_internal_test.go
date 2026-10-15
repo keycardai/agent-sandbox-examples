@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
+	"github.com/keycardai/agent-sandbox-examples/internal/tui/component"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/page"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/proxylog"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/state"
@@ -41,6 +42,8 @@ const (
 	sampleSlack    = "slack"
 	samplePi       = "pi coding agent"
 	sampleSmoke    = "Smoke checks"
+	// sampleUserPath is the GitHub request the Agents tab sends.
+	sampleUserPath = "api.github.com/user"
 )
 
 // testSession is a session for a checkout with no settings.
@@ -63,6 +66,13 @@ func testModel(t *testing.T) *model {
 
 func press(text string) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: []rune(text)[0], Text: text}
+}
+
+// addingAgent starts the questions for a new agent, as n does, and returns
+// their asker.
+func addingAgent(root *model) asker {
+	root.state.Run.Job, root.askTitle = state.Job{Kind: state.JobSetup, Name: "Adding an agent"}, newAgentTitle
+	return root.startQuestions(nil, nil)
 }
 
 // answerYes presses y in a confirmation, and hands the answer it sends to
@@ -215,6 +225,28 @@ func TestStartsWithoutTellingToBringUp(t *testing.T) {
 	}
 }
 
+// TestResumeAtStoppedMirror starts again at the mirror when a later step
+// failed and the mirror no longer runs, because the step that failed needs
+// it.
+func TestResumeAtStoppedMirror(t *testing.T) {
+	t.Parallel()
+	root := testModel(t)
+	root.state.Reads.Status.Tunnel.Running = true
+	for i := range 3 {
+		root.Update(stepStartMsg{index: i})
+		root.Update(stepDoneMsg{index: i})
+	}
+	root.Update(stepStartMsg{index: 3})
+	root.Update(stepDoneMsg{index: 3, err: sandbox.ErrService})
+	if got := root.state.ResumeIndex(); got != 2 {
+		t.Errorf("ResumeIndex with the mirror stopped = %d, want 2", got)
+	}
+	root.state.Reads.Status.Mirror.Running = true
+	if got := root.state.ResumeIndex(); got != 3 {
+		t.Errorf("ResumeIndex = %d, want 3", got)
+	}
+}
+
 // TestRecreateAsks offers to recreate a cluster made for another issuer
 // URL, or one the kubeconfig has no context for, and says which. Recreating
 // deletes the cluster, so only y says yes: enter says no.
@@ -259,6 +291,46 @@ func TestQuitLeavesTheSandboxRunning(t *testing.T) {
 	}
 }
 
+// TestTabsAndPanes switches tabs with the number keys, moves through the
+// Health tab's checks, and shows the log of the one selected.
+func TestTabsAndPanes(t *testing.T) {
+	t.Parallel()
+	root := testModel(t)
+	for _, tc := range []struct {
+		key    tea.KeyPressMsg
+		tab    tab
+		source string
+	}{
+		{press("4"), tabHealth, state.ContainerSource("", state.AgentContainer)},
+		{press("j"), tabHealth, state.SourceTraffic},
+		{tea.KeyPressMsg{Code: tea.KeyTab}, tabHealth, state.SourceTraffic},
+		{press("3"), tabTraffic, state.SourceTraffic},
+		{press("d"), tabTraffic, state.SourceTrafficAll},
+		{press("t"), tabHealth, state.SourceActivity},
+		{press("1"), tabHome, state.SourceActivity},
+	} {
+		root.Update(tc.key)
+		if source := root.ui.Logs.Source(); root.tab != tc.tab || source != tc.source {
+			t.Errorf("%s: tab %v, source %q; want %v, %q", tc.key, root.tab, source, tc.tab, tc.source)
+		}
+	}
+	root.Update(press("4"))
+	root.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if root.health.Focus != page.PaneChecks || root.ui.Logs.Source() != state.SourceTrafficAll {
+		t.Errorf("esc from the log: focus %v, source %q; want the requests check", root.health.Focus,
+			root.ui.Logs.Source())
+	}
+	// On the Health tab, a number still switches tabs: the panes have no
+	// numbers.
+	if view := ansi.Strip(root.View().Content); strings.Contains(view, "1 Bring-up") {
+		t.Errorf("the Bring-up pane still shows a number:\n%s", view)
+	}
+	root.Update(press("1"))
+	if root.tab != tabHome {
+		t.Errorf("1 on the Health tab: tab %v, want Home", root.tab)
+	}
+}
+
 // TestViewSizes draws every screen at a laptop size and a small size, and
 // says when the window is too small.
 func TestViewSizes(t *testing.T) {
@@ -287,7 +359,27 @@ func TestViewSizes(t *testing.T) {
 	}
 }
 
-// TestChecksScore counts the passed checks from the checks step's log.
+// TestHealthTabShowsTheChecks draws the tabs, the checks, the log pane and
+// the footer's keys.
+func TestHealthTabShowsTheChecks(t *testing.T) {
+	t.Parallel()
+	root := testModel(t)
+	root.screen = screenDashboard
+	root.Update(press("4"))
+	view := ansi.Strip(root.View().Content)
+	for _, want := range []string{
+		"keycard sandbox", "1 Home", "2 Agent", "3 Traffic", "4 Health", "The sandbox is not running",
+		"The agent runs", "Its requests go through Keycard", "Keycard can verify the agent", "The checks pass",
+		"every log", "bring up", "quit",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("Health tab lacks %q:\n%s", want, view)
+		}
+	}
+}
+
+// TestChecksScore counts the passed checks from the checks step's log, and
+// the Health tab shows the score.
 func TestChecksScore(t *testing.T) {
 	t.Parallel()
 	root := testModel(t)
@@ -296,8 +388,10 @@ func TestChecksScore(t *testing.T) {
 	row.Log.Add("  PASS  allowed", "  FAIL  credentialed", "  PASS  denied", "  MANUAL  event log")
 	root.Update(stepStartMsg{index: last})
 	root.Update(stepDoneMsg{index: last, err: sandbox.ErrCheck})
-	if row.Passed != 2 || row.Total != 3 {
-		t.Errorf("checks = %d/%d, want 2 of 3 passed", row.Passed, row.Total)
+	root.Update(press("4"))
+	if view := ansi.Strip(root.View().Content); row.Passed != 2 || row.Total != 3 ||
+		!strings.Contains(view, "2/3 passed") {
+		t.Errorf("checks = %d/%d, want 2/3 passed on the Health tab:\n%s", row.Passed, row.Total, view)
 	}
 }
 
@@ -439,6 +533,95 @@ func TestQuestionWaitsForTheDialog(t *testing.T) {
 	}
 }
 
+// TestQuestionWaitsForTheLists keeps a question for a new agent that comes
+// while the list of every log shows, and shows it once the list closes.
+func TestQuestionWaitsForTheLists(t *testing.T) {
+	t.Parallel()
+	root := quietModel(t)
+	asker := addingAgent(root)
+	defer root.stopSetup()
+	root.Update(press("l"))
+	go func() { _, _ = asker.Input(t.Context(), "Who gets an agent?", "", nil) }()
+	root.Update(<-root.bus.ch)
+	if root.overlay.kind != overlayLogs {
+		t.Fatalf("overlay %v once the question came, want the list of every log", root.overlay.kind)
+	}
+	root.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if root.overlay.kind != overlayQuestion {
+		t.Errorf("overlay %v once the list closed, want the question", root.overlay.kind)
+	}
+}
+
+// TestAddingAnAgentWaits says, while it signs in for a new agent, that the
+// operator can stop it with esc, and esc stops it.
+func TestAddingAnAgentWaits(t *testing.T) {
+	t.Parallel()
+	root := quietModel(t)
+	addingAgent(root)
+	if root.Update(press("u")); !strings.Contains(root.ui.Toast.Text, "Adding an agent") {
+		t.Errorf("u while adding an agent: notice %q", root.ui.Toast.Text)
+	}
+	if root.Update(tea.KeyPressMsg{Code: tea.KeyEscape}); root.asking() {
+		t.Error("esc did not stop adding the agent")
+	}
+}
+
+// TestActionLogStays keeps an action's log in the pane when the pods are
+// read again, so that how it ended stays on screen, and lists it with
+// every log.
+func TestActionLogStays(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	root.Update(press("2"))
+	root.Update(press("R"))
+	answerYes(root)
+	root.Update(podsMsg{rows: root.state.Agents.Pods, agents: root.state.Agents.List})
+	if source := root.ui.Logs.Source(); source != state.SourceAction {
+		t.Errorf("the pane shows %q once the pods were read, want the action's log", source)
+	}
+	if root.Update(press("l")); !strings.Contains(ansi.Strip(root.View().Content), "Last action") {
+		t.Errorf("every log lacks the last action's:\n%s", ansi.Strip(root.View().Content))
+	}
+}
+
+// TestDeployWaitsForTheSandbox brings a new agent up only when the
+// sandbox is up, and shows that it is coming up.
+func TestDeployWaitsForTheSandbox(t *testing.T) {
+	t.Parallel()
+	const newcomer = "grace@example.com"
+	for _, sandboxUp := range []bool{true, false} {
+		root := upModel(t)
+		root.state.Reads.Status.Tunnel.Running = sandboxUp
+		agents := append(slices.Clone(root.state.Agents.List), sandbox.Agent{Email: newcomer})
+		root.Update(press("2"))
+		root.Update(agentAddedMsg{email: newcomer, agents: agents})
+		view := ansi.Strip(root.View().Content)
+		switch {
+		case sandboxUp && (root.state.Run.Job.Agent != newcomer || !strings.Contains(view, "coming up")):
+			t.Errorf("sandbox up: job %+v; want the agent coming up:\n%s", root.state.Run.Job, view)
+		case !sandboxUp && (root.state.Run.Job.Busy() || !strings.Contains(root.ui.Toast.Text, "comes up with the sandbox")):
+			t.Errorf("sandbox down: job %+v, notice %q; want only a notice", root.state.Run.Job, root.ui.Toast.Text)
+		}
+		root.state.Run.CancelJob()
+	}
+}
+
+// TestAgentKeptWhenSavingFails selects an agent that was added when saving
+// the settings failed, and says it is for this session only.
+func TestAgentKeptWhenSavingFails(t *testing.T) {
+	t.Parallel()
+	const newcomer = "grace@example.com"
+	root := upModel(t)
+	root.state.Reads.Status.Tunnel.Running = false
+	agents := append(slices.Clone(root.state.Agents.List), sandbox.Agent{Email: newcomer})
+	root.Update(agentAddedMsg{email: newcomer, agents: agents, err: fmt.Errorf("%w: disk full", sandbox.ErrNotSaved)})
+	activity, _ := root.ui.Logs.Log(state.SourceActivity).Snapshot()
+	if selected := root.session.Selected(); selected != newcomer ||
+		!strings.Contains(strings.Join(activity, "\n"), newcomer+" has an agent for this session only") {
+		t.Errorf("selected %q, activity %q; want %s selected, for this session only", selected, activity, newcomer)
+	}
+}
+
 // TestPolicyAnswerHolds takes the answer about the zone's policy set from
 // the last setup that looked at the zone, so that a no after a yes holds.
 func TestPolicyAnswerHolds(t *testing.T) {
@@ -498,9 +681,38 @@ func TestChecksThatDidNotRun(t *testing.T) {
 	}
 }
 
+// TestBlockedLookupInTheFeed shows a refused lookup of a host on the
+// internet in the feed of requests, where the summary names it blocked, and
+// keeps the routine lookups to the feed with DNS.
+func TestBlockedLookupInTheFeed(t *testing.T) {
+	t.Parallel()
+	lookup := func(host, verdict string) string {
+		return `{"ts":"2026-10-11T03:19:20Z","scope":"dns","destination":{"host":"` + host + `."},` +
+			`"query":{"type":"A","rcode":"REFUSED"},"decision":{"verdict":"` + verdict + `",` +
+			`"reason":"no_matching_endpoint"}}`
+	}
+	feeds := [2]*component.Log{{}, {}}
+	err := readRecords(strings.NewReader(strings.Join([]string{
+		lookup(sampleDenied, verdictDeny),
+		lookup(sampleDenied+".sandbox.svc.cluster.local", verdictDeny),
+		lookup("pypi.org", verdictAllow),
+	}, "\n")), "", feeds, &proxylog.Store{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests, _ := feeds[0].Snapshot()
+	everything, _ := feeds[1].Snapshot()
+	if len(requests) != 1 || !strings.Contains(requests[0], sampleDenied) || !strings.Contains(requests[0], "deny") {
+		t.Errorf("feed of requests = %q, want only the refused lookup of %s", requests, sampleDenied)
+	}
+	if len(everything) != len(feeds)+1 {
+		t.Errorf("feed with DNS = %q, want all three lookups", everything)
+	}
+}
+
 // busyKeys are the keys that change the sandbox, and so wait for the
 // bring-up, the action or the setup that runs.
-func busyKeys() []string { return []string{"u", "c", "R", "D", "x", "e", "p"} }
+func busyKeys() []string { return []string{"u", "c", "R", "D", "n", "X", "x", "e", "p"} }
 
 // TestOneJobAtATime refuses, with a notice, to start work that changes the
 // sandbox while a bring-up, an action or the setup runs. A running
@@ -527,6 +739,7 @@ func TestOneJobAtATime(t *testing.T) {
 	} {
 		for _, key := range tc.keys {
 			root := quietModel(t)
+			root.Update(press("2"))
 			tc.start(root)
 			running := root.state.Run.Job
 			_, cmd := root.Update(press(key))
@@ -696,7 +909,7 @@ func TestTrafficSaysWhyItCannotRead(t *testing.T) {
 	store := &proxylog.Store{}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	go followTraffic(ctx, root.session, samplePod, store)
+	go followTraffic(ctx, root.session, samplePod, [2]*component.Log{{}, {}}, store)
 	for deadline := time.Now().Add(5 * time.Second); store.Err() == nil && time.Now().Before(deadline); {
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -793,6 +1006,26 @@ func TestQuitAfterAFailedStop(t *testing.T) {
 	}
 }
 
+// TestWizardWaitsForSetup leaves the dashboard as it is when the settings
+// and the wizard are asked for while the setup for a new agent runs, and
+// its question shows over the dashboard.
+func TestWizardWaitsForSetup(t *testing.T) {
+	t.Parallel()
+	root := quietModel(t)
+	addingAgent(root)
+	for _, key := range []string{"e", "a"} {
+		root.Update(press(key))
+	}
+	root.Update(
+		askMsg{question: &page.Question{Kind: page.AskInput, Title: sampleAPITitle}, replies: make(chan reply, 1)},
+	)
+	if view := ansi.Strip(root.View().Content); root.screen != screenDashboard ||
+		!strings.Contains(view, newAgentTitle) {
+		t.Errorf("e and a while a new agent's setup runs: screen %v, want its question over the dashboard:\n%s",
+			root.screen, view)
+	}
+}
+
 // TestQuitNamesTheAction says which action quitting stops.
 func TestQuitNamesTheAction(t *testing.T) {
 	t.Parallel()
@@ -845,6 +1078,67 @@ func TestShellExitStatus(t *testing.T) {
 	if root.ui.Toast.Err || !strings.Contains(strings.Join(activity, "\n"), "exited with status 7") {
 		t.Errorf("notice %q (error %v), activity %q; want the status noted, and no error",
 			root.ui.Toast.Text, root.ui.Toast.Err, activity)
+	}
+}
+
+// TestTrafficFollowerError shows in the feed why the proxy's log cannot be
+// followed, and keeps trying.
+func TestTrafficFollowerError(t *testing.T) {
+	t.Parallel()
+	root := testModel(t)
+	feeds := [2]*component.Log{{}, {}}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		followTraffic(ctx, root.session, samplePod, feeds, &proxylog.Store{})
+		close(done)
+	}()
+	var lines []string
+	for deadline := time.Now().Add(5 * time.Second); len(lines) == 0 && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+		lines, _ = feeds[0].Snapshot()
+	}
+	cancel()
+	<-done
+	if len(lines) == 0 || !strings.Contains(lines[0], "cluster name") {
+		t.Errorf("feed = %q, want why the proxy's log cannot be read", lines)
+	}
+}
+
+// TestAttemptLogKeepsLines keeps the lines of the run of kubectl logs
+// before until the next run writes, so the pane does not empty while
+// kubectl starts again.
+func TestAttemptLogKeepsLines(t *testing.T) {
+	t.Parallel()
+	log := &component.Log{}
+	log.Add("from the run before")
+	next := &attemptLog{log: log, again: true}
+	if lines, _ := log.Snapshot(); len(lines) != 1 {
+		t.Fatalf("lines = %q before the next run wrote, want the earlier run's", lines)
+	}
+	if _, err := next.Write([]byte("Error from server: container is waiting to start\n")); err != nil {
+		t.Fatal(err)
+	}
+	next.Add("a line")
+	if lines, _ := log.Snapshot(); !slices.Equal(lines, []string{
+		"Error from server: container is waiting to start", "a line",
+	}) {
+		t.Errorf("lines = %q, want only the next run's", lines)
+	}
+}
+
+// TestAgentsResetKeepsTheTabsLayout leaves the log pane as the tab that
+// shows laid it out, when the Agents tab forgets its request.
+func TestAgentsResetKeepsTheTabsLayout(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	root.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	root.Update(press("3"))
+	width, height := root.ui.Logs.Size()
+	root.agents.Reset()
+	if gotWidth, gotHeight := root.ui.Logs.Size(); gotWidth != width || gotHeight != height {
+		t.Errorf("after Reset on the Traffic tab, the log pane is %dx%d, want %dx%d", gotWidth, gotHeight, width,
+			height)
 	}
 }
 

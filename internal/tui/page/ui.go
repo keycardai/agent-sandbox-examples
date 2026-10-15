@@ -3,6 +3,7 @@
 package page
 
 import (
+	"fmt"
 	"image/color"
 	"strconv"
 	"strings"
@@ -33,6 +34,16 @@ const (
 	wordAgent  = "agent"
 )
 
+// Host is what a page asks of the root model, which owns the work in the
+// background and the overlays.
+type Host interface {
+	// Follow follows the log of a pod's container in the log pane, and
+	// stops following the one before.
+	Follow(row state.ContainerRow)
+	// ShowAgentList opens the list of agents, which the Agents tab draws.
+	ShowAgentList()
+}
+
 // UI is what the pages draw with. The root model sets it.
 type UI struct {
 	Styles style.Styles
@@ -42,17 +53,28 @@ type UI struct {
 	Background    color.Color
 	// Frame counts the redraws, and turns the spinners.
 	Frame int
-	// Logs holds every log, and shows one.
+	// Logs holds every log, and shows one in the log pane.
 	Logs  *component.LogView
 	Toast component.Toast
+	// ShowDNS adds the DNS lookups to the traffic feed.
+	ShowDNS bool
 }
 
 // NewUI returns the UI before the window and the colors are known.
 func NewUI() *UI {
-	return &UI{
-		Styles: style.New(true), Keys: component.NewKeyMap(),
-		Logs: component.NewLogView(func(_ string, lines []string) []string { return lines }),
+	ui := &UI{Styles: style.New(true), Keys: component.NewKeyMap()}
+	ui.Logs = component.NewLogView(ui.paint)
+	ui.Logs.FromTop(state.SourceResponse)
+	return ui
+}
+
+// TrafficSource names the feed of the proxy's decisions the TUI shows:
+// with the DNS lookups, or without.
+func (u *UI) TrafficSource() string {
+	if u.ShowDNS {
+		return state.SourceTrafficAll
 	}
+	return state.SourceTraffic
 }
 
 // Notify shows text in the footer for a while.
@@ -123,6 +145,17 @@ func (u *UI) para(st lipgloss.Style, text string) string {
 // actionLine is a key and what it does.
 func (u *UI) actionLine(key, text string) string {
 	return u.Styles.KeyChip.Render(key) + " " + u.Styles.Text.Render(text)
+}
+
+// agentBar says which agent the tab shows, when there is more than one.
+func (v view) agentBar() []string {
+	if len(v.state.Agents.List) <= 1 {
+		return nil
+	}
+	theme := v.ui.Styles
+	agent, index := v.state.Selected()
+	return []string{theme.Dim.Render("Showing ") + theme.Accent.Render(agent.Email+"'s agent") +
+		theme.Dim.Render(fmt.Sprintf(", %d of %d. Pick another on the Agents tab (2).", index+1, len(v.state.Agents.List)))}
 }
 
 // stepLine draws one step: its icon, its title, and how long it took.

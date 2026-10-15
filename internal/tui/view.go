@@ -20,6 +20,9 @@ const (
 	progressCells = 12
 	// bandSpace is what the band puts around and between its parts.
 	bandSpace = 6
+	// helpTitleWidth is the width of a group's title in the help, and
+	// helpGap the space between its keys.
+	helpTitleWidth, helpGap = 9, 3
 )
 
 // View draws the TUI.
@@ -38,26 +41,42 @@ func (m *model) View() tea.View {
 	}
 	view := tea.NewView(content)
 	view.AltScreen = true
+	if m.mouse {
+		view.MouseMode = tea.MouseModeCellMotion
+	}
 	view.WindowTitle = "Keycard sandbox · " + ansi.Strip(m.statusBadge())
 	view.ProgressBar = m.progress()
 	return view
 }
 
-// dashboardView draws Home, under the header band and over the footer
-// with Home's keys.
+// dashboardView draws the tab that shows, under the band with the tabs and
+// over the footer with the tab's keys.
 func (m *model) dashboardView() string {
-	return m.ui.PageUnder(m.band(), m.home.View(), m.home.Hints())
+	var body string
+	var hints []component.Hint
+	switch m.tab {
+	case tabAgent:
+		body, hints = m.agents.View(), m.agents.Hints()
+	case tabTraffic:
+		body, hints = m.traffic.View(), m.traffic.Hints()
+	case tabHealth:
+		body, hints = m.health.View(), m.health.Hints()
+	case tabHome, tabCount:
+		body, hints = m.home.View(), m.home.Hints()
+	}
+	return m.ui.PageUnder(m.tabBand(), body, hints)
 }
 
-// band draws the header band, with how the sandbox is on the right.
-func (m *model) band() string {
+// tabBand draws the header band with the tabs, the one that shows marked,
+// and how the sandbox is on the right.
+func (m *model) tabBand() string {
 	theme := m.ui.Styles
-	label := theme.BandLabel.Render("home")
+	tabs := component.Tabs(theme, []string{"Home", "Agents", "Traffic", "Health"}, int(m.tab))
 	badge := m.statusBadge()
-	if lipgloss.Width(theme.Wordmark())+lipgloss.Width(label)+lipgloss.Width(badge)+bandSpace > m.ui.Width {
+	if lipgloss.Width(theme.Wordmark())+lipgloss.Width(tabs)+lipgloss.Width(badge)+bandSpace > m.ui.Width {
 		badge = m.shortBadge()
 	}
-	return component.Band(theme, m.ui.Width, label, badge)
+	return component.Band(theme, m.ui.Width, tabs, badge)
 }
 
 // statusBadge says how the sandbox is, for the header band.
@@ -134,6 +153,21 @@ func (m *model) progress() *tea.ProgressBar {
 	return nil
 }
 
+// layout sizes the log pane for the window and the tab that shows.
+func (m *model) layout() {
+	switch m.tab {
+	case tabAgent:
+		m.agents.Layout()
+	case tabTraffic:
+		m.traffic.Layout()
+	case tabHealth:
+		m.health.Layout()
+	case tabHome, tabCount:
+		width := m.ui.Width - component.PageIndent - component.BorderCols
+		m.ui.Logs.SetSize(max(width, 1), max(m.ui.BodyRows()-component.BorderRows-1, 1))
+	}
+}
+
 // withOverlay draws the open overlay, if any, in the middle of base.
 func (m *model) withOverlay(base string) string {
 	open, ok := m.overlayLayer()
@@ -147,17 +181,60 @@ func (m *model) withOverlay(base string) string {
 	return component.Overlay(base, modal, m.ui.Width, m.ui.Height)
 }
 
+// questionModal draws the setup's question outside the wizard. In the
+// wizard, the question is part of the screen, so it draws nothing over it.
+func (m *model) questionModal() string {
+	if m.screen == screenWizard {
+		return ""
+	}
+	return m.setup.QuestionModal(m.askTitle)
+}
+
+// helpModal lists every key by group, each group on as many rows as the
+// modal's width needs. A short window leaves out the note on quitting.
 func (m *model) helpModal() string {
 	theme := m.ui.Styles
-	m.help.ShowAll = true
-	m.help.Styles.FullKey = theme.Accent
-	m.help.Styles.FullDesc = theme.Muted
-	m.help.Styles.FullSeparator = theme.Faint
-	body := m.help.FullHelpView(m.ui.Keys.All())
-	about := theme.Muted.Render("Quitting leaves the sandbox up: the tunnel, the mirror and the cluster keep running,\n" +
-		"and they show here again next time. D stops everything.")
-	return theme.Modal.Render(lipgloss.JoinVertical(lipgloss.Left, theme.ModalTitle.Render("Keys"), "", body, "",
-		about, "", theme.Dim.Render("Press any key to close.")))
+	width := component.ModalInnerWidth(m.ui.Width)
+	rows := []string{theme.ModalTitle.Render("Keys"), ""}
+	for _, group := range m.ui.Keys.Groups() {
+		rows = append(rows, helpRows(theme, group, width)...)
+	}
+	about := theme.Muted.Width(width).Render("Quitting leaves the sandbox up, and it shows here again next time. " +
+		"D stops everything.")
+	footer := theme.Dim.Render("Press any key to close.")
+	modal := theme.Modal.Width(component.ModalWidth(m.ui.Width))
+	full := modal.Render(lipgloss.JoinVertical(lipgloss.Left, append(rows, "", about, "", footer)...))
+	if lipgloss.Height(full) <= m.ui.Height {
+		return full
+	}
+	return modal.Render(lipgloss.JoinVertical(lipgloss.Left, append(rows, "", footer)...))
+}
+
+// helpRows lays a group's keys out after its title, as many on a row as
+// width takes.
+func helpRows(theme style.Styles, group component.HelpGroup, width int) []string {
+	var rows []string
+	row := ""
+	for _, binding := range group.Bindings {
+		help := binding.Help()
+		pair := theme.Accent.Render(help.Key) + " " + theme.Muted.Render(help.Desc)
+		if row != "" && lipgloss.Width(row)+helpGap+lipgloss.Width(pair) > width-helpTitleWidth {
+			rows, row = append(rows, row), ""
+		}
+		if row != "" {
+			row += strings.Repeat(" ", helpGap)
+		}
+		row += pair
+	}
+	rows = append(rows, row)
+	for i, line := range rows {
+		title := ""
+		if i == 0 {
+			title = group.Title
+		}
+		rows[i] = theme.Text.Render(component.Pad(title, helpTitleWidth)) + line
+	}
+	return rows
 }
 
 func (m *model) confirmModal() string {

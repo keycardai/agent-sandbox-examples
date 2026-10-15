@@ -1,0 +1,42 @@
+ keycard sandbox    1 Home   2 Agents   3 Traffic   4 Health                                                                                     ● up
+
+  ! Something needs a look
+  The check marked below says what to do.
+
+  ✓ The agent runs                    pi coding agent. Press a to open it
+  ! Its requests go through Keycard   3 requests, 1 credential added, 1 host blocked
+                                      → Keycard refused a credential once. The Traffic tab says why.
+  ✓ Keycard can verify the agent      The cluster's keys are on the internet, through a Cloudflare tunnel
+  ✓ The checks pass                   10s. c runs them again
+
+  ┌─ The agent runs · log ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │ The agent's own output. It waits until you press a to open the demo. What the demo does then shows on the Traffic tab.                           │
+  │ ● following                                                                                                                                      │
+  │ pi-session: waiting for a session                                                                                                                │
+  │ pi-session: session started                                                                                                                      │
+  │ pi: tool call github.list_repositories                                                                                                           │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+  ↑↓  select   enter  log   l  every log   u  bring up   c  checks   ?  keys   q  quit

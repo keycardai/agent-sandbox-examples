@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"image/color"
@@ -17,6 +18,7 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/component"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/page"
+	"github.com/keycardai/agent-sandbox-examples/internal/tui/proxylog"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/state"
 	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
@@ -119,8 +121,15 @@ func snapshots() map[string]func(t *testing.T) *model {
 		"review":    snapshotReview,
 		"bringup":   snapshotBringUp,
 		"home":      snapshotUp,
+		"agent":     snapshotAgent,
+		"agents":    snapshotAgents,
+		"a-picker":  snapshotAgentPicker,
 		"w-save":    snapshotSave,
+		"traffic":   snapshotTraffic,
+		"system":    snapshotSystem,
+		"proxy-log": snapshotProxyLog,
 		"demos":     snapshotDemos,
+		"activity":  snapshotActivity,
 	}
 }
 
@@ -367,8 +376,17 @@ func snapshotUp(t *testing.T) *model {
 		{"✓", "Install the charts (41s)"},
 		{"✓", "Checks: 6 of 6 passed"},
 		{"✓", "The sandbox is up"},
+		{"▸", "The agent sent GET https://api.github.com/user"},
+		{"✓", "GET https://api.github.com/user: 200 OK"},
 	} {
 		root.state.Record(event[0], event[1])
+	}
+	feed := root.ui.Logs.Log(state.SourceTraffic)
+	for _, record := range sampleRecords(sampleTime()) {
+		root.ui.Logs.Log(state.SourceTrafficAll).Add(record.Row())
+		if record.Scope != proxylog.ScopeDNS {
+			feed.Add(record.Row())
+		}
 	}
 	return root
 }
@@ -393,6 +411,92 @@ func snapshotBringUp(t *testing.T) *model {
 		}
 	}
 	root.state.Run.Cursor = 6
+	return root
+}
+
+// snapshotAgent is the Agents tab with the response to the GitHub request,
+// after the proxy's record of it.
+func snapshotAgent(t *testing.T) *model {
+	t.Helper()
+	root := snapshotUp(t)
+	root.Update(press("2"))
+	_, send := root.Update(press("s"))
+	respond(root, send,
+		newRecord(time.Now(), scopeRequest, githubHost, "/user", verdictAllow, sampleAllowed, githubEndpoint),
+		sandbox.AgentResponse{
+			Status: 200, Took: 412 * time.Millisecond,
+			Body: `{"login":"ada","id":1234567,"name":"Ada Lovelace","company":"Example","public_repos":12}`,
+		})
+	settle(t, root, state.AgentContainer)
+	return root
+}
+
+func snapshotTraffic(t *testing.T) *model {
+	t.Helper()
+	root := snapshotUp(t)
+	root.Update(press("3"))
+	return root
+}
+
+func snapshotSystem(t *testing.T) *model {
+	t.Helper()
+	root := snapshotUp(t)
+	root.Update(press("4"))
+	settle(t, root, state.AgentContainer)
+	return root
+}
+
+// settle waits for the follower of a container's log to write, stops it,
+// and puts a sample agent log in place of what it wrote, which is
+// kubectl's error without a cluster. A screen then draws the same each
+// time. It returns the container's log.
+func settle(t *testing.T, root *model, container string) *component.Log {
+	t.Helper()
+	log := root.ui.Logs.Log(state.ContainerSource(samplePod, container))
+	for deadline := time.Now().Add(5 * time.Second); log.Len() == 0 && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	root.stopStream()
+	log.Reset()
+	log.Add("pi-session: waiting for a session", "pi-session: session started",
+		"pi: tool call github.list_repositories")
+	return log
+}
+
+func snapshotActivity(t *testing.T) *model {
+	t.Helper()
+	root := snapshotUp(t)
+	root.Update(press("t"))
+	return root
+}
+
+// snapshotProxyLog selects the egress proxy on the Health tab, with a log as
+// the proxy writes it: slog lines and audit records.
+func snapshotProxyLog(t *testing.T) *model {
+	t.Helper()
+	root := snapshotSystem(t)
+	row, _ := root.state.Container(state.ProxyContainer)
+	root.Follow(row)
+	log := settle(t, root, state.ProxyContainer)
+	log.Reset()
+	stamp := sampleTime().UTC()
+	slog := func(at time.Time, level, msg, fields string) string {
+		return proxylog.ReadableLine(`{"time":"` + at.Format(time.RFC3339Nano) + `","level":"` + level + `","msg":"` +
+			msg + `"` + fields + `}`)
+	}
+	log.Add(slog(stamp, "INFO", "listening", `,"addr":":15001","mode":"transparent"`),
+		slog(stamp, "INFO", "resolver ready", `,"addr":"127.0.0.1:53"`))
+	for _, record := range sampleRecords(stamp) {
+		raw, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		log.Add(proxylog.ReadableLine(string(raw)))
+	}
+	log.Add(
+		slog(stamp.Add(4*time.Second), "WARN", "token exchange refused", `,"resource":"https://openrouter.ai/api/v1"`),
+	)
+	root.ui.Logs.Refresh(true)
 	return root
 }
 

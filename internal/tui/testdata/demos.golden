@@ -1,4 +1,4 @@
- keycard sandbox   home                                                                                                                          ● up
+ keycard sandbox    1 Home   2 Agents   3 Traffic   4 Health                                                                                     ● up
 
   ● ada@example.com's agent is running
   It acts as ada@example.com in zone wvqowjom…keycard.cloud, and does not hold any secrets. The egress proxy asks
@@ -15,18 +15,18 @@
                              │                                                                                          │
   TRY IT                     │  ▸ pi      pi coding agent                                                               │
      a  Open pi-session in th│            You chat with it in the terminal: a opens pi-session.                         │
-     o  Open the zone's event│            Asks for GitHub, OpenRouter API key, GitHub repository for pi to work in.     │
-     x  Open a shell in the a│                                                                                          │
-     p  Switch to another dem│    slack   Slack agent for GitHub and Linear                                             │
-                             │            It runs in the background and answers you where it listens. Run sandbox logs  │
-  RECENT ACTIVITY            │            to follow its log.                                                            │
-    hh:mm:ss  ▸ Bring-up star│            Asks for Slack bot token, Slack member ID, GitHub, Linear personal API key.   │
+     s  Send a request from t│            Asks for GitHub, OpenRouter API key, GitHub repository for pi to work in.     │
+     o  Open the zone's event│                                                                                          │
+     x  Open a shell in the a│    slack   Slack agent for GitHub and Linear                                             │
+     p  Switch to another dem│            It runs in the background and answers you where it listens. Its log is on     │
+                             │            the Agents tab.                                                               │
+  RECENT ACTIVITY            │            Asks for Slack bot token, Slack member ID, GitHub, Linear personal API key.   │
     hh:mm:ss  ✓ Start the tun│                                                                                          │
     hh:mm:ss  ✓ Install the c│    smoke   Smoke checks  ● running now                                                   │
-    hh:mm:ss  ✓ Checks: 6 of │            It runs the checks, then stays idle. c runs them again.                       │
+    hh:mm:ss  ✓ Checks: 6 of │            It runs the checks, then stays idle. s sends a request from it.               │
     hh:mm:ss  ✓ The sandbox i│            Asks for nothing.                                                             │
-                             │                                                                                          │
-                             │   ↑↓  choose    enter  switch    esc  cancel                                             │
+    hh:mm:ss  ▸ The agent sen│                                                                                          │
+    hh:mm:ss  ✓ GET https://a│   ↑↓  choose    enter  switch    esc  cancel                                             │
                              │                                                                                          │
                              ╰──────────────────────────────────────────────────────────────────────────────────────────╯
 
@@ -39,4 +39,4 @@
 
 
 
-  a  open pi-session   p  switch demo   o  zone events   x  shell   ?  keys   q  quit
+  a  open pi-session   s  send a request   p  switch demo   o  zone events   x  shell   ?  keys   q  quit

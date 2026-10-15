@@ -7,12 +7,87 @@ import (
 	"strconv"
 	"strings"
 
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/component"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/proxylog"
+	"github.com/keycardai/agent-sandbox-examples/internal/tui/state"
 )
 
 // nameWidth and targetWidth are the columns of what Keycard did.
 const nameWidth, targetWidth = 12, 24
+
+// Traffic is the dashboard's tab for what the agent asks for: what Keycard
+// did for each endpoint, then every decision of the egress proxy as it
+// makes it.
+type Traffic struct {
+	view
+}
+
+// NewTraffic returns the Traffic tab.
+func NewTraffic(ui *UI, sandbox *state.Sandbox) *Traffic {
+	return &Traffic{ui: ui, state: sandbox}
+}
+
+// View draws the summary over the feed.
+func (t *Traffic) View() string {
+	lines := t.top()
+	width, height := t.ui.Width-component.PageIndent, t.ui.BodyRows()-len(lines)
+	source := t.ui.Logs.Source()
+	return strings.Join(append(lines, t.ui.logPane(sourceTitle(source), nil, waitingText(source), width, height,
+		true)), "\n")
+}
+
+// Hints lists the tab's keys.
+func (t *Traffic) Hints() []component.Hint {
+	dns := "show DNS"
+	if t.ui.ShowDNS {
+		dns = "hide DNS"
+	}
+	return []component.Hint{
+		{Key: "d", Desc: dns},
+		{Key: "/", Desc: "filter"},
+		{Key: "f", Desc: "follow"},
+		{Key: "w", Desc: "wrap"},
+		{Key: "o", Desc: "zone events"},
+		{Key: "?", Desc: wordKeys},
+	}
+}
+
+// Show points the log pane at the feed.
+func (t *Traffic) Show() {
+	t.ui.Logs.Show(t.ui.TrafficSource())
+}
+
+// Keys turns the DNS lookups on and off, and scrolls and filters the feed.
+func (t *Traffic) Keys(msg tea.KeyPressMsg) tea.Cmd {
+	if key.Matches(msg, t.ui.Keys.DNS) {
+		t.ui.ShowDNS = !t.ui.ShowDNS
+		t.Show()
+		return nil
+	}
+	return t.ui.Logs.Keys(msg, t.ui.Keys)
+}
+
+// Layout sizes the log pane under the summary.
+func (t *Traffic) Layout() {
+	width := t.ui.Width - component.PageIndent - component.BorderCols
+	height := t.ui.BodyRows() - len(t.top())
+	t.ui.Logs.SetSize(max(width, 1), max(height-component.BorderRows-1, 1))
+}
+
+// top is the summary over the feed. It has a line per endpoint and a fixed
+// number more, so the feed's height stays put.
+func (t *Traffic) top() []string {
+	theme := t.ui.Styles
+	title := theme.SectionTitle.Render("WHAT KEYCARD DID")
+	lines := append(t.agentBar(), title)
+	for _, line := range t.keycardLines() {
+		lines = append(lines, "  "+line)
+	}
+	return append(lines, "")
+}
 
 // keycardLines says what the proxy did for each endpoint, then the blocked
 // hosts and DNS lookups. Its length does not depend on the traffic.

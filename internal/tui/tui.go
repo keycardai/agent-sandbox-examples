@@ -1,8 +1,11 @@
 // Package tui is the sandbox's terminal UI. It sets the sandbox up through
 // the same questions as `sandbox init`, and brings it up one step at a
-// time. Then Home says what Keycard did for the agent and what to try. The
-// tunnel and the mirror run as services, so quitting the TUI leaves the
-// sandbox up, and starting it again shows it.
+// time. Then Home says what Keycard did for the agent and what to try, the
+// Agents tab lists an agent for each person, sends requests from the one
+// selected and shows what came back, the Traffic tab shows each decision of
+// its egress proxy, and the Health tab shows the checks, its pod and every
+// log. The tunnel and the mirror run as services, so quitting the TUI
+// leaves the sandbox up, and starting it again shows it.
 //
 // The state package holds what the TUI knows and the rules that change it,
 // and the page package draws it. The root model here is the controller: it
@@ -16,7 +19,6 @@ import (
 	"sync"
 	"time"
 
-	"charm.land/bubbles/v2/help"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
@@ -29,6 +31,8 @@ const (
 	frameEvery = 120 * time.Millisecond
 	// pollEvery is how often the TUI reads the pods and the services.
 	pollEvery = 2 * time.Second
+	// logTail is how many lines of a container's log the TUI starts with.
+	logTail = 500
 	// busSize is how many messages can queue before Send waits.
 	busSize = 1024
 	// shutdownWait bounds Run's wait for the background work to end.
@@ -39,7 +43,8 @@ const (
 type screen int
 
 const (
-	// screenDashboard shows the sandbox's Home.
+	// screenDashboard shows the sandbox in tabs: Home, Agents, Traffic and
+	// Health.
 	screenDashboard screen = iota
 	// screenWelcome greets a first run, or says what the settings lack.
 	screenWelcome
@@ -49,6 +54,19 @@ const (
 	screenReview
 	// screenSettings lists the settings to change one.
 	screenSettings
+)
+
+// tab is a view of the dashboard. Home says what happens and what to do,
+// Agents is for working with the agents, Traffic for what they ask for,
+// and Health for how the sandbox is provisioned.
+type tab int
+
+const (
+	tabHome tab = iota
+	tabAgent
+	tabTraffic
+	tabHealth
+	tabCount
 )
 
 // Options configure the TUI.
@@ -65,12 +83,12 @@ type model struct {
 	state   *state.Sandbox
 	ui      *page.UI
 	bus     *bus
-	help    help.Model
 	// Background work runs in ctx, and Run waits for its goroutines in jobs.
 	ctx  context.Context //nolint:containedctx // The model owns its background work, which ends with Run's context.
 	jobs sync.WaitGroup
 
 	screen  screen
+	tab     tab
 	overlay overlay
 	// waiting is a question that waits for the open overlay to close.
 	waiting *overlay
@@ -79,6 +97,9 @@ type model struct {
 	setup    *page.Setup
 	settings *page.Settings
 	home     *page.Home
+	agents   *page.Agents
+	traffic  *page.Traffic
+	health   *page.Health
 	demos    *page.Demos
 
 	// polling counts the reads on their way. tickPlanned is set while the
@@ -86,27 +107,36 @@ type model struct {
 	polling     int
 	tickPlanned bool
 	stale       bool
-	// trafficStop stops following the proxy's audit log.
+	// stream names the container log the TUI follows, and streamStop stops
+	// following it. trafficStop stops following the proxy's audit log.
+	stream      string
+	streamStop  context.CancelFunc
 	trafficStop context.CancelFunc
 	// The last machine checks run in preflightCtx, until preflightStop.
 	preflightCtx  context.Context //nolint:containedctx // The checks of one run go on across messages.
 	preflightStop context.CancelFunc
-	// shownPod is the selected agent's pod, which Home shows.
+	// shownPod is the selected agent's pod, which every tab shows.
 	shownPod string
 	// questions ends the setup's run of questions while it asks, and
 	// replies takes the answer to the question that shows.
 	questions chan struct{}
 	replies   chan<- reply
 
+	// askTitle titles the questions outside the wizard, or is "" for setup.
+	askTitle string
 	// The wizard and the settings go back to wizardBack and settingsBack.
 	wizardBack   screen
 	settingsBack screen
+
+	// mouse turns on mouse reporting, for the wheel. It is off by default,
+	// so the terminal can select and copy text.
+	mouse bool
 }
 
 // overlay is what covers the screen: nothing, the help, a confirmation, a
-// setup question, the quit dialog or the list of demos. It holds data only:
-// a confirmation's yes is the message that y sends, which Update acts on
-// then.
+// setup question, the quit dialog or a list to choose from. It holds data
+// only: a confirmation's yes is the message that y sends, which Update
+// acts on then.
 type overlay struct {
 	kind  overlayKind
 	title string
@@ -120,11 +150,15 @@ const (
 	overlayNone overlayKind = iota
 	overlayHelp
 	overlayConfirm
-	// overlayQuestion is the setup's question, which the setup page keeps.
-	// It is part of the wizard's screen.
+	// overlayQuestion is the setup's question outside the wizard, which
+	// the setup page keeps. In the wizard, it is part of the screen.
 	overlayQuestion
 	overlayQuit
 	overlayDemo
+	// overlayLogs lists every log, for looking into a problem.
+	overlayLogs
+	// overlayAgents lists every agent, to switch to another.
+	overlayAgents
 )
 
 // layer is how a screen or an overlay draws, and how it takes a key.
@@ -150,8 +184,8 @@ func (m *model) screenLayer() layer {
 }
 
 // overlayLayer is how the open overlay draws and takes a key, or false
-// when none is open. The setup's question draws as part of the wizard's
-// screen, so it draws nothing over it.
+// when none is open. An overlay that draws nothing leaves the screen as it
+// is.
 func (m *model) overlayLayer() (layer, bool) {
 	switch m.overlay.kind {
 	case overlayHelp:
@@ -162,8 +196,12 @@ func (m *model) overlayLayer() (layer, bool) {
 		return layer{m.quitModal, m.quitKeys}, true
 	case overlayDemo:
 		return layer{m.demos.View, m.demoKeys}, true
+	case overlayLogs:
+		return layer{m.health.LogsView, m.logsKeys}, true
+	case overlayAgents:
+		return layer{m.agents.PickerView, m.agentListKeys}, true
 	case overlayQuestion:
-		return layer{func() string { return "" }, func(msg tea.KeyPressMsg) tea.Cmd { return m.answer(msg) }}, true
+		return layer{m.questionModal, func(msg tea.KeyPressMsg) tea.Cmd { return m.answer(msg) }}, true
 	case overlayNone:
 	}
 	return layer{}, false
@@ -197,12 +235,18 @@ func Run(ctx context.Context, opts Options) error {
 func newModel(ctx context.Context, session *sandbox.Session) *model {
 	pageUI := page.NewUI()
 	sandbox := state.New(session, pageUI.Logs.Log)
-	root := &model{session: session, state: sandbox, ui: pageUI, bus: newBus(ctx), help: help.New(), ctx: ctx}
+	root := &model{session: session, state: sandbox, ui: pageUI, bus: newBus(ctx), ctx: ctx}
 	root.welcome = page.NewWelcome(pageUI, sandbox)
 	root.setup = page.NewSetup(pageUI, sandbox)
 	root.settings = page.NewSettings(pageUI, sandbox)
 	root.home = page.NewHome(pageUI, sandbox)
+	root.agents = page.NewAgents(pageUI, sandbox, root)
+	root.traffic = page.NewTraffic(pageUI, sandbox)
+	root.health = page.NewHealth(pageUI, sandbox, root)
 	root.demos = page.NewDemos(pageUI, sandbox)
+	if len(sandbox.Run.Steps) > 0 {
+		pageUI.Logs.Show(state.StepSource(sandbox.Run.Steps[0].Step.ID))
+	}
 	return root
 }
 

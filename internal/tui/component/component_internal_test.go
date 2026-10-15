@@ -256,3 +256,27 @@ func TestBoxLongTitle(t *testing.T) {
 		}
 	}
 }
+
+// TestLogViewSameSize draws the log again at the same size only when the
+// log changed, as the Health tab sizes it on every frame.
+func TestLogViewSameSize(t *testing.T) {
+	t.Parallel()
+	refreshes := 0
+	view := NewLogView(func(_ string, lines []string) []string {
+		refreshes++
+		return lines
+	})
+	view.SetSize(40, 10)
+	view.Log("a").Add("one")
+	view.Show("a")
+	before := refreshes
+	view.SetSize(40, 10)
+	if refreshes != before {
+		t.Errorf("SetSize to the same size drew the log again, want it kept")
+	}
+	view.Log("a").Add("two")
+	view.SetSize(40, 10)
+	if !strings.Contains(ansi.Strip(view.View()), "two") {
+		t.Errorf("view = %q, want the new line", ansi.Strip(view.View()))
+	}
+}

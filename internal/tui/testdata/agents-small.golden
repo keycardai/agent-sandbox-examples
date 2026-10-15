@@ -1,0 +1,22 @@
+ keycard sandbox    1 Home   2 Agents   3 Traffic   4 Health               ● up
+
+  ┏━ Agent ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓ ┌─ Container log · u7k2vjw9ab/agent ┐
+  ┃ ● ada@example.com                    ┃ │ ● following                       │
+  ┃   running · pod u7k2vjw9ab           ┃ │ pi-session: waiting for a session │
+  ┃ 1 of 3. enter switches to another.   ┃ │ pi-session: session started       │
+  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ │ pi: tool call github.list_reposit │
+  ┌─ Try a request ──────────────────────┐ │                                   │
+  │ ▸ GET api.github.com/user            │ │                                   │
+  │   GET openrouter.ai/api/v1/key       │ │                                   │
+  │   GET pypi.org/pypi/requests/json    │ │                                   │
+  │   GET example.com/                   │ │                                   │
+  │                                      │ │                                   │
+  │ Needs ada@example.com's GitHub       │ │                                   │
+  │ credential, which the proxy gets     │ │                                   │
+  │ from Keycard.                        │ │                                   │
+  │                                      │ │                                   │
+  │ Enter sends it from                  │ │                                   │
+  │ ada@example.com's agent, with no     │ │                                   │
+  │ credential. The egress proxy asks    │ │                                   │
+  └──────────────────────────────────────┘ └───────────────────────────────────┘
+  enter  switch agent   ↓  requests   tab  next pane   a  open pi-session   n …

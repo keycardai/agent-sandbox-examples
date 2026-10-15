@@ -34,23 +34,43 @@ step. A review lists the settings before the launch. When a saved setting
 stops the bring-up, such as a credential with no value, the TUI says which
 one and asks only that step's questions.
 
-After the launch, Home shows the bring-up as it runs, or where it stopped
-and why. Once the agent runs, Home says what Keycard did for each of the
-demo's endpoints, which hosts the proxy blocked, what to try next, and the
-latest activity.
+After the launch, the TUI has four tabs. The number keys switch between
+them.
+
+| Tab | What it shows |
+|---|---|
+| 1 Home | the bring-up as it runs, or where it stopped and why. Once the agent runs: what Keycard did for each of the demo's endpoints, which hosts the proxy blocked, what to try next, and the latest activity. |
+| 2 Agents | three panes. Top left, the agent every tab shows and how its pod is. Enter there lists every agent to switch to. Under it, the requests the agent can send, one per endpoint, and one to a host the demo does not allow. ↑↓ chooses one, and Enter sends it from the agent through the egress proxy. The pane on the right shows the agent's log, or with the requests in focus, the last response: its status, its body, whether the proxy got the person's credential from Keycard, and the `curl` command the agent ran. Tab goes round the panes. |
+| 3 Traffic | the same summary as Home, over every decision of the egress proxy as it makes it. `d` adds the DNS lookups. |
+| 4 Health | whether everything works: the agent runs, its requests go through Keycard, Keycard can verify the agent, and the checks pass. A check that fails says what to do. Below, the log of the one selected. `l` lists every log, for looking into a problem. |
 
 `u` brings the sandbox up, or starts again at the step that failed. `a`
 hands the terminal to the demo's agent, such as pi, and the TUI comes back
-when it exits. `o` opens the zone's events in the Keycard console,
-where the zone records each credential it issues. `x` opens a shell in the
-agent, `c` runs the checks, `R` restarts the agent's pod, `e` opens the
-settings, and `?` lists every key.
+when it exits. `s` sends a request from the agent. `x` opens a shell in
+the agent, and `R` restarts the agent's pod. `a`, `s`, `x` and `R` act on
+the agent selected on the Agents tab. `o` opens the zone's events in the
+Keycard console, where the zone records each credential it issues. `c`
+runs the checks, `t` shows the activity log of everything that happened,
+`e` opens the settings, and `?` lists every key.
+
+`n` gives one more person an agent in the current demo. It asks who, from
+the zone's users without an agent in it, and the demo's questions for that
+person, such as their Slack member ID. When the sandbox is up, the new agent
+comes up right away: the TUI runs zone-setup and creates the person's
+sandbox, and leaves the cluster, the tunnel and the other agents as they
+are. `X` on the Agents tab removes the selected agent from the current
+demo. When the cluster runs, it deletes the person's sandbox and pod, and
+runs zone-setup, which turns off the person's access rules in the zone.
+Otherwise it takes the person off the settings, and the next bring-up
+turns off their access rules. The agent of the person setup picked stays.
 
 `p` switches the demo. It lists each demo with what it does and what setup
 asks for it. Choosing one asks that demo's questions, such as pi's
 OpenRouter key and repository, then shows the review. Enter there brings the
 sandbox up with the new demo: it sets the zone up for the demo's resources,
-and replaces the agent's pod.
+and replaces the agent's pod. People added with `n` keep their agent in the
+demo they were added to. Switching away deletes their sandboxes, and
+switching back brings them up again.
 
 The tunnel and the mirror run as background processes. Quitting the TUI
 leaves the sandbox up, and the TUI shows it again when it starts. The quick
@@ -153,6 +173,8 @@ that person. To give someone else an agent in one demo, list them under
         default: you@example.com
         demos:
             pi: [grace@example.com]
+
+In the TUI, `n` adds a person to the demo it runs.
 
 Each person gets their own sandbox and pod, named for their user ID, and
 their agent acts as them. A credential that each person signs in for, such

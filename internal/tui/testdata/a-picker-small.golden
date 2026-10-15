@@ -1,0 +1,22 @@
+ keycard sandbox    1 Home   2 Agents   3 Traffic   4 Health               ● up
+
+  ┏━ Agent ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓ ┌─ Container log · u7k2vjw9ab/agent ┐
+  ┃ ● ada@example.com                    ┃ │ ● following                       │
+  ┃ ╭──────────────────────────────────────────────────────────────────────╮on │
+  ┃ │                                                                      │   │
+  ┗━│  Switch agent                                                        │it │
+  ┌─│  Each person's agent acts as them. Every tab shows the agent you     │   │
+  │ │  choose.                                                             │   │
+  │ │                                                                      │   │
+  │ │  ▸ ● ada@example.com                running · pod u7k2vjw9ab         │   │
+  │ │    ⠸ grace@example.com              starting · pod p9x4starts        │   │
+  │ │    ○ linus@example.com              not brought up yet. u brings i…  │   │
+  │ │                                                                      │   │
+  │ │   ↑↓  choose    enter  switch    esc  close                          │   │
+  │ │                                                                      │   │
+  │ ╰──────────────────────────────────────────────────────────────────────╯   │
+  │ Enter sends it from                  │ │                                   │
+  │ ada@example.com's agent, with no     │ │                                   │
+  │ credential. The egress proxy asks    │ │                                   │
+  └──────────────────────────────────────┘ └───────────────────────────────────┘
+  enter  switch agent   ↓  requests   tab  next pane   a  open pi-session   n …

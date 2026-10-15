@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -12,6 +15,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
+	"github.com/keycardai/agent-sandbox-examples/internal/tui/component"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/page"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/proxylog"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/state"
@@ -32,11 +36,29 @@ const (
 	// reasonUnanswered is the reason on a request the server did not
 	// answer.
 	reasonUnanswered = "upstream_failed"
+	githubUserURL    = "https://api.github.com/user"
+	// paneAgent and paneRequests are the Agents tab's panes with the agent
+	// and with the requests.
+	paneAgent    = "Agent"
+	paneRequests = "Try a request"
 	// The kinds of a demo's inputs, as its scenario file names them.
 	inputGitHub = "github"
 	inputSecret = "secret"
 	inputText   = "text"
 )
+
+// focusedTitle finds the title of the pane with focus, which has the heavy
+// border.
+var focusedTitle = regexp.MustCompile(`┏━ (.+?) ━`)
+
+// focusedPane names the pane with focus in a view.
+func focusedPane(view string) string {
+	match := focusedTitle.FindStringSubmatch(view)
+	if match == nil {
+		return ""
+	}
+	return match[1]
+}
 
 // piScenario is the pi demo's endpoints, under the default demo's name so
 // that the model takes it for the settings' demo.
@@ -56,7 +78,8 @@ func piScenario() *sandbox.Scenario {
 			map[string]any{urlKey: "https://pypi.org"},
 			map[string]any{urlKey: "https://files.pythonhosted.org"},
 		},
-		Run: sandbox.ScenarioRun{Mode: sandbox.ModeShell, Command: []string{"pi-session"}},
+		Title: samplePi,
+		Run:   sandbox.ScenarioRun{Mode: sandbox.ModeShell, Command: []string{"pi-session"}},
 	}
 }
 
@@ -133,16 +156,27 @@ func upModel(t *testing.T) *model {
 	return root
 }
 
-// quietModel is a sandbox that is up, on an existing cluster that does not
-// exist: work it starts only reads, and fails.
+// quietModel is a sandbox that is up with three agents, on an existing
+// cluster that does not exist: work it starts only reads, and fails.
 func quietModel(t *testing.T) *model {
 	t.Helper()
-	root := upModel(t)
+	root := teamModel(t)
 	writeSettings(t, root)
 	root.session.Local().Settings[sandbox.KeyKubeContext] = "keycard-test-none"
 	root.state.ResetSteps()
 	root.state.Demos.List = sampleDemos()
 	return root
+}
+
+// respond answers the request the Agents tab asked for with response,
+// after the proxy's record of it, and returns the view.
+func respond(root *model, send tea.Cmd, record proxylog.Record, response sandbox.AgentResponse) string {
+	asked, _ := send().(page.SendRequestMsg)
+	root.state.Agents.Traffic.Add(samplePod, record)
+	root.Update(page.RequestDoneMsg{
+		Agent: asked.Agent, Seq: asked.Seq, Method: asked.Method, URL: asked.URL, Response: response,
+	})
+	return ansi.Strip(root.View().Content)
 }
 
 // TestHomeStates says what the sandbox does in each state, and what to do.
@@ -188,12 +222,223 @@ func TestHomeStates(t *testing.T) {
 			sampleUser + "'s agent is running", "acts as " + sampleUser, "does not hold any secrets", "WHAT KEYCARD DID",
 			"GitHub", "1 request, credential added", "No credential: Keycard's policy does not allow it",
 			"not used yet", "no credential needed", "Blocked", sampleDenied, "TRY IT", "Open pi-session",
+			"Send a request from the agent",
 		}},
 	} {
 		view := ansi.Strip(tc.root.View().Content)
 		for _, want := range tc.want {
 			if !strings.Contains(view, want) {
 				t.Errorf("%s: Home lacks %q:\n%s", name, want, view)
+			}
+		}
+	}
+}
+
+// TestAgentTab shows the agent and the requests on the left, and the
+// agent's log on the right. With the requests in focus, the right shows
+// the last response, and the request selected says what it needs.
+func TestAgentTab(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	root.Update(press("2"))
+	view := ansi.Strip(root.View().Content)
+	for _, want := range []string{
+		paneAgent, sampleUser, "running · pod " + samplePod, paneRequests, "GET api.github.com/user",
+		"Needs " + sampleUser + "'s GitHub", "Press a to open pi-session", "Container log",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("Agents tab lacks %q:\n%s", want, view)
+		}
+	}
+	down := tea.KeyPressMsg{Code: tea.KeyDown}
+	root.Update(down)
+	if view = ansi.Strip(root.View().Content); focusedPane(view) != paneRequests ||
+		!strings.Contains(view, "Response") || !strings.Contains(view, "Nothing sent yet") {
+		t.Errorf("down from the agent: focus %q, want the requests and the response:\n%s", focusedPane(view), view)
+	}
+	for range 5 {
+		root.Update(down)
+	}
+	if view = ansi.Strip(root.View().Content); !strings.Contains(view, "Not on the allow list") {
+		t.Errorf("the last request does not say it is blocked:\n%s", view)
+	}
+}
+
+// TestUpToTheAgent goes from the requests back to the agent and its log,
+// up past the first request.
+func TestUpToTheAgent(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	root.Update(press("2"))
+	for range 5 {
+		root.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	for range 4 {
+		root.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	}
+	if view := ansi.Strip(root.View().Content); focusedPane(view) != paneAgent ||
+		!strings.Contains(view, "▸ GET api.github.com/user") || !strings.Contains(view, "Container log") {
+		t.Errorf("up past the first request: focus %q, want the agent and its log, the first request selected:\n%s",
+			focusedPane(view), view)
+	}
+}
+
+// TestAgentPanes goes round the panes with tab, and esc on the right goes
+// back to the pane it shows for.
+func TestAgentPanes(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	root.Update(press("2"))
+	tab := tea.KeyPressMsg{Code: tea.KeyTab}
+	for _, want := range []string{paneRequests, "Response", paneAgent} {
+		root.Update(tab)
+		if got := focusedPane(ansi.Strip(root.View().Content)); got != want {
+			t.Fatalf("focus = %q after tab, want %q", got, want)
+		}
+	}
+	root.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	root.Update(tab)
+	if got := focusedPane(ansi.Strip(root.View().Content)); got != "Response" ||
+		root.ui.Logs.Source() != state.SourceResponse {
+		t.Fatalf("the right pane after the requests: focus %q, source %q; want the response", got,
+			root.ui.Logs.Source())
+	}
+	root.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if got := focusedPane(ansi.Strip(root.View().Content)); got != paneRequests {
+		t.Errorf("esc on the response: focus %q, want the requests", got)
+	}
+}
+
+// TestSendTrial sends a request from the agent, and says what came back,
+// what Keycard did, and the command the agent ran.
+func TestSendTrial(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	root.Update(press("2"))
+	_, send := root.Update(press("s"))
+	if send == nil || !strings.Contains(ansi.Strip(root.View().Content), "Waiting for the response") {
+		t.Fatal("s did not send")
+	}
+	view := respond(
+		root, send,
+		newRecord(time.Now(), scopeRequest, githubHost, "/user", verdictAllow, sampleAllowed, githubEndpoint),
+		sandbox.AgentResponse{Status: http.StatusOK, Body: `{"login":"ada"}`, Took: 412 * time.Millisecond},
+	)
+	for _, want := range []string{
+		"200 OK", "412ms", "The proxy got " + sampleUser + "'s GitHub credential",
+		`"login": "ada"`, "In the agent's container", "curl -sS -m 20 -X GET",
+		"-H 'Authorization: Bearer placeholder'", githubUserURL,
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("response lacks %q:\n%s", want, view)
+		}
+	}
+	activity, _ := root.ui.Logs.Log(state.SourceActivity).Snapshot()
+	if last := activity[len(activity)-1]; !strings.Contains(last,
+		"✓ "+sampleUser+"'s agent: GET https://api.github.com/user: 200 OK") {
+		t.Errorf("activity ends with %q, want the request", last)
+	}
+}
+
+// wideCaption is wide enough for a response's caption to show whole.
+const wideCaption = 200
+
+// TestAgentVerdicts says what Keycard did with a request it refused, and
+// with one to a host off the allow list.
+func TestAgentVerdicts(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	root.Update(tea.WindowSizeMsg{Width: wideCaption, Height: 40})
+	root.Update(press("2"))
+	down := tea.KeyPressMsg{Code: tea.KeyDown}
+	root.Update(down)
+	for _, tc := range []struct {
+		moves    int
+		record   proxylog.Record
+		url      string
+		response sandbox.AgentResponse
+		want     string
+	}{
+		{
+			1, newRecord(time.Now(), scopeRequest, routerHost, "/api/v1/key", verdictDeny, reasonRefused, routerEndpoint),
+			"https://openrouter.ai/api/v1/key",
+			sandbox.AgentResponse{Status: http.StatusForbidden},
+			"No credential: Keycard's policy does not allow it",
+		},
+		{
+			2, newRecord(time.Now(), proxylog.ScopeDNS, sampleDenied, "", verdictDeny, sampleReason, ""),
+			"https://example.com/",
+			sandbox.AgentResponse{Failure: "curl: (6) Could not resolve host: example.com"},
+			"The proxy refused it: not on the sandbox's allow list",
+		},
+	} {
+		for range tc.moves {
+			root.Update(down)
+		}
+		_, send := root.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if view := respond(root, send, tc.record, tc.response); !strings.Contains(view, tc.want) {
+			t.Errorf("%s: response lacks %q:\n%s", tc.url, tc.want, view)
+		}
+	}
+}
+
+// TestSendNeedsTheAgent refuses to send before the agent runs.
+func TestSendNeedsTheAgent(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	root.state.Agents.Pods = root.state.Agents.Pods[:2]
+	if _, cmd := root.Update(press("s")); cmd != nil {
+		t.Error("s sent without an agent")
+	}
+	if !strings.Contains(root.ui.Toast.Text, "not running") {
+		t.Errorf("notice = %q, want it to say the agent is not running", root.ui.Toast.Text)
+	}
+}
+
+// TestTrafficTab sums up what Keycard did, and shows the feed with the
+// DNS lookups on d.
+func TestTrafficTab(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	root.ui.Logs.Log(state.SourceTraffic).Add(sampleRecords(time.Now())[2].Row())
+	root.Update(press("3"))
+	view := ansi.Strip(root.View().Content)
+	for _, want := range []string{
+		"WHAT KEYCARD DID", "Every request through the egress proxy", sampleUserPath,
+		"show DNS",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("Traffic tab lacks %q:\n%s", want, view)
+		}
+	}
+	root.Update(press("d"))
+	if view = ansi.Strip(root.View().Content); !strings.Contains(view, "with DNS lookups") ||
+		!strings.Contains(view, "hide DNS") {
+		t.Errorf("after d, the Traffic tab does not show the lookups:\n%s", view)
+	}
+}
+
+// TestTabSizes draws every tab, down and up, at a laptop size and the
+// smallest size, inside the window.
+func TestTabSizes(t *testing.T) {
+	t.Parallel()
+	for _, build := range []func(*testing.T) *model{testModel, upModel} {
+		root := build(t)
+		root.screen = screenDashboard
+		for _, size := range []tea.WindowSizeMsg{{Width: 140, Height: 40}, {Width: 80, Height: 22}} {
+			root.Update(size)
+			for _, key := range []string{"1", "2", "3", "4"} {
+				root.Update(press(key))
+				lines := strings.Split(ansi.Strip(root.View().Content), "\n")
+				if len(lines) != size.Height {
+					t.Errorf("%dx%d tab %s: %d lines, want %d", size.Width, size.Height, key, len(lines), size.Height)
+				}
+				for _, line := range lines {
+					if ansi.StringWidth(line) > size.Width {
+						t.Errorf("%dx%d tab %s: line wider than the window: %q", size.Width, size.Height, key, line)
+						break
+					}
+				}
 			}
 		}
 	}
@@ -377,6 +622,306 @@ func TestBlockedReasons(t *testing.T) {
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("Home lacks %q:\n%s", want, view)
+		}
+	}
+}
+
+// TestHealthChecks marks what needs a look with what to do, says
+// everything works when it does, and opens any log from the list of every
+// log.
+func TestHealthChecks(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	root.Update(tea.WindowSizeMsg{Width: 150, Height: 42})
+	root.Update(press("4"))
+	checkHealth := func(name string, wants ...string) {
+		t.Helper()
+		view := ansi.Strip(root.View().Content)
+		for _, want := range wants {
+			if !strings.Contains(view, want) {
+				t.Errorf("%s: Health lacks %q:\n%s", name, want, view)
+			}
+		}
+	}
+	checkHealth("a refused credential", "! Something needs a look", "Keycard refused a credential once",
+		"The agent runs · log", "The agent's own output")
+	root.state.Agents.Traffic.Reset(samplePod)
+	for _, record := range sampleRecords(time.Now().Add(-time.Minute)) {
+		if !record.RefusedCredential() {
+			root.state.Agents.Traffic.Add(samplePod, record)
+		}
+	}
+	checkHealth("all well", "✓ Everything works", "credential added", "Not run in this session")
+	root.state.Reads.Status.Tunnel.Running = false
+	checkHealth("the tunnel down", "The sandbox is not running", "The tunnel is down", "u brings the sandbox up again")
+	root.Update(press("l"))
+	for range 3 {
+		root.Update(press("j"))
+	}
+	root.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if source := root.ui.Logs.Source(); source != state.ServiceSource(sandbox.ServiceMirror) {
+		t.Errorf("the mirror from every log shows %q", source)
+	}
+	checkHealth("the mirror's log", "Mirror · log", "serves the cluster's public keys")
+	root.state.Reads.Status.ClusterErr = fmt.Errorf("%w: cannot list k3d clusters", sandbox.ErrDocker)
+	checkHealth("the cluster check failed", "cannot list k3d clusters", "Start Docker")
+}
+
+// errRefused is a read of the pods that the cluster refused.
+var errRefused = errors.New("kubectl get pods: connection refused")
+
+// TestPodsError says why there is no pod when the pods cannot be read, on
+// the Agents tab and on the Health tab.
+func TestPodsError(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	root.Update(podsMsg{agents: root.state.Agents.List, err: errRefused})
+	for _, tab := range []string{"2", "4"} {
+		root.Update(press(tab))
+		if view := ansi.Strip(root.View().Content); !strings.Contains(view, "connection refused") {
+			t.Errorf("tab %s does not say why there is no pod:\n%s", tab, view)
+		}
+	}
+}
+
+// TestLogsListAfterFewerSteps keeps the list of every log's cursor on a
+// log when the list grows shorter, as when the settings move to an
+// existing cluster, which has fewer steps.
+func TestLogsListAfterFewerSteps(t *testing.T) {
+	t.Parallel()
+	root := testModel(t)
+	root.screen = screenDashboard
+	root.Update(press("l"))
+	for range len(root.health.LogEntries()) {
+		root.Update(press("j"))
+	}
+	root.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	root.session.Local().Settings[sandbox.KeyKubeContext] = "keycard-test-none"
+	root.state.ResetSteps()
+	root.Update(press("l"))
+	root.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if source := root.ui.Logs.Source(); source != state.SourceActivity {
+		t.Errorf("the last log of a shorter list shows %q, want the activity", source)
+	}
+}
+
+// TestOldResponseStaysOut shows a response only for the request it answers.
+// One that comes back after a newer request does not take its place.
+func TestOldResponseStaysOut(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	root.Update(press("2"))
+	_, first := root.Update(press("s"))
+	root.agents.Reset()
+	_, second := root.Update(press("s"))
+	record := newRecord(time.Now(), scopeRequest, githubHost, "/user", verdictAllow, sampleAllowed, githubEndpoint)
+	view := respond(root, first, record, sandbox.AgentResponse{Status: http.StatusOK, Body: `{"login":"old"}`})
+	if strings.Contains(view, `"login": "old"`) || !strings.Contains(view, "Waiting for the response") {
+		t.Errorf("the first request's response shows for the second:\n%s", view)
+	}
+	view = respond(root, second, record, sandbox.AgentResponse{Status: http.StatusOK, Body: `{"login":"ada"}`})
+	if !strings.Contains(view, `"login": "ada"`) {
+		t.Errorf("the second request's response does not show:\n%s", view)
+	}
+}
+
+// healthFailure is one way the sandbox fails, and what the Health tab says
+// about it.
+type healthFailure struct {
+	name  string
+	cause func(root *model)
+	want  []string
+	// source is the log the check shows, or "" for a check that passes.
+	source string
+}
+
+// TestHealthFailures says what fails, with its own log under it, for an
+// issuer that Keycard cannot verify, a proxy that crashes and a firewall
+// that did not start. With an issuer URL of the operator's, there is no
+// tunnel to ask for.
+func TestHealthFailures(t *testing.T) {
+	t.Parallel()
+	crash := func(name string) func(root *model) {
+		return func(root *model) {
+			for i, row := range root.state.Agents.Pods {
+				if row.Container.Name == name {
+					ctr := &root.state.Agents.Pods[i].Container
+					ctr.Ready, ctr.State, ctr.ExitCode = false, state.StateTerminated, 1
+				}
+			}
+			root.syncAgents()
+		}
+	}
+	for _, tc := range []healthFailure{
+		{"issuer", func(root *model) {
+			i := slices.IndexFunc(root.state.Run.Steps, func(row *state.StepRow) bool { return row.Step.ID == sandbox.StepIssuer })
+			root.state.Run.Steps[i].State = state.StepFailed
+			root.state.Run.Steps[i].Err = fmt.Errorf("%w: discovery answered 404", sandbox.ErrIssuer)
+		}, []string{"✕ Keycard can verify the agent", "discovery answered 404"}, state.StepSource(sandbox.StepIssuer)},
+		{
+			"proxy", crash(state.ProxyContainer),
+			[]string{"✕ Its requests go through Keycard", "R restarts the pod"},
+			state.ContainerSource(samplePod, state.ProxyContainer),
+		},
+		{
+			"firewall", crash("egress-netsetup"),
+			[]string{"The firewall did not start", "R restarts the pod"},
+			state.ContainerSource(samplePod, "egress-netsetup"),
+		},
+		{"own issuer", func(root *model) {
+			settings := root.session.Local().Settings
+			settings[sandbox.KeyIssuer], settings[sandbox.KeyTunnel] = "https://keys.example.com", ""
+			root.state.ResetSteps()
+			root.state.Reads.Status.Tunnel.Running = false
+		}, []string{"✓ Keycard can verify the agent", "at your issuer's URL"}, ""},
+	} {
+		checkFailure(t, tc)
+	}
+}
+
+// checkFailure causes a failure on a sandbox that is up, and checks the
+// Health tab, with the cursor on the check that shows the failure's log.
+func checkFailure(t *testing.T, tc healthFailure) {
+	t.Helper()
+	root := upModel(t)
+	root.Update(tea.WindowSizeMsg{Width: 150, Height: 42})
+	tc.cause(root)
+	root.Update(press("4"))
+	for range 3 {
+		if tc.source == "" || root.ui.Logs.Source() == tc.source {
+			break
+		}
+		root.Update(press("j"))
+	}
+	view := ansi.Strip(root.View().Content)
+	for _, want := range tc.want {
+		if !strings.Contains(view, want) {
+			t.Errorf("%s: Health lacks %q:\n%s", tc.name, want, view)
+		}
+	}
+	if tc.source != "" && root.ui.Logs.Source() != tc.source {
+		t.Errorf("%s: the check's log is %q, want %q", tc.name, root.ui.Logs.Source(), tc.source)
+	}
+	if strings.Contains(view, "The tunnel is down") {
+		t.Errorf("%s: Health asks for a tunnel:\n%s", tc.name, view)
+	}
+}
+
+// TestHealthShowsTheStep opens the Health tab on the log of the step that
+// stopped the bring-up, which Home's hint points at.
+func TestHealthShowsTheStep(t *testing.T) {
+	t.Parallel()
+	root := testModel(t)
+	root.screen = screenDashboard
+	root.Update(stepDoneMsg{index: 1, err: sandbox.ErrDocker})
+	root.Update(press("4"))
+	if want := state.StepSource(root.state.Run.Steps[1].Step.ID); root.ui.Logs.Source() != want {
+		t.Errorf("4 after a failed step shows %q, want %q", root.ui.Logs.Source(), want)
+	}
+}
+
+// TestHealthAfterAStop says where the operator stopped the bring-up, and
+// shows neither the stopped issuer step nor the stopped checks as failed.
+func TestHealthAfterAStop(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	root.screen = screenDashboard
+	root.Update(tea.WindowSizeMsg{Width: 150, Height: 42})
+	for _, id := range []sandbox.StepID{sandbox.StepChecks, sandbox.StepIssuer} {
+		index := slices.IndexFunc(root.state.Run.Steps, func(row *state.StepRow) bool { return row.Step.ID == id })
+		root.Update(stepDoneMsg{index: index, err: context.Canceled})
+	}
+	root.Update(press("4"))
+	view := ansi.Strip(root.View().Content)
+	for _, want := range []string{
+		"○ You stopped the bring-up at: Verify the issuer with Keycard", "✓ Keycard can verify the agent",
+		"Stopped. c runs them again",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("Health lacks %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "context canceled") || strings.Contains(view, "Their log is below") {
+		t.Errorf("Health shows the stop as a failure:\n%s", view)
+	}
+}
+
+// TestHelpFits draws every key's help within the window, the smallest one
+// too.
+func TestHelpFits(t *testing.T) {
+	t.Parallel()
+	for _, size := range [][2]int{{component.MinWidth, component.MinHeight}, {140, 40}} {
+		root := upModel(t)
+		root.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		root.Update(press("?"))
+		modal := ansi.Strip(root.helpModal())
+		lines := strings.Split(modal, "\n")
+		for _, line := range lines {
+			if ansi.StringWidth(line) > size[0] {
+				t.Errorf("at %dx%d, a line of the help is %d wide:\n%s", size[0], size[1], ansi.StringWidth(line), modal)
+				break
+			}
+		}
+		if len(lines) > size[1] || !strings.Contains(modal, "X remove the agent") {
+			t.Errorf("at %dx%d, the help takes %d rows, or lacks X:\n%s", size[0], size[1], len(lines), modal)
+		}
+	}
+}
+
+// TestHealthWhenTheProxyLogFails says on Health that the proxy's log cannot
+// be read, as Home does, instead of saying no request went out yet.
+func TestHealthWhenTheProxyLogFails(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	root.Update(tea.WindowSizeMsg{Width: 150, Height: 42})
+	root.state.Agents.Traffic.Reset(samplePod)
+	root.state.Agents.Traffic.SetErr(errRefused)
+	root.Update(press("4"))
+	view := ansi.Strip(root.View().Content)
+	if !strings.Contains(view, "Cannot read the proxy's log: kubectl get pods: connection refused") ||
+		strings.Contains(view, "No requests yet") {
+		t.Errorf("Health does not say the proxy's log cannot be read:\n%s", view)
+	}
+}
+
+// TestHomeFirewallFailed says on Home that the agent does not run when its
+// pod's firewall did not start, as Health and the Agents tab do, instead of
+// saying the pod is starting.
+func TestHomeFirewallFailed(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	for i, row := range root.state.Agents.Pods {
+		ctr := &root.state.Agents.Pods[i].Container
+		switch row.Container.Name {
+		case "egress-netsetup":
+			ctr.State, ctr.ExitCode = state.StateTerminated, 1
+		case state.AgentContainer:
+			ctr.Ready, ctr.State = false, "waiting"
+		}
+	}
+	root.syncAgents()
+	view := ansi.Strip(root.View().Content)
+	if !strings.Contains(view, "the firewall did not start") || strings.Contains(view, "pod is starting") {
+		t.Errorf("Home does not say the firewall did not start:\n%s", view)
+	}
+}
+
+// TestTabsAgreeOnThePhase says on Home, the Agents tab and Health that the
+// sandbox is being read, or where the bring-up stopped.
+func TestTabsAgreeOnThePhase(t *testing.T) {
+	t.Parallel()
+	for want, setup := range map[string]func(root *model){
+		"Reading the sandbox":             func(root *model) { root.state.Reads.Done = false },
+		"The bring-up stopped at: Create": func(root *model) { root.Update(stepDoneMsg{index: 1, err: sandbox.ErrDocker}) },
+	} {
+		root := testModel(t)
+		root.Update(tea.WindowSizeMsg{Width: 150, Height: 42})
+		setup(root)
+		for _, tab := range []string{"1", "2", "4"} {
+			root.Update(press(tab))
+			if view := ansi.Strip(root.View().Content); !strings.Contains(view, want) {
+				t.Errorf("tab %s lacks %q:\n%s", tab, want, view)
+			}
 		}
 	}
 }

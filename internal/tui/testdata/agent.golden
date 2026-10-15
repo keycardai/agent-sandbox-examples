@@ -1,0 +1,42 @@
+ keycard sandbox    1 Home   2 Agents   3 Traffic   4 Health                                                                                     ● up
+
+  ┌─ Agent ───────────────────────────────────────┐ ┌─ Response ─────────────────────────────────────────────────────────────────────────────────────┐
+  │ ● ada@example.com                             │ │ 200 OK in 412ms · GET https://api.github.com/user                                              │
+  │   running · pod u7k2vjw9ab                    │ │ Keycard  ✓ The proxy got ada@example.com's GitHub credential from Keycard and added it         │
+  │ No other agent in this demo. n adds one.      │ │                                                                                                │
+  └───────────────────────────────────────────────┘ │                                                                                                │
+  ┏━ Try a request ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓ │ In the agent's container                                                                       │
+  ┃ ▸ GET api.github.com/user                     ┃ │ curl -sS -m 20 -X GET -H 'Authorization: Bearer placeholder' \                                 │
+  ┃   GET openrouter.ai/api/v1/key                ┃ │     -w '\n__sandbox_status__:%{http_code}' https://api.github.com/user                         │
+  ┃   GET pypi.org/pypi/requests/json             ┃ │                                                                                                │
+  ┃   GET example.com/                            ┃ │ Body                                                                                           │
+  ┃                                               ┃ │ {                                                                                              │
+  ┃ Needs ada@example.com's GitHub credential,    ┃ │   "login": "ada",                                                                              │
+  ┃ which the proxy gets from Keycard.            ┃ │   "id": 1234567,                                                                               │
+  ┃                                               ┃ │   "name": "Ada Lovelace",                                                                      │
+  ┃ Enter sends it from ada@example.com's agent,  ┃ │   "company": "Example",                                                                        │
+  ┃ with no credential. The egress proxy asks     ┃ │   "public_repos": 12                                                                           │
+  ┃ Keycard for one and adds it.                  ┃ │ }                                                                                              │
+  ┃                                               ┃ │                                                                                                │
+  ┃ Press a to open pi-session in the agent.      ┃ │                                                                                                │
+  ┃                                               ┃ │                                                                                                │
+  ┃                                               ┃ │                                                                                                │
+  ┃                                               ┃ │                                                                                                │
+  ┃                                               ┃ │                                                                                                │
+  ┃                                               ┃ │                                                                                                │
+  ┃                                               ┃ │                                                                                                │
+  ┃                                               ┃ │                                                                                                │
+  ┃                                               ┃ │                                                                                                │
+  ┃                                               ┃ │                                                                                                │
+  ┃                                               ┃ │                                                                                                │
+  ┃                                               ┃ │                                                                                                │
+  ┃                                               ┃ │                                                                                                │
+  ┃                                               ┃ │                                                                                                │
+  ┃                                               ┃ │                                                                                                │
+  ┃                                               ┃ │                                                                                                │
+  ┃                                               ┃ │                                                                                                │
+  ┃                                               ┃ │                                                                                                │
+  ┃                                               ┃ │                                                                                                │
+  ┃                                               ┃ │                                                                                                │
+  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ └────────────────────────────────────────────────────────────────────────────────────────────────┘
+  ↑↓  request   enter  send   tab  next pane   a  open pi-session   n  add agent   ?  keys

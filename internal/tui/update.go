@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"context"
+
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
@@ -15,11 +17,21 @@ import (
 // dashboard. It brings the sandbox up only when the bring-up starts with
 // the tunnel and no tunnel runs from before.
 func (m *model) Init() tea.Cmd {
+	for _, name := range []string{sandbox.ServiceTunnel, sandbox.ServiceMirror} {
+		path := m.session.Local().ServiceStatus(name).LogPath
+		log := m.ui.Logs.Log(state.ServiceSource(name))
+		m.jobs.Go(func() { component.TailFile(m.ctx, path, log) })
+	}
 	cmds := []tea.Cmd{frameTick(), m.poll(), m.bus.next(), tea.RequestWindowSize, tea.RequestBackgroundColor}
 	switch {
 	case len(m.state.Setup.Problems) > 0:
 		return tea.Batch(append(cmds, m.openWelcome())...)
-	case len(m.state.Run.Steps) == 0, m.state.Run.Steps[0].Step.ID != sandbox.StepTunnel:
+	case len(m.state.Run.Steps) == 0:
+		return tea.Batch(cmds...)
+	}
+	m.ui.Logs.Show(state.StepSource(m.state.Run.Steps[0].Step.ID))
+	switch {
+	case m.state.Run.Steps[0].Step.ID != sandbox.StepTunnel:
 	case m.session.Local().ServiceStatus(sandbox.ServiceTunnel).Running:
 		m.state.Record("•", "Found the tunnel running from before")
 		m.ui.Notify("Found the tunnel from before.", false)
@@ -43,19 +55,49 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.ui.Width, m.ui.Height = msg.Width, msg.Height
+		m.layout()
 		return m, m.setup.Resize()
 	case tea.BackgroundColorMsg:
 		m.ui.Styles, m.ui.Background = style.New(msg.IsDark()), msg.Color
+		m.ui.Logs.Refresh(true)
 	case askMsg:
 		return m, m.ask(msg)
 	case tea.KeyPressMsg:
 		return m, m.keyPress(msg)
+	case tea.MouseWheelMsg:
+		if m.overlay.kind == overlayNone {
+			m.ui.Logs.Wheel(msg)
+		}
 	}
 	if m.overlay.kind == overlayQuestion {
 		return m, m.answer(msg)
 	}
 	return m, nil
 }
+
+// Follow follows the log of a pod's container in the log pane, and stops
+// following the one before.
+func (m *model) Follow(row state.ContainerRow) {
+	name := state.ContainerSource(row.Pod, row.Container.Name)
+	if m.stream != name {
+		m.stopStream()
+		m.stream = name
+		ctx, cancel := context.WithCancel(m.ctx)
+		m.streamStop = cancel
+		finished := row.Container.State == state.StateTerminated
+		session, log := m.session, m.ui.Logs.Log(name)
+		m.jobs.Go(func() { followContainer(ctx, session, row.Pod, row.Container.Name, finished, log) })
+	}
+	m.ui.Logs.Show(name)
+}
+
+// ShowAgentList opens the list of agents, which the Agents tab draws.
+func (m *model) ShowAgentList() {
+	m.overlay = overlay{kind: overlayAgents}
+}
+
+// Context is the TUI's context, which ends when it quits.
+func (m *model) Context() context.Context { return m.ctx }
 
 func (m *model) updateBackground(msg tea.Msg) (tea.Cmd, bool) {
 	if cmd, handled := m.updateJobs(msg); handled {
@@ -64,12 +106,14 @@ func (m *model) updateBackground(msg tea.Msg) (tea.Cmd, bool) {
 	if cmd, handled := m.updateAnswers(msg); handled {
 		return cmd, true
 	}
+	if cmd, handled := m.updateRequests(msg); handled {
+		return cmd, true
+	}
 	switch msg := msg.(type) {
 	case style.GlintMsg:
 		return m.welcome.Glint.Move(msg.Now, m.screen == screenWelcome && m.state.Setup.Preflight.Checking()), true
 	case frameMsg:
-		m.ui.Frame++
-		return tea.Batch(frameTick(), m.welcomeGlint()), true
+		return m.onFrame(), true
 	case pollMsg:
 		m.tickPlanned = false
 		return m.poll(), true
@@ -83,6 +127,31 @@ func (m *model) updateBackground(msg tea.Msg) (tea.Cmd, bool) {
 	case podsMsg:
 		m.onPods(msg)
 		return m.polled(), true
+	}
+	return nil, false
+}
+
+// onFrame turns the spinners, and draws again the log that changed.
+func (m *model) onFrame() tea.Cmd {
+	m.ui.Frame++
+	m.ui.Logs.Refresh(false)
+	if m.tab == tabHealth {
+		// A check gains or loses its fix line as the sandbox changes,
+		// which moves the log under the checks.
+		m.health.Layout()
+	}
+	return tea.Batch(frameTick(), m.welcomeGlint())
+}
+
+// updateRequests handles a request the Agents tab asks to send, and what
+// came back.
+func (m *model) updateRequests(msg tea.Msg) (tea.Cmd, bool) {
+	switch msg := msg.(type) {
+	case page.SendRequestMsg:
+		return m.sendRequest(msg), true
+	case page.RequestDoneMsg:
+		m.agents.OnRequestDone(msg)
+		return nil, true
 	}
 	return nil, false
 }
@@ -102,6 +171,8 @@ func (m *model) updateJobs(msg tea.Msg) (tea.Cmd, bool) {
 		return m.onExecDone(msg), true
 	case eventsMsg:
 		m.onEvents(msg)
+	case agentAddedMsg:
+		m.onAgentAdded(msg)
 	default:
 		return m.updateOnboarding(msg)
 	}
@@ -119,6 +190,8 @@ func (m *model) updateOnboarding(msg tea.Msg) (tea.Cmd, bool) {
 		m.onSetupDone(msg)
 	case forgetDoneMsg:
 		m.onForgetDone(msg)
+	case settingsMsg:
+		m.state.Setup.Describe, m.state.Setup.Problems = msg.describe, msg.problems
 	case page.PresetMsg:
 		m.setup.OnPreset(msg)
 	default:
@@ -144,11 +217,25 @@ func (m *model) keyPress(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		return cmd
 	}
+	if m.ui.Logs.Searching() {
+		return m.ui.Logs.SearchKeys(msg)
+	}
 	switch {
+	case m.askTitle != "" && msg.String() == component.KeyEsc:
+		// Between the questions for a new agent, esc stops adding it.
+		m.stopSetup()
+		return nil
 	case msg.String() == component.KeyCtrlC, msg.String() == "q":
 		return m.quit()
 	case key.Matches(msg, m.ui.Keys.Help):
 		m.overlay = overlay{kind: overlayHelp}
+		return nil
+	case key.Matches(msg, m.ui.Keys.Mouse):
+		m.mouse = !m.mouse
+		m.ui.Notify(map[bool]string{
+			true:  "Mouse on: the wheel scrolls; hold Option or Shift to select text.",
+			false: "Mouse off: select and copy text as usual.",
+		}[m.mouse], false)
 		return nil
 	}
 	return m.screenLayer().keys(msg)
@@ -272,13 +359,69 @@ func (m *model) confirmKeys(msg tea.KeyPressMsg) tea.Cmd {
 	return func() tea.Msg { return yes }
 }
 
-// dashboardKeys handles a key on Home: the actions on the sandbox, then
-// those on the agent.
+// dashboardKeys handles a key on the dashboard: the tabs first, then the
+// actions, then the tab that shows.
 func (m *model) dashboardKeys(msg tea.KeyPressMsg) tea.Cmd {
+	if m.switchTab(msg) {
+		return nil
+	}
 	if m.actionKeys(msg) {
 		return nil
 	}
-	return m.agentActionKeys(msg)
+	if cmd, ok := m.agentActionKeys(msg); ok {
+		return cmd
+	}
+	return m.tabKeys(msg)
+}
+
+// switchTab moves to the tab a number key names.
+func (m *model) switchTab(msg tea.KeyPressMsg) bool {
+	keys := m.ui.Keys
+	for i, binding := range []key.Binding{keys.Tab1, keys.Tab2, keys.Tab3, keys.Tab4} {
+		if key.Matches(msg, binding) {
+			m.openTab(tab(i))
+			return true
+		}
+	}
+	return false
+}
+
+// openTab shows a tab, and points the log pane at the log it shows: the
+// agent's on the Agents tab, the proxy's decisions on the Traffic tab, and
+// on the Health tab the step that runs or stopped the bring-up, or else
+// the log chosen there.
+func (m *model) openTab(next tab) {
+	m.tab = next
+	m.ui.Logs.ClearFilter()
+	switch next {
+	case tabAgent:
+		m.agents.ShowRight()
+	case tabTraffic:
+		m.traffic.Show()
+	case tabHealth:
+		m.health.Open()
+	case tabHome, tabCount:
+	}
+	m.layout()
+}
+
+// tabKeys gives a key to the tab that shows. X on the Agents tab removes
+// the selected agent.
+func (m *model) tabKeys(msg tea.KeyPressMsg) tea.Cmd {
+	switch m.tab {
+	case tabAgent:
+		if key.Matches(msg, m.ui.Keys.RemoveAgent) {
+			m.removeAgent()
+			return nil
+		}
+		return m.agents.Keys(msg)
+	case tabTraffic:
+		return m.traffic.Keys(msg)
+	case tabHealth:
+		return m.health.Keys(msg)
+	case tabHome, tabCount:
+	}
+	return nil
 }
 
 // actionKeys handles the keys that act on the sandbox.
@@ -303,16 +446,73 @@ func (m *model) actionKeys(msg tea.KeyPressMsg) bool {
 	return true
 }
 
-// agentActionKeys handles the keys that work with the agent.
-func (m *model) agentActionKeys(msg tea.KeyPressMsg) tea.Cmd {
+// agentActionKeys handles the keys that work with the agent, and the
+// activity log.
+func (m *model) agentActionKeys(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	keys := m.ui.Keys
 	switch {
 	case key.Matches(msg, keys.Agent):
-		return m.agent()
+		return m.agent(), true
 	case key.Matches(msg, keys.Shell):
-		return m.openAgent(true)
+		return m.openAgent(true), true
+	case key.Matches(msg, keys.Send):
+		if m.tab != tabAgent {
+			m.openTab(tabAgent)
+		}
+		return m.agents.Send(), true
 	case key.Matches(msg, keys.Events):
-		return m.openEvents()
+		return m.openEvents(), true
+	case key.Matches(msg, keys.AddAgent):
+		m.addAgent()
+		return nil, true
+	case key.Matches(msg, keys.Activity):
+		entries := m.health.LogEntries()
+		m.showLog(entries[len(entries)-1])
+	case key.Matches(msg, keys.Logs):
+		m.health.OpenLogs()
+		m.overlay = overlay{kind: overlayLogs}
+	default:
+		return nil, false
+	}
+	return nil, true
+}
+
+// showLog shows a log from the list of every log on the Health tab.
+func (m *model) showLog(entry page.LogEntry) {
+	if m.tab != tabHealth {
+		m.openTab(tabHealth)
+	}
+	m.health.ShowLog(entry)
+}
+
+// logsKeys moves through the list of every log, and shows the one chosen
+// on the Health tab.
+func (m *model) logsKeys(msg tea.KeyPressMsg) tea.Cmd {
+	entry, pick := m.health.LogsKeys(msg)
+	switch pick {
+	case component.PickChosen:
+		m.closeOverlay()
+		m.showLog(entry)
+	case component.PickClosed:
+		m.closeOverlay()
+	case component.PickNone:
+	}
+	return nil
+}
+
+// agentListKeys moves through the agents, and switches to the one chosen.
+func (m *model) agentListKeys(msg tea.KeyPressMsg) tea.Cmd {
+	email, pick := m.agents.PickerKeys(msg)
+	switch pick {
+	case component.PickChosen:
+		m.closeOverlay()
+		if email != "" {
+			m.session.SelectAgent(email)
+			m.syncAgents()
+		}
+	case component.PickClosed:
+		m.closeOverlay()
+	case component.PickNone:
 	}
 	return nil
 }
@@ -457,7 +657,10 @@ func (m *model) launch() tea.Cmd {
 	if m.busy() {
 		return nil
 	}
-	m.screen = screenDashboard
+	m.screen, m.tab = screenDashboard, tabHome
+	m.health.Focus = page.PaneChecks
+	m.agents.Reset()
+	m.layout()
 	m.startBringUp(0, false)
 	return m.poll()
 }
@@ -538,14 +741,15 @@ func (m *model) onForgetDone(msg forgetDoneMsg) {
 	m.ui.Notify("Deleted the saved settings. They last until you quit.", false)
 }
 
-// ask shows the setup's question. A dialog that shows stays on top until it
-// closes. A question from a setup that stopped goes unanswered.
+// ask shows the setup's question: on the wizard's screen, or else in a
+// modal. A dialog that shows stays on top until it closes. A question from
+// a setup that stopped goes unanswered.
 func (m *model) ask(msg askMsg) tea.Cmd {
 	if !m.asking() {
 		return nil
 	}
 	m.replies = msg.replies
-	cmd := m.setup.Ask(msg.question)
+	cmd := m.setup.Ask(msg.question, m.screen == screenWizard)
 	if m.overlay.kind == overlayNone {
 		m.overlay = overlay{kind: overlayQuestion}
 	}
@@ -554,8 +758,8 @@ func (m *model) ask(msg askMsg) tea.Cmd {
 
 // answer passes msg to the setup's question, and closes it once answered.
 func (m *model) answer(msg tea.Msg) tea.Cmd {
-	cmd, state := m.setup.Answer(msg)
-	switch state {
+	cmd, asked := m.setup.Answer(msg)
+	switch asked {
 	case page.Stopped:
 		m.stopSetup()
 		m.overlay = overlay{}

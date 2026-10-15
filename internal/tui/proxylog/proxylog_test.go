@@ -106,20 +106,26 @@ func TestSummarize(t *testing.T) {
 	}
 }
 
-// TestRecordFor finds a request's record, falls back to a refused lookup,
-// and leaves out records from before the request.
+// TestRecordFor finds the first record of a request by its method and
+// path, though a later request to the host follows it, falls back to a
+// refused lookup, and leaves out records from before the request.
 func TestRecordFor(t *testing.T) {
 	t.Parallel()
 	stamp := time.Now()
-	records := sampleRecords(stamp)
-	if record, ok := proxylog.RecordFor(records, githubHost, stamp); !ok || record.Scope != scopeRequest {
-		t.Errorf("GitHub = %+v, %v; want the request, not the lookup", record, ok)
+	records := append(sampleRecords(stamp),
+		newRecord(stamp.Add(5*time.Second), scopeRequest, githubHost, "/notifications", verdictDeny, "exchange_denied",
+			githubEndpoint),
+		newRecord(stamp.Add(6*time.Second), scopeRequest, githubHost, "/user", verdictDeny, "exchange_denied",
+			githubEndpoint))
+	record, ok := proxylog.RecordFor(records, sampleMethod, githubHost, "/user", stamp)
+	if !ok || record.Request == nil || record.Request.Path != "/user" || record.Denied() {
+		t.Errorf("GitHub = %+v, %v; want the first request of /user, not a later one or the lookup", record, ok)
 	}
-	if record, ok := proxylog.RecordFor(records, sampleDenied, stamp); !ok || record.Scope != proxylog.ScopeDNS ||
-		!record.Denied() {
+	if record, ok := proxylog.RecordFor(records, sampleMethod, sampleDenied, "/", stamp); !ok ||
+		record.Scope != proxylog.ScopeDNS || !record.Denied() {
 		t.Errorf("example.com = %+v, %v; want the refused lookup", record, ok)
 	}
-	if _, ok := proxylog.RecordFor(records, githubHost, stamp.Add(time.Hour)); ok {
+	if _, ok := proxylog.RecordFor(records, sampleMethod, githubHost, "/user", stamp.Add(time.Hour)); ok {
 		t.Error("a record from before since was found")
 	}
 }

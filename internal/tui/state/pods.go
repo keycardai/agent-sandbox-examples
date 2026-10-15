@@ -8,9 +8,12 @@ import (
 
 // The containers of the sandbox's pod, and the state of one that finished.
 const (
-	AgentContainer  = "agent"
-	ProxyContainer  = "egress-proxy"
-	StateTerminated = "terminated"
+	AgentContainer = "agent"
+	ProxyContainer = "egress-proxy"
+	// NetsetupContainer is the pod's init container, which sets the
+	// firewall rules.
+	NetsetupContainer = "egress-netsetup"
+	StateTerminated   = "terminated"
 )
 
 // ContainerRow is one container of a pod.
@@ -34,14 +37,21 @@ const (
 	PodStarting
 	// PodRunning is a pod whose agent runs.
 	PodRunning
+	// PodFirewallFailed is a pod whose firewall did not start, so the agent
+	// never does.
+	PodFirewallFailed
 	// PodAgentFailed is a pod whose agent stopped or is stuck.
 	PodAgentFailed
 )
 
-// PodState says how agent's pod is, with the agent's container.
+// PodState says how agent's pod is, with the container that says so: the
+// firewall's when it failed, else the agent's.
 func (s *Sandbox) PodState(agent sandbox.Agent) (PodState, ContainerRow) {
 	if agent.Pod == "" {
 		return PodNone, ContainerRow{}
+	}
+	if row, failed := s.failedInit(agent.Pod); failed {
+		return PodFirewallFailed, row
 	}
 	index := slices.IndexFunc(s.Agents.Pods, func(row ContainerRow) bool {
 		return row.Pod == agent.Pod && row.Container.Name == AgentContainer
@@ -63,8 +73,23 @@ func (s *Sandbox) PodState(agent sandbox.Agent) (PodState, ContainerRow) {
 }
 
 // Crashed reports whether a container stopped or is stuck.
-func Crashed(ctr sandbox.ContainerStatus) bool {
-	return ctr.State == StateTerminated || slices.Contains(
+func Crashed(ctr sandbox.ContainerStatus) bool { return ctr.State == StateTerminated || stuck(ctr) }
+
+// stuck reports whether a container does not come up by itself.
+func stuck(ctr sandbox.ContainerStatus) bool {
+	return slices.Contains(
 		[]string{"CrashLoopBackOff", "ErrImagePull", "ImagePullBackOff", "CreateContainerConfigError"}, ctr.Reason,
 	)
+}
+
+// failedInit returns the init container of pod that failed, such as the
+// firewall that did not start.
+func (s *Sandbox) failedInit(pod string) (ContainerRow, bool) {
+	for _, row := range s.Agents.Pods {
+		ctr := row.Container
+		if row.Pod == pod && ctr.Init && (ctr.State == StateTerminated && ctr.ExitCode != 0 || stuck(ctr)) {
+			return row, true
+		}
+	}
+	return ContainerRow{}, false
 }

@@ -12,11 +12,28 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/proxylog"
 )
 
-// The logs the state keeps, besides the steps'.
+// The logs the state keeps, besides those StepSource, ServiceSource and
+// ContainerSource name.
 const (
 	SourceSetup    = "setup"
+	SourceAction   = "action"
 	SourceActivity = "activity"
+	// SourceTraffic is the feed of requests, with the lookups of hosts the
+	// proxy blocked, and SourceTrafficAll the feed with every DNS lookup.
+	SourceTraffic    = "traffic"
+	SourceTrafficAll = "traffic dns"
+	// SourceResponse holds the body of the last response the Agents tab
+	// got.
+	SourceResponse = "response"
 )
+
+// ServiceSource names a service's log.
+func ServiceSource(name string) string { return "service " + name }
+
+// ContainerSource names the log of a pod's container.
+func ContainerSource(pod, container string) string {
+	return "container " + pod + "/" + container
+}
 
 // Sandbox is the sandbox as the TUI knows it, in parts. A part's methods
 // change only that part. The rules that read more than one part, the

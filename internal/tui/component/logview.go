@@ -120,8 +120,16 @@ func (v *LogView) Refresh(force bool) {
 	}
 }
 
-// SetSize sizes the viewport, and draws the log again.
+// Size returns the viewport's width and height.
+func (v *LogView) Size() (int, int) { return v.viewport.Width(), v.viewport.Height() }
+
+// SetSize sizes the viewport, and draws the log again: all of it when the
+// size changed, else only when the log did.
 func (v *LogView) SetSize(width, height int) {
+	if v.viewport.Width() == width && v.viewport.Height() == height {
+		v.Refresh(false)
+		return
+	}
 	v.viewport.SetWidth(width)
 	v.viewport.SetHeight(height)
 	v.Refresh(true)

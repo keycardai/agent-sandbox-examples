@@ -365,29 +365,42 @@ func Summarize(records []Record, endpoints []sandbox.ScenarioEndpoint) ([]Endpoi
 	return uses, blocked.newestFirst()
 }
 
-// RecordFor returns the newest record for host since since: a request or a
-// connection, or else a refused lookup of the name.
-func RecordFor(records []Record, host string, since time.Time) (Record, bool) {
-	var lookup *Record
-	for i := len(records) - 1; i >= 0; i-- {
-		record := records[i]
-		if record.TS.Before(since) {
-			break
-		}
-		if strings.TrimSuffix(record.Destination.Host, ".") != host {
-			continue
-		}
-		if record.Scope != ScopeDNS {
-			return record, true
-		}
-		if lookup == nil && record.Denied() {
-			lookup = &records[i]
+// RecordFor returns the proxy's record of a request of method to host and
+// path, made at since or later. It takes the oldest, so that a later
+// request to the same place, such as an agent's own poll, does not take its
+// place. Without one, it returns the first connection to host or refused
+// lookup of the name, since the proxy refuses a host off the allow list
+// before any request.
+func RecordFor(records []Record, method, host, path string, since time.Time) (Record, bool) {
+	var other *Record
+	for i := range records {
+		record := &records[i]
+		switch {
+		case record.TS.Before(since) || strings.TrimSuffix(record.Destination.Host, ".") != host:
+		case isRequest(record, method, path):
+			return *record, true
+		case other == nil && standsIn(record):
+			other = record
 		}
 	}
-	if lookup != nil {
-		return *lookup, true
+	if other != nil {
+		return *other, true
 	}
 	return Record{}, false
+}
+
+// isRequest reports whether record is of a request of method for path.
+func isRequest(record *Record, method, path string) bool {
+	return record.Request != nil && record.Request.Method == method && record.Request.Path == path
+}
+
+// standsIn reports whether record stands in for a request with no record of
+// its own: a connection, or a refused lookup.
+func standsIn(record *Record) bool {
+	if record.Scope == ScopeDNS {
+		return record.Denied()
+	}
+	return record.Request == nil
 }
 
 // blockedHosts collects the hosts the proxy refused, each once, in the

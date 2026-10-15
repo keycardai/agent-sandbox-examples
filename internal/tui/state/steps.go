@@ -95,14 +95,22 @@ func (r *Run) FailedStep() *StepRow {
 }
 
 // ResumeIndex is where a bring-up starts again: at the step that failed,
-// or from the beginning. While the tunnel does not run, it starts at the
-// tunnel, because every later step needs its URL. A quick tunnel's new URL
-// then makes the cluster step offer to recreate the cluster.
+// or from the beginning. When the tunnel or the mirror that a step before
+// the failed one started no longer runs, it starts at that step instead,
+// because the later steps need it. A quick tunnel's new URL then makes the
+// cluster step offer to recreate the cluster.
 func (s *Sandbox) ResumeIndex() int {
-	if len(s.Run.Steps) > 0 && s.Run.Steps[0].Step.ID == sandbox.StepTunnel && !s.Reads.Status.Tunnel.Running {
+	failed := slices.IndexFunc(s.Run.Steps, func(row *StepRow) bool { return row.State == StepFailed })
+	if failed < 0 {
 		return 0
 	}
-	return max(slices.IndexFunc(s.Run.Steps, func(row *StepRow) bool { return row.State == StepFailed }), 0)
+	for i, row := range s.Run.Steps[:failed] {
+		if row.Step.ID == sandbox.StepTunnel && !s.Reads.Status.Tunnel.Running ||
+			row.Step.ID == sandbox.StepMirror && !s.Reads.Status.Mirror.Running {
+			return i
+		}
+	}
+	return failed
 }
 
 // StepsDone counts the steps that are done.

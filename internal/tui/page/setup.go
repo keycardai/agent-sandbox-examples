@@ -34,6 +34,9 @@ const (
 	// maxSelectHeight bounds the rows a choice shows at once. huh counts a
 	// title row in a choice's height, even without a title.
 	maxSelectHeight, selectTitleRows = 10, 1
+	// modalParts is how many parts a question's modal has besides the
+	// notes.
+	modalParts = 5
 )
 
 // RailState is where one step of the wizard is.
@@ -68,13 +71,14 @@ const (
 	Stopped
 )
 
-// asking is the question that shows, its form, and where the form keeps
-// the answer, by kind.
+// asking is the question that shows, its form, where the form keeps the
+// answer, by kind, and whether it shows on the wizard's screen.
 type asking struct {
 	question *Question
 	form     *huh.Form
 	text     *string
 	yes      *bool
+	inWizard bool
 }
 
 // Setup is the setup wizard and the review after it.
@@ -183,10 +187,19 @@ func (s *Setup) Finish() {
 	}
 }
 
-// Ask shows the wizard's question as a form.
-func (s *Setup) Ask(quest *Question) tea.Cmd {
+// ForgetNotes starts the notes over, for questions outside the wizard.
+func (s *Setup) ForgetNotes() { s.notesFrom = 0 }
+
+// Ask shows the wizard's question as a form: inWizard on the wizard's
+// screen, and otherwise inside a modal.
+func (s *Setup) Ask(quest *Question, inWizard bool) tea.Cmd {
 	text, yes := quest.Value, quest.Yes
-	width := s.panelWidth()
+	// Outside the wizard, the question draws inside a modal, within its
+	// border and padding.
+	width := component.ModalInnerWidth(s.ui.Width)
+	if inWizard {
+		width = s.panelWidth()
+	}
 	// Esc stops the setup, so a list has no filter for esc to clear.
 	keys := huh.NewDefaultKeyMap()
 	keys.Select.Filter.SetEnabled(false)
@@ -201,7 +214,7 @@ func (s *Setup) Ask(quest *Question) tea.Cmd {
 	if sized, ok := next.(*huh.Form); ok {
 		form = sized
 	}
-	s.ask = &asking{question: quest, form: form, text: &text, yes: &yes}
+	s.ask = &asking{question: quest, form: form, text: &text, yes: &yes, inWizard: inWizard}
 	return form.Init()
 }
 
@@ -212,7 +225,7 @@ func (s *Setup) Resize() tea.Cmd {
 	}
 	quest := s.ask.question
 	quest.Value, quest.Yes = *s.ask.text, *s.ask.yes
-	return s.Ask(quest)
+	return s.Ask(quest, s.ask.inWizard)
 }
 
 // Answer passes msg to the question's form, and answers the wizard when
@@ -284,6 +297,22 @@ func (s *Setup) ReviewView() string {
 		component.Hint{Key: component.KeyEsc, Desc: "dashboard"},
 		component.Hint{Key: "q", Desc: wordQuit},
 	))
+}
+
+// QuestionModal draws a setup question outside the wizard, under the
+// wizard's latest notes, titled title.
+func (s *Setup) QuestionModal(title string) string {
+	theme := s.ui.Styles
+	width := component.ModalInnerWidth(s.ui.Width)
+	notes := s.notes()
+	parts := make([]string, 0, len(notes)+modalParts)
+	parts = append(parts, theme.ModalTitle.Render(cmp.Or(title, "Setup")))
+	for _, note := range notes {
+		parts = append(parts, theme.Muted.Render("› "+note))
+	}
+	parts = append(parts, "", s.questionBlock(width), "", theme.Dim.Render("esc stops without saving"))
+	return theme.Modal.Width(component.ModalWidth(s.ui.Width)).Render(lipgloss.JoinVertical(lipgloss.Left,
+		parts...))
 }
 
 // recordAnswer puts the answer under the current step, readable on its own.
