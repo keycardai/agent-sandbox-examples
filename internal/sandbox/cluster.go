@@ -36,9 +36,11 @@ var (
 
 var (
 	// k3dFailure is a k3d logfmt line at the error or fatal level, such as
-	// time="…" level=fatal msg="Cluster creation FAILED". The message is
-	// quoted when it has a space or a quote.
-	k3dFailure = regexp.MustCompile(`\blevel=(?:error|fatal) msg=("(?:[^"\\]|\\.)*"|\S*)`)
+	// time="…" level=fatal msg="Cluster creation FAILED". The level is the
+	// line's own, after the time at its start. A warning's message can quote
+	// a node's log line, level and all. The message is quoted when it has a
+	// space or a quote.
+	k3dFailure = regexp.MustCompile(`^(?:time="[^"]*" )?level=(?:error|fatal) msg=("(?:[^"\\]|\\.)*"|\S*)`)
 	// issuerHost matches https:// and a host of lowercase ASCII DNS labels.
 	issuerHost = regexp.MustCompile(`^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:|/|$)`)
 	// issuerShape also allows a port and a path of unreserved segments.
