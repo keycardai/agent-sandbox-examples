@@ -20,18 +20,19 @@ import (
 )
 
 const (
-	// allowedURL is an endpoint in sandbox/values.example.yaml without a
-	// credential.
+	// allowedURL is an endpoint every scenario lists without a credential.
 	allowedURL = "https://pypi.org/simple/"
 	// githubHost and githubUserURL are the endpoint the proxy injects the
 	// user's GitHub credential into.
 	githubHost    = "api.github.com"
 	githubUserURL = "https://" + githubHost + "/user"
+	// openRouterAPI is the OpenRouter resource in the zone-setup values.
+	openRouterAPI = "https://openrouter.ai/api/v1"
 	// openRouterKeyURL is OpenRouter's endpoint for the details of the
 	// caller's API key.
 	openRouterHost   = "openrouter.ai"
 	openRouterKeyURL = "https://" + openRouterHost + "/api/v1/key"
-	// deniedHost is a host that sandbox/values.example.yaml does not list.
+	// deniedHost is a host that no scenario lists.
 	deniedHost = "example.com"
 	// deniedReason is the reason the proxy logs for a host no endpoint lists.
 	deniedReason = "no_matching_endpoint"
@@ -71,6 +72,8 @@ echo ` + probeMarker + `$code`
 	// connection that was refused or rejected, and a connect timeout.
 	curlConnectFailed = 7
 	curlTimedOut      = 28
+	// agentContainer is the sandbox pod's agent container.
+	agentContainer = "agent"
 	// proxyLogLines is how many lines of the proxy's log a check reads.
 	proxyLogLines = "--tail=500"
 	// clockSkew is how far the cluster's clock may run behind this host's.
@@ -388,7 +391,7 @@ func (l *Local) fetch(ctx context.Context, target CheckTarget, command ...string
 	var err error
 	for range tlsRetries {
 		out, err = l.kubectl(ctx, target.Cluster, nil, slices.Concat([]string{
-			"--namespace", target.Namespace, "exec", target.Pod, "-c", "agent", "--",
+			"--namespace", target.Namespace, "exec", target.Pod, "-c", agentContainer, "--",
 		}, command)...)
 		var exit *exec.ExitError
 		if !errors.As(err, &exit) || (exit.ExitCode() != curlSSLConnect && exit.ExitCode() != curlPeerFailedCA) {

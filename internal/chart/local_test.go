@@ -1,6 +1,7 @@
 package chart_test
 
 import (
+	"cmp"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -45,7 +46,8 @@ func localValues(t *testing.T, name string) string {
 }
 
 // runValues writes the install and sandbox values files that `sandbox run`
-// writes, with the root CA when withCA is set.
+// writes for KEYCARD_LOCAL_IMAGE_TAG=local, with the root CA when withCA is
+// set.
 func runValues(t *testing.T, withCA bool) (string, string) {
 	t.Helper()
 	var caPEM []byte
@@ -53,7 +55,7 @@ func runValues(t *testing.T, withCA bool) (string, string) {
 		caPEM = []byte(localRootCA + "\n")
 	}
 	install, sandboxYAML, err := sandbox.LocalValues(sandbox.LocalValuesInput{
-		ZoneURL: localZoneURL, Gateway: localGateway, CAPEM: caPEM,
+		ZoneURL: localZoneURL, Gateway: localGateway, CAPEM: caPEM, ImageTag: "local",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -248,5 +250,68 @@ func TestExistingClusterValues(t *testing.T) {
 	proxy := parseDocument(t, configDocument(t, sandboxObjects))
 	if !reflect.DeepEqual(proxy.Policy.ClusterCIDRs, ranges) {
 		t.Errorf("cluster_cidrs = %v, want %v", proxy.Policy.ClusterCIDRs, ranges)
+	}
+}
+
+// scenarioValues returns the scenario's values file, with "answer" for
+// each input and the image named for sandbox-base:local.
+func scenarioValues(t *testing.T, scenario *sandbox.Scenario) []byte {
+	t.Helper()
+	answers := map[string]string{}
+	for _, input := range scenario.Inputs {
+		answers[input.ID] = "answer"
+	}
+	if err := scenario.NameImage("ghcr.io/keycardai/sandbox-base:local"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := scenario.Values(answers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// TestScenarioPods renders both charts with the local values and each
+// scenario's values file, as `sandbox run` does. The two pods must match,
+// the agent must run the scenario's image, and the proxy's document must be
+// valid with the scenario's endpoints.
+func TestScenarioPods(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scenarios, err := sandbox.Scenarios(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scenario := range scenarios {
+		t.Run(scenario.Name, func(t *testing.T) {
+			t.Parallel()
+			values := writeValues(t, string(scenarioValues(t, scenario)))
+			install, sandboxYAML := runValues(t, false)
+			dir, err := filepath.Abs("../../install")
+			if err != nil {
+				t.Fatal(err)
+			}
+			installObjects := renderChart(t, dir, release, localValues(t, "install.yaml"), install, values)
+			sandboxObjects := renderChart(t, sandboxDir(t), sandboxUserID,
+				sandboxValues(t, localValues(t, "sandbox.yaml"), sandboxYAML, values)...)
+			assertPodsMatch(t, installObjects, sandboxObjects)
+
+			var tmpl sandboxTemplate
+			decode(t, installObjects, "SandboxTemplate/"+release, &tmpl)
+			agent := container(t, tmpl.Spec.PodTemplate.Spec.Containers, "agent")
+			wantImage := cmp.Or(scenario.Image, "ghcr.io/keycardai/sandbox-base:local")
+			if agent.Image != wantImage {
+				t.Errorf("agent image = %q, want %q", agent.Image, wantImage)
+			}
+			if len(agent.Env) != len(scenario.Agent.Env) {
+				t.Errorf("agent env = %v, want %d variables", agent.Env, len(scenario.Agent.Env))
+			}
+			for _, problem := range validateDocument(parseDocument(t, configDocument(t, sandboxObjects))) {
+				t.Errorf("proxy document: %s", problem)
+			}
+		})
 	}
 }

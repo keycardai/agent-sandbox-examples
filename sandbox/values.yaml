@@ -88,6 +88,7 @@ agent:
   uid: 1000
   command: []
   args: ["sleep", "infinity"]
+  env: {}
 
 # A non-empty configMap also writes the tls section of the document.
 zoneTrust:
