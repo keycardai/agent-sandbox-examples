@@ -20,8 +20,7 @@ import (
 )
 
 const (
-	// allowedURL is an endpoint in sandbox/values.example.yaml without a
-	// credential.
+	// allowedURL is an endpoint every scenario lists without a credential.
 	allowedURL = "https://pypi.org/simple/"
 	// githubHost and githubUserURL are the endpoint the proxy injects the
 	// user's GitHub credential into.
@@ -33,7 +32,7 @@ const (
 	// caller's API key.
 	openRouterHost   = "openrouter.ai"
 	openRouterKeyURL = "https://" + openRouterHost + "/api/v1/key"
-	// deniedHost is a host that sandbox/values.example.yaml does not list.
+	// deniedHost is a host that no scenario lists.
 	deniedHost = "example.com"
 	// deniedReason is the reason the proxy logs for a host no endpoint lists.
 	deniedReason = "no_matching_endpoint"
