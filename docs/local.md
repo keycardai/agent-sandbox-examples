@@ -177,7 +177,8 @@ make, patch, unzip, tree and less, and pi at the version
 `scenarios/pi/package-lock.json` pins. To update pi, change its version in
 `scenarios/pi/package.json`, run `npm install --package-lock-only
 --ignore-scripts` in that directory, and check that each package in
-`package-lock.json` has an `integrity` hash.
+`package-lock.json` has an `integrity` hash and no `hasShrinkwrap`. npm
+installs a package's own shrinkwrap over the lockfile.
 
 ## The slack scenario
 

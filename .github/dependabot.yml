@@ -11,6 +11,12 @@ updates:
     directory: "/"
     schedule:
       interval: "daily"
+  # The pi demo's image installs these with npm ci.
+  - package-ecosystem: "npm"
+    directory: "/scenarios/pi"
+    schedule:
+      interval: "weekly"
+      day: "monday"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
