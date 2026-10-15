@@ -1,8 +1,13 @@
 // Command sandbox runs the sandbox demo: an agent in a Kubernetes sandbox
-// whose HTTPS goes through the Keycard egress proxy. Each subcommand is one
-// step, and each step reads its settings from ~/.config/keycard/sandbox.yaml,
-// which init saves when you ask it to, and from the environment.
-// docs/local.md describes the steps. `up` runs them all:
+// whose HTTPS goes through the Keycard egress proxy. On a terminal, with no
+// subcommand, it opens the TUI, which brings the sandbox up and shows it:
+//
+//	go run ./cmd/sandbox
+//
+// Each subcommand is one step, and each step reads its settings from
+// ~/.config/keycard/sandbox.yaml, which init saves when you ask it to, and
+// from the environment. docs/local.md describes the steps. `up` runs them all
+// without the TUI:
 //
 //	go run ./cmd/sandbox up
 //
@@ -39,6 +44,7 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/install"
 	"github.com/keycardai/agent-sandbox-examples/internal/pinned"
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
+	"github.com/keycardai/agent-sandbox-examples/internal/tui"
 	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
@@ -61,12 +67,14 @@ const intro = `This runs an AI agent in a Kubernetes sandbox. The agent's HTTPS 
 go through the Keycard egress proxy, which adds the user's credentials from
 your Keycard zone.
 
-To set up the demo and run it:
+On a terminal, go run ./cmd/sandbox opens the TUI once go run ./cmd/sandbox
+init has saved the settings. The TUI brings the sandbox up and shows it.
+To run every step without the TUI, run:
 
     go run ./cmd/sandbox up
 
-The first time, up asks for your Keycard service account, the zone and who
-the agent acts as, and whether to save the settings.
+On a terminal, up asks the first time for your Keycard service account, the
+zone and who the agent acts as, and whether to save the settings.
 Then it runs each step and prints the command for it, so you can run the
 steps yourself later. To list the steps, run go run ./cmd/sandbox --help.
 
@@ -113,22 +121,29 @@ func newCommand() *cli.Command {
 	}
 }
 
-// start prints intro. On a terminal, it offers to run up.
+// start opens the TUI on a terminal, once the settings can bring the
+// sandbox up. Elsewhere it prints intro. It refuses an argument, such as a
+// mistyped subcommand, which would otherwise open the TUI and start the
+// bring-up.
 func start(ctx context.Context, cmd *cli.Command) error {
-	_, _ = fmt.Fprint(cmd.Writer, intro)
-	if !onTerminal() {
+	if cmd.Args().Present() {
+		return fmt.Errorf("%w %q. Run go run ./cmd/sandbox --help to list the subcommands",
+			errUnexpectedArgument, cmd.Args().First())
+	}
+	if !onTerminal() || !term.IsTerminal(os.Stdout.Fd()) {
+		_, _ = fmt.Fprint(cmd.Writer, intro)
 		return nil
 	}
-	run, err := terminalAsker{}.Confirm(ctx, "Run go run ./cmd/sandbox up now?", true)
-	if err != nil || !run {
-		return nil //nolint:nilerr // Declining or pressing Ctrl-C ends the intro.
+	local, err := newLocal(cmd)
+	if err != nil {
+		return err
 	}
-	args := []string{cmd.Name}
-	if config := cmd.String("config"); config != "" {
-		args = append(args, "--config", config)
+	session := local.NewSession(defaultListen, defaultIssuerWait)
+	if problems := session.Problems(); len(problems) > 0 {
+		return fmt.Errorf("run go run ./cmd/sandbox init first: %w", errors.Join(problems...))
 	}
-	if err = newCommand().Run(ctx, append(args, "up")); err != nil {
-		return fmt.Errorf("up: %w", err)
+	if err = tui.Run(ctx, tui.Options{Session: session}); err != nil {
+		return fmt.Errorf("tui: %w", err)
 	}
 	return nil
 }
@@ -337,13 +352,25 @@ func downCommand() *cli.Command {
 	return &cli.Command{
 		Name:     "down",
 		Category: stepCategory,
-		Usage:    "delete the local k3d cluster. The Keycard zone is not changed",
+		Usage: "stop the tunnel and the mirror, and delete the local k3d cluster. " +
+			"The Keycard zone is not changed",
 		Flags: []cli.Flag{
 			clusterFlag(),
 			&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "delete without asking"},
 		},
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
-			return local.Down(ctx, cmd.String("cluster"), cmd.Bool("yes"))
+			// Down asks first, so an answer of no leaves everything running.
+			if err := local.Down(ctx, cmd.String("cluster"), cmd.Bool("yes")); err != nil {
+				return err //nolint:wrapcheck // Down's errors say what failed, as the other steps' do.
+			}
+			for _, name := range []string{sandbox.ServiceMirror, sandbox.ServiceTunnel} {
+				if err := local.StopService(ctx, name); err == nil {
+					_, _ = fmt.Fprintf(cmd.Writer, "Stopped the %s.\n", name)
+				} else if !errors.Is(err, sandbox.ErrNotRunning) {
+					return fmt.Errorf("stopping the %s: %w", name, err)
+				}
+			}
+			return nil
 		}),
 	}
 }

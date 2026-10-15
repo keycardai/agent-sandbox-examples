@@ -36,6 +36,12 @@ func TestCommand(t *testing.T) {
 			wantText: `unexpected argument "extra". bootstrap takes only flags`,
 		},
 		{
+			name:     "mistyped subcommand",
+			args:     []string{"chek"},
+			want:     errUnexpectedArgument,
+			wantText: `unexpected argument "chek". Run go run ./cmd/sandbox --help`,
+		},
+		{
 			name:     "argument to install",
 			args:     []string{"install", "--context", "x", "--values", values, "extra"},
 			want:     errUnexpectedArgument,

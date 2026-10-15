@@ -1,2 +1,4 @@
 # The agent-sandbox release manifest, which go generate ./internal/install downloads.
 install/agent-sandbox/sandbox-with-extensions.yaml linguist-generated=true
+# The TUI's snapshots, which go test ./internal/tui -run TestSnapshots -update writes.
+internal/tui/testdata/*.golden linguist-generated=true

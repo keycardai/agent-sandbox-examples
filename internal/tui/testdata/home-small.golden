@@ -1,0 +1,22 @@
+ keycard sandbox   home                                                    ● up
+
+  ● ada@example.com's agent is running
+  It acts as ada@example.com in zone wvqowjom…keycard.cloud, and does not hold
+  any secrets. The egress proxy asks Keycard for ada@example.com's credential
+  on each request, and adds it on the way out.
+
+  WHAT KEYCARD DID
+    ✓ GitHub       api.github.com           1 request, credential added · 17:31…
+    · GitHub git   github.com               not used yet
+    ✕ OpenRouter   openrouter.ai/api/v1     No credential: Keycard's policy doe…
+    ✓ pypi.org                              1 request, no credential needed · 1…
+    · files.pythonhosted.org                not used yet
+    ✕ Blocked      example.com · not on the sandbox's allow list
+    · DNS          3 lookups, 2 refused. The resolver tries cluster names first…
+
+  TRY IT
+     a  Open pi-session in the agent, and ask for something that needs your acc…
+     o  Open the zone's events in the Keycard console
+     x  Open a shell in the agent
+
+  a  open pi-session   o  zone events   x  shell   ?  keys   q  quit
