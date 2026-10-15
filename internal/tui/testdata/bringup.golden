@@ -1,0 +1,42 @@
+ keycard sandbox   home                                                                                               ⠸ bringing up ━━━━━━━━━━━━ 6/10
+
+  Bringing up your sandbox
+  The first time takes a few minutes. Quitting stops the step that runs. What is done stays, and u runs the steps
+  again.
+
+  ✓ Start the tunnel                                                       10s
+  ✓ Create or check the cluster                                            10s
+  ✓ Start the issuer mirror                                                10s
+  ✓ Verify the issuer with Keycard                                         10s
+  ✓ Import the images                                                      10s
+  ✓ Set up the Keycard zone                                                10s
+  ⠸ Install the charts                                                     41s
+  · Create each agent's sandbox
+  · Wait for each agent's pod
+  · Run the checks in each agent
+
+  INSTALL THE CHARTS
+  │ Release "keycard-sandbox" has been upgraded. Happy Helming!
+  │ NAME: keycard-sandbox
+  │ STATUS: deployed
+  │ Waiting for deployment agent-sandbox-controller to be ready
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  u  stop   ?  keys   q  quit

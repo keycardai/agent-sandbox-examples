@@ -14,6 +14,29 @@ zone fetches `<issuer>/.well-known/openid-configuration` and compares its
 `https://kubernetes.default.svc.cluster.local` unless told otherwise, and
 `--service-account-issuer` can only be set when the cluster is created.
 
+## The TUI
+
+On a terminal, `go run ./cmd/sandbox` opens the TUI, once
+`go run ./cmd/sandbox init` has saved settings the bring-up can use.
+Without them, it says what is missing and does not open. The TUI brings
+the sandbox up one step at a time, and then shows what runs.
+
+Home shows the bring-up as it runs, or where it stopped and why. Once the
+agent runs, Home says what Keycard did for each of the demo's endpoints,
+which hosts the proxy blocked, what to try next, and the latest activity.
+
+`u` brings the sandbox up, or starts again at the step that failed. `a`
+hands the terminal to the demo's agent, such as pi, and the TUI comes back
+when it exits. `o` opens the zone's events in the Keycard console,
+where the zone records each credential it issues. `x` opens a shell in the
+agent, `c` runs the checks, `R` restarts the agent's pod, and `?` lists
+every key.
+
+The tunnel and the mirror run as background processes. Quitting the TUI
+leaves the sandbox up, and the TUI shows it again when it starts. The quick
+tunnel keeps its URL, so the cluster keeps working. `D` in the TUI, or
+`go run ./cmd/sandbox down`, stops them and deletes the cluster.
+
 ## Before you start
 
 - Docker, and the tools in `mise.toml` (`mise install`).
@@ -171,8 +194,8 @@ zone-setup stops if another policy set is active. Run `sandbox run` with
 `local/out/zone-setup.yaml`. To run the checks again against the running
 sandbox, use `go run ./cmd/sandbox check`.
 
-`go run ./cmd/sandbox down` deletes the cluster. It does not delete what
-zone-setup created in the zone.
+`go run ./cmd/sandbox down` stops the tunnel and the mirror, and deletes the
+cluster. It does not delete what zone-setup created in the zone.
 
 ## Scenarios
 
@@ -387,7 +410,7 @@ the management API URL is not `https://api.keycard.ai`.
 | `sandbox check` | runs the checks against the running sandbox. To check that the cluster enforces NetworkPolicy, it starts a pod in the sandbox namespace that tries to connect to CoreDNS on a port the policy blocks. kubectl deletes the pod when it exits. The check changes nothing else in the cluster. |
 | `sandbox logs` | follows the log of the running sandbox's agent, until you press Ctrl-C or the agent exits |
 | `sandbox shell` | runs the scenario's `run.command` in the running sandbox's agent container, or `sh` when it has none, attached to your terminal |
-| `sandbox down` | deletes the local cluster. It asks first, unless you pass `--yes`. |
+| `sandbox down` | stops the tunnel and the mirror, and deletes the local cluster. It asks first, unless you pass `--yes`. |
 
 Every ID that `sandbox run` passes on comes from the zone-setup output in
 `local/out/zone-setup.yaml`.
