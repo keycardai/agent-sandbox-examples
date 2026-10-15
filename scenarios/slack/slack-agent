@@ -45,7 +45,8 @@ def log(message):
 
 def request(url, headers, body=None, form=None):
     """Sends body as JSON, or form as a form, and returns the decoded JSON
-    response. On a 429, it waits for Retry-After and tries again."""
+    response. On a 429, it waits for Retry-After and tries again. Any other
+    HTTP or network error raises Failed."""
     data, content_type = None, "application/json; charset=utf-8"
     if body is not None:
         data = json.dumps(body).encode()
@@ -65,6 +66,8 @@ def request(url, headers, body=None, form=None):
                 time.sleep(wait)
                 continue
             raise Failed(f"{req.host} returned {err.code}: {err.read(300).decode(errors='replace')}") from err
+        except OSError as err:
+            raise Failed(f"{req.host}: {err}") from err
 
 
 def slack(method, **params):
