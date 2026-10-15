@@ -49,12 +49,14 @@ func newLocal(t *testing.T, settings sandbox.Settings, body string) (*sandbox.Lo
 	t.Helper()
 	dir := t.TempDir()
 	script, calls := filepath.Join(dir, "tool"), filepath.Join(dir, "calls")
-	//nolint:gosec // G306: the fake tool must be executable.
-	if err := os.WriteFile(script, []byte(record+body), 0o700); err != nil {
+	if err := os.WriteFile(script, []byte(record+body), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// bash reads the script. On Linux, executing a file that was just written
+	// can fail with "text file busy" while a parallel test forks.
 	tool := func(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
-		cmd := exec.CommandContext(ctx, script, args...) //nolint:gosec // G204: the script is the test's fake tool.
+		//nolint:gosec // G204: the script is the test's fake tool.
+		cmd := exec.CommandContext(ctx, "bash", append([]string{script}, args...)...)
 		cmd.Env = append(os.Environ(), "FAKE_TOOL="+name, "CALLS="+calls)
 		return cmd, nil
 	}
@@ -328,6 +330,32 @@ exec sleep 60
 				}
 			}
 		})
+	}
+}
+
+// TestQuickTunnelLost checks that Tunnel stops a quick tunnel that Cloudflare
+// no longer knows, which cloudflared would retry forever, and removes its URL.
+func TestQuickTunnelLost(t *testing.T) {
+	t.Parallel()
+	notFound := `echo 'ERR Register tunnel error from server side error="Unauthorized: Tunnel not found"' >&2` + "\n"
+	local, _ := newLocal(t, sandbox.Settings{}, `
+echo "INF |  https://lost-brown-fox.trycloudflare.com  |" >&2
+`+strings.Repeat(notFound, 3)+`exec sleep 60
+`)
+	out := &bytes.Buffer{}
+	local.Out = out
+	err := local.Tunnel(t.Context(), "127.0.0.1:8480")
+	checkErr(
+		t,
+		err,
+		[]error{sandbox.ErrTunnel},
+		"Cloudflare deleted the quick tunnel https://lost-brown-fox.trycloudflare.com",
+	)
+	if _, err := os.Stat(local.QuickIssuerFile()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("issuer file: %v, want it removed", err)
+	}
+	if !strings.Contains(out.String(), "Start the tunnel again for a new URL") {
+		t.Errorf("output = %q, want it to say what to do", out)
 	}
 }
 

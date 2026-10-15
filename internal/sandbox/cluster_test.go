@@ -25,6 +25,21 @@ const (
 		" wait --for=create serviceaccount/default --timeout=120s\n" +
 		"kubectl KUBERC=off --context k3d-asp --namespace default create token default --duration 10m\n"
 	deleteCall = "k3d KUBERC= cluster delete asp\n"
+	// leftoversCall lists the containers labeled with the cluster's name.
+	leftoversCall = "docker KUBERC= ps --all --filter label=k3d.cluster=asp --format {{.Names}}\n"
+	// leftover prints a container left over from an earlier cluster asp.
+	leftover = `[[ "$FAKE_TOOL $1" == "docker ps" ]] && echo k3d-asp-tools` + "\n"
+	// removeQuestion is the question Bootstrap asks about leftover, and its
+	// default.
+	removeQuestion = "Remove k3d-asp-tools, left over from an earlier k3d cluster asp? [default false]"
+	// createFails is a k3d create that logs as k3d does, in color, and fails.
+	createFails = `[[ "$FAKE_TOOL $1 $2" == "k3d cluster create" ]] && {
+	printf '\e[36mINFO\e[0m[0000] Prep: Network\n'
+	printf '\e[31mERRO\e[0m[0001] Failed Cluster Start: port 6443 is in use\n'
+	printf '\e[31mFATA\e[0m[0002] Cluster creation FAILED, all changes have been rolled back!  \n'
+	exit 1
+}
+`
 	// present is a k3d listing that includes the cluster asp.
 	present = `[{"name":"other"},{"name":"asp"}]`
 )
@@ -99,21 +114,62 @@ func TestBootstrapDryRun(t *testing.T) {
 const deleteAdvice = "k3d sets them only when it creates a cluster. Delete the cluster with\n" +
 	"    go run ./cmd/sandbox down --cluster asp, or bootstrap with its issuer"
 
+// noContext makes kubectl fail as it does for a kubeconfig without the
+// cluster's context.
+const noContext = `case "$*" in *"get --raw /.well-known/openid-configuration")
+	echo 'error: context "k3d-asp" does not exist' >&2; exit 1 ;;
+esac
+`
+
+// brokenAdvice ends the error from Bootstrap for a cluster without a
+// kubeconfig context. It does not suggest the cluster's issuer.
+const brokenAdvice = ". Delete the cluster with\n" +
+	"    go run ./cmd/sandbox down --cluster asp"
+
 // TestBootstrap checks that Bootstrap creates a missing cluster or checks an
-// existing one, then checks the iss of a minted token.
+// existing one, then checks the iss of a minted token. A nil ask means stdin
+// is not a terminal.
 func TestBootstrap(t *testing.T) {
 	t.Parallel()
 	const other = "https://other.example.com"
 
 	tests := []struct {
-		name, list, discovered, minted string
-		want                           []error
-		wantText, wantCalls, wantOut   string
+		name, list, discovered, minted, before string
+		ask                                    *confirmAsker
+		want                                   []error
+		wantText, wantCalls, wantOut           string
+		wantAsked                              []string
 	}{
 		{
 			name: "absent", list: `[{"name":"other"}]`, minted: testIssuer,
-			wantCalls: listCall + createCall + mintCalls,
+			wantCalls: listCall + leftoversCall + createCall + mintCalls,
 			wantOut:   "Created the k3d cluster asp, and added the context k3d-asp to your kubeconfig.\n",
+		},
+		{
+			name: "left over, answered yes", list: "[]", minted: testIssuer, before: leftover,
+			ask:       &confirmAsker{answer: true},
+			wantCalls: listCall + leftoversCall + deleteCall + createCall + mintCalls,
+			wantOut:   "Removing k3d-asp-tools, left over from an earlier k3d cluster asp.\n",
+			wantAsked: []string{removeQuestion},
+		},
+		{
+			name: "left over, answered no", list: "[]", before: leftover, ask: &confirmAsker{},
+			want:      []error{sandbox.ErrConfirm},
+			wantText:  "nothing removed. k3d cannot create the cluster asp while k3d-asp-tools exists",
+			wantCalls: listCall + leftoversCall,
+			wantAsked: []string{removeQuestion},
+		},
+		{
+			name: "left over, no terminal", list: "[]", before: leftover,
+			want:      []error{sandbox.ErrConfirm, sandbox.ErrNoTerminal},
+			wantText:  "Remove it with\n    k3d cluster delete asp",
+			wantCalls: listCall + leftoversCall,
+		},
+		{
+			name: "create fails", list: "[]", before: createFails,
+			wantText:  "k3d cluster create asp: Failed Cluster Start: port 6443 is in use: exit status 1",
+			wantCalls: listCall + leftoversCall + createCall,
+			wantOut:   "Cluster creation FAILED",
 		},
 		{
 			name: "present with the issuer", list: present, discovered: testIssuer, minted: testIssuer,
@@ -126,9 +182,15 @@ func TestBootstrap(t *testing.T) {
 			wantCalls: listCall + discoveryCall,
 		},
 		{
+			name: "present without a kubeconfig context", list: present, before: noContext,
+			want:      []error{sandbox.ErrBrokenCluster},
+			wantText:  "your kubeconfig has no context k3d-asp" + brokenAdvice,
+			wantCalls: listCall + discoveryCall,
+		},
+		{
 			name: "token names another issuer", list: "[]", minted: other,
 			want: []error{sandbox.ErrIssuer}, wantText: `the cluster mints tokens with iss "` + other + `"`,
-			wantCalls: listCall + createCall + mintCalls,
+			wantCalls: listCall + leftoversCall + createCall + mintCalls,
 		},
 		{
 			name: "cannot list", list: "FAIL",
@@ -144,16 +206,26 @@ func TestBootstrap(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			local, calls := newLocal(t, sandbox.Settings{}, clusterTool(tc.list, tc.discovered, tc.minted))
+			local, calls := newLocal(t, sandbox.Settings{}, tc.before+clusterTool(tc.list, tc.discovered, tc.minted))
 			out := &bytes.Buffer{}
 			local.Out = out
+			tc.ask.use(local)
 			err := local.Bootstrap(t.Context(), cluster, testIssuer, false)
-			checkErr(t, err, tc.want, tc.wantText)
+			if tc.want == nil && tc.wantText != "" {
+				if err == nil || err.Error() != tc.wantText {
+					t.Fatalf("err = %v, want %q", err, tc.wantText)
+				}
+			} else {
+				checkErr(t, err, tc.want, tc.wantText)
+			}
 			if got := readCalls(t, calls); got != tc.wantCalls {
 				t.Fatalf("calls = %q, want %q", got, tc.wantCalls)
 			}
 			if !strings.Contains(out.String(), tc.wantOut) {
 				t.Errorf("output lacks %q\n%s", tc.wantOut, out)
+			}
+			if got := tc.ask.questions(); !slices.Equal(got, tc.wantAsked) {
+				t.Errorf("asked %q, want %q", got, tc.wantAsked)
 			}
 		})
 	}

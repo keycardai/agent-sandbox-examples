@@ -23,6 +23,14 @@ const (
 	quickURLTimeout = 60 * time.Second
 	// stopTimeout is how long cloudflared has to exit after SIGTERM.
 	stopTimeout = 10 * time.Second
+	// lostAfter is how many times Cloudflare must answer that it no longer
+	// knows the quick tunnel before Tunnel gives up on it. cloudflared
+	// itself retries forever.
+	lostAfter = 3
+	// tunnelNotFound is how cloudflared logs Cloudflare's answer for a
+	// tunnel it deleted, as it does a quick tunnel that lost its connection
+	// for a while.
+	tunnelNotFound = "Unauthorized: Tunnel not found"
 )
 
 var (
@@ -126,9 +134,9 @@ func (l *Local) quickTunnel(ctx context.Context, listen string) error {
 		exited <- waitErr
 	}()
 	out := &lockedWriter{w: l.Out}
-	found, scanned := make(chan string, 1), make(chan struct{})
+	found, lost, scanned := make(chan string, 1), make(chan struct{}, 1), make(chan struct{})
 	go func() {
-		scanQuickURL(logs, out, found)
+		scanQuickURL(logs, out, found, lost)
 		close(scanned)
 	}()
 	published := ""
@@ -138,8 +146,9 @@ func (l *Local) quickTunnel(ctx context.Context, listen string) error {
 
 	timer := time.NewTimer(quickURLTimeout)
 	defer timer.Stop()
+	var url string
 	select {
-	case url := <-found:
+	case url = <-found:
 		if lock, err = publishQuickURL(issuerFile, url); err != nil {
 			stop()
 			<-exited
@@ -155,7 +164,29 @@ func (l *Local) quickTunnel(ctx context.Context, listen string) error {
 		<-exited
 		return fmt.Errorf("%w: cloudflared did not print a trycloudflare.com URL within %s", ErrTunnel, quickURLTimeout)
 	}
-	return stopped(ctx, <-exited)
+	return serveQuick(ctx, out, url, exited, lost, stop)
+}
+
+// serveQuick waits until cloudflared exits. Once Cloudflare no longer knows
+// the tunnel at url, it stops cloudflared and returns ErrTunnel.
+func serveQuick(
+	ctx context.Context,
+	out io.Writer,
+	url string,
+	exited <-chan error,
+	lost <-chan struct{},
+	stop context.CancelFunc,
+) error {
+	select {
+	case err := <-exited:
+		return stopped(ctx, err)
+	case <-lost:
+		_, _ = fmt.Fprintf(out, "Cloudflare no longer knows the quick tunnel %s, so its URL will not work again. "+
+			"Stopping cloudflared. Start the tunnel again for a new URL, and recreate the cluster for it.\n", url)
+		stop()
+		<-exited
+		return fmt.Errorf("%w: Cloudflare deleted the quick tunnel %s", ErrTunnel, url)
+	}
 }
 
 // writeQuickConfig writes a cloudflared config file for a quick tunnel and
@@ -283,15 +314,21 @@ func publishQuickURL(issuerFile, url string) (*os.File, error) {
 }
 
 // scanQuickURL copies cloudflared's log lines to out, and sends the first
-// quick tunnel URL in them to found.
-func scanQuickURL(logs io.Reader, out io.Writer, found chan<- string) {
+// quick tunnel URL in them to found. It signals lost once Cloudflare has
+// answered lostAfter times that it does not know the tunnel.
+func scanQuickURL(logs io.Reader, out io.Writer, found chan<- string, lost chan<- struct{}) {
 	lines := bufio.NewScanner(logs)
-	sent := false
+	sent, notFound := false, 0
 	for lines.Scan() {
 		_, _ = fmt.Fprintln(out, lines.Text())
 		if url := quickURL.FindString(lines.Text()); url != "" && !sent {
 			found <- url
 			sent = true
+		}
+		if strings.Contains(lines.Text(), tunnelNotFound) {
+			if notFound++; notFound == lostAfter {
+				lost <- struct{}{}
+			}
 		}
 	}
 	// The scanner stops at a line that is too long. Copy the rest, so that
