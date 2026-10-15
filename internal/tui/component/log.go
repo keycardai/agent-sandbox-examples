@@ -29,22 +29,32 @@ const (
 // Log holds the last MaxLines lines of one log. Writes come from the
 // goroutine that reads the log, and reads from the TUI, so it locks.
 type Log struct {
-	mu      sync.Mutex
-	lines   []string
+	mu sync.Mutex
+	// lines is a ring of up to MaxLines lines, the oldest at start.
+	lines []string
+	start int
+	// partial is a line that waits for its newline, cut at maxLineBytes,
+	// and cut reports whether it lost bytes there.
 	partial string
+	cut     bool
 	// version counts the writes, so the TUI renders a log again only when
 	// it changed.
 	version int
 }
 
 // Write splits data into lines. A line without its newline waits for the
-// next Write.
+// next Write. A line keeps its first maxLineBytes and ends in …, as
+// ReadLines cuts one.
 func (b *Log) Write(data []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	parts := strings.Split(b.partial+string(data), "\n")
-	b.partial = parts[len(parts)-1]
-	b.appendLocked(parts[:len(parts)-1]...)
+	parts := strings.Split(string(data), "\n")
+	for _, part := range parts[:len(parts)-1] {
+		b.extendPartial(part)
+		b.appendLocked(lineText([]byte(b.partial), b.cut))
+		b.partial, b.cut = "", false
+	}
+	b.extendPartial(parts[len(parts)-1])
 	// A partial line shows too, such as a progress bar that has no newline.
 	b.version++
 	return len(data), nil
@@ -63,7 +73,7 @@ func (b *Log) Add(lines ...string) {
 func (b *Log) Reset() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.lines, b.partial = nil, ""
+	b.lines, b.start, b.partial, b.cut = nil, 0, "", false
 	b.version++
 }
 
@@ -71,9 +81,11 @@ func (b *Log) Reset() {
 func (b *Log) Snapshot() ([]string, int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	lines := append([]string(nil), b.lines...)
+	lines := make([]string, 0, len(b.lines)+1)
+	lines = append(lines, b.lines[b.start:]...)
+	lines = append(lines, b.lines[:b.start]...)
 	if b.partial != "" {
-		lines = append(lines, shown(b.partial))
+		lines = append(lines, shown(lineText([]byte(b.partial), b.cut)))
 	}
 	return lines, b.version
 }
@@ -95,15 +107,27 @@ func (b *Log) Version() int {
 	return b.version
 }
 
+// extendPartial adds text to the partial line, up to maxLineBytes. The rest
+// of the line is dropped. The caller holds b.mu.
+func (b *Log) extendPartial(text string) {
+	keep := min(len(text), maxLineBytes-len(b.partial))
+	b.partial += text[:keep]
+	b.cut = b.cut || keep < len(text)
+}
+
+// appendLocked adds lines to the ring. Once it holds MaxLines, each line
+// replaces the oldest. The caller holds b.mu.
 func (b *Log) appendLocked(lines ...string) {
 	if len(lines) == 0 {
 		return
 	}
 	for _, line := range lines {
-		b.lines = append(b.lines, shown(line))
-	}
-	if over := len(b.lines) - MaxLines; over > 0 {
-		b.lines = append([]string(nil), b.lines[over:]...)
+		if len(b.lines) < MaxLines {
+			b.lines = append(b.lines, shown(line))
+			continue
+		}
+		b.lines[b.start] = shown(line)
+		b.start = (b.start + 1) % MaxLines
 	}
 	b.version++
 }

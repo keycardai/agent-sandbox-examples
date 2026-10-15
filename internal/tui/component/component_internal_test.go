@@ -31,6 +31,33 @@ func TestLog(t *testing.T) {
 	}
 }
 
+// TestLogRing keeps the newest MaxLines lines in order once the log is
+// full, and cuts a line that never ends at maxLineBytes, with …, as
+// ReadLines does.
+func TestLogRing(t *testing.T) {
+	t.Parallel()
+	log := &Log{}
+	for i := range MaxLines + 3 {
+		log.Add(strconv.Itoa(i))
+	}
+	lines, _ := log.Snapshot()
+	if len(lines) != MaxLines || lines[0] != "3" || lines[MaxLines-1] != strconv.Itoa(MaxLines+2) {
+		t.Errorf("lines = %d, from %q to %q; want %d, from 3 to %d",
+			len(lines), lines[0], lines[len(lines)-1], MaxLines, MaxLines+2)
+	}
+	long := &Log{}
+	chunk := []byte(strings.Repeat("x", maxLineBytes/2))
+	for range 3 {
+		_, _ = long.Write(chunk)
+	}
+	_, _ = long.Write([]byte("\nnext\n"))
+	lines, _ = long.Snapshot()
+	if len(lines) != 2 || lines[0] != strings.Repeat("x", maxLineBytes)+"…" || lines[1] != "next" {
+		t.Errorf("lines = %d, the first %d bytes; want the long line cut at %d with …, then next",
+			len(lines), len(lines[0]), maxLineBytes)
+	}
+}
+
 // TestLogPlain keeps a line's text and drops what would reach the terminal
 // as a command: a title, a cursor move, a DCS string, a bell, a backspace.
 func TestLogPlain(t *testing.T) {
