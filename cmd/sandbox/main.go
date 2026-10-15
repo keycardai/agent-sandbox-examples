@@ -1,11 +1,12 @@
 // Command sandbox runs the sandbox demo: an agent in a Kubernetes sandbox
 // whose HTTPS goes through the Keycard egress proxy. On a terminal, with no
-// subcommand, it opens the TUI, which brings the sandbox up and shows it:
+// subcommand, it opens the TUI, which sets the sandbox up, brings it up and
+// shows it:
 //
 //	go run ./cmd/sandbox
 //
 // Each subcommand is one step, and each step reads its settings from
-// ~/.config/keycard/sandbox.yaml, which init saves when you ask it to, and
+// ~/.config/keycard/sandbox.yaml, which setup saves when you ask it to, and
 // from the environment. docs/local.md describes the steps. `up` runs them all
 // without the TUI:
 //
@@ -67,9 +68,8 @@ const intro = `This runs an AI agent in a Kubernetes sandbox. The agent's HTTPS 
 go through the Keycard egress proxy, which adds the user's credentials from
 your Keycard zone.
 
-On a terminal, go run ./cmd/sandbox opens the TUI once go run ./cmd/sandbox
-init has saved the settings. The TUI brings the sandbox up and shows it.
-To run every step without the TUI, run:
+On a terminal, go run ./cmd/sandbox opens the TUI, which sets the sandbox
+up, brings it up and shows it. To run every step without the TUI, run:
 
     go run ./cmd/sandbox up
 
@@ -121,10 +121,9 @@ func newCommand() *cli.Command {
 	}
 }
 
-// start opens the TUI on a terminal, once the settings can bring the
-// sandbox up. Elsewhere it prints intro. It refuses an argument, such as a
-// mistyped subcommand, which would otherwise open the TUI and start the
-// bring-up.
+// start opens the TUI on a terminal. Elsewhere it prints intro. It refuses
+// an argument, such as a mistyped subcommand, which would otherwise open the
+// TUI.
 func start(ctx context.Context, cmd *cli.Command) error {
 	if cmd.Args().Present() {
 		return fmt.Errorf("%w %q. Run go run ./cmd/sandbox --help to list the subcommands",
@@ -139,9 +138,6 @@ func start(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 	session := local.NewSession(defaultListen, defaultIssuerWait)
-	if problems := session.Problems(); len(problems) > 0 {
-		return fmt.Errorf("run go run ./cmd/sandbox init first: %w", errors.Join(problems...))
-	}
 	if err = tui.Run(ctx, tui.Options{Session: session}); err != nil {
 		return fmt.Errorf("tui: %w", err)
 	}

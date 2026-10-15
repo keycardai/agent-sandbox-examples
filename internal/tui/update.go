@@ -6,18 +6,23 @@ import (
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/component"
+	"github.com/keycardai/agent-sandbox-examples/internal/tui/page"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/state"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/style"
 )
 
-// Init shows Home. When the bring-up starts with the tunnel, Init brings
-// the sandbox up, unless the tunnel already runs: then the sandbox may be
-// up from before, and the TUI only shows what runs. Without a tunnel step,
+// Init picks the first screen. With settings that have a problem, such as
+// no settings at all, it opens the welcome screen. Otherwise it shows the
+// dashboard. When the bring-up starts with the tunnel, Init brings the
+// sandbox up, unless the tunnel already runs: then the sandbox may be up
+// from before, and the TUI only shows what runs. Without a tunnel step,
 // as on an existing cluster, the bring-up waits for u. Home says what to
 // do once the first read comes back, since the sandbox may be up.
 func (m *model) Init() tea.Cmd {
 	cmds := []tea.Cmd{frameTick(), m.poll(), m.bus.next(), tea.RequestWindowSize, tea.RequestBackgroundColor}
 	switch {
+	case len(m.state.Problems) > 0:
+		return tea.Batch(append(cmds, m.openWelcome())...)
 	case len(m.state.Run.Steps) == 0, m.state.Run.Steps[0].Step.ID != sandbox.StepTunnel:
 	case m.session.Local().ServiceStatus(sandbox.ServiceTunnel).Running:
 		m.state.Record("•", "Found the tunnel running from before")
@@ -42,10 +47,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.ui.Width, m.ui.Height = msg.Width, msg.Height
+		return m, m.setup.Resize()
 	case tea.BackgroundColorMsg:
-		m.ui.Styles = style.New(msg.IsDark())
+		m.ui.Styles, m.ui.Background = style.New(msg.IsDark()), msg.Color
+	case page.AskMsg:
+		return m, m.ask(msg.Question)
 	case tea.KeyPressMsg:
 		return m, m.keyPress(msg)
+	}
+	if m.overlay.kind == overlayQuestion {
+		return m, m.answer(msg)
 	}
 	return m, nil
 }
@@ -54,13 +65,15 @@ func (m *model) updateBackground(msg tea.Msg) (tea.Cmd, bool) {
 	if cmd, handled := m.updateJobs(msg); handled {
 		return cmd, true
 	}
-	if m.updateAnswers(msg) {
-		return nil, true
+	if cmd, handled := m.updateAnswers(msg); handled {
+		return cmd, true
 	}
 	switch msg := msg.(type) {
+	case style.GlintMsg:
+		return m.welcome.Glint.Move(msg.Now, m.screen == screenWelcome && m.welcome.Checking()), true
 	case frameMsg:
 		m.ui.Frame++
-		return frameTick(), true
+		return tea.Batch(frameTick(), m.welcomeGlint()), true
 	case pollMsg:
 		m.tickPlanned = false
 		return m.poll(), true
@@ -78,7 +91,8 @@ func (m *model) updateBackground(msg tea.Msg) (tea.Cmd, bool) {
 	return nil, false
 }
 
-// updateJobs handles what the bring-up, an action and the agent report.
+// updateJobs handles what the bring-up, the setup, an action and the agent
+// report.
 func (m *model) updateJobs(msg tea.Msg) (tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case stepStartMsg:
@@ -94,14 +108,42 @@ func (m *model) updateJobs(msg tea.Msg) (tea.Cmd, bool) {
 	case eventsMsg:
 		m.onEvents(msg)
 	default:
+		return m.updateOnboarding(msg)
+	}
+	return nil, true
+}
+
+// updateOnboarding handles what the machine checks and the setup report.
+func (m *model) updateOnboarding(msg tea.Msg) (tea.Cmd, bool) {
+	switch msg := msg.(type) {
+	case page.CheckDoneMsg:
+		return m.welcome.OnCheck(msg), true
+	case page.SectionMsg:
+		m.setup.OnSection(msg)
+	case setupDoneMsg:
+		m.onSetupDone(msg)
+	case forgetDoneMsg:
+		m.onForgetDone(msg)
+	case page.PresetMsg:
+		m.setup.OnPreset(msg)
+	default:
 		return nil, false
 	}
 	return nil, true
 }
 
-// keyPress routes a key: to the overlay when one is open, else to Home. A
-// question that waited opens once the overlay closed, or once the answer
-// it sent is handled.
+// welcomeGlint starts the sheen across the mark while the welcome screen
+// checks the machine, however the screen came to show.
+func (m *model) welcomeGlint() tea.Cmd {
+	if m.screen != screenWelcome || !m.welcome.Checking() {
+		return nil
+	}
+	return m.welcome.Glint.Start()
+}
+
+// keyPress routes a key: to the overlay when one is open, else to the
+// screen. A question that waited opens once the overlay closed, or once the
+// answer it sent is handled.
 func (m *model) keyPress(msg tea.KeyPressMsg) tea.Cmd {
 	if cmd, handled := m.overlayKeys(msg); handled {
 		if cmd == nil {
@@ -116,17 +158,43 @@ func (m *model) keyPress(msg tea.KeyPressMsg) tea.Cmd {
 		m.overlay = overlay{kind: overlayHelp}
 		return nil
 	}
+	return m.screenKeys(msg)
+}
+
+// screenKeys gives a key to the screen that shows.
+func (m *model) screenKeys(msg tea.KeyPressMsg) tea.Cmd {
+	switch m.screen {
+	case screenWelcome:
+		return m.welcomeKeys(msg)
+	case screenWizard:
+		// A question takes the keys itself. Between questions, esc stops
+		// the setup.
+		if msg.String() == component.KeyEsc {
+			m.stopSetup()
+		}
+		return nil
+	case screenReview:
+		return m.reviewKeys(msg)
+	case screenSettings:
+		return m.settingsKeys(msg)
+	case screenDashboard:
+	}
 	return m.dashboardKeys(msg)
 }
 
 func (m *model) overlayKeys(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	switch m.overlay.kind {
+	case overlayQuestion:
+		return m.answer(msg), true
 	case overlayConfirm:
 		return m.confirmKeys(msg), true
 	case overlayQuit:
 		return m.quitKeys(msg), true
+	case overlayDemo:
+		m.demoKeys(msg)
+		return nil, true
 	case overlayHelp:
-		m.overlay = overlay{}
+		m.closeOverlay()
 		return nil, true
 	case overlayNone:
 	}
@@ -154,9 +222,23 @@ func (m *model) quitBody() string {
 		body = "The checks are running, and quitting stops them where they are.\n" + body
 	case state.JobAction, state.JobStop:
 		body = job.Name + " is running, and quitting stops it where it is.\n" + body
+	case state.JobSetup:
+		body = setupStops + "\n" + body
 	case state.JobNone:
 	}
 	return body
+}
+
+// setupStops is what quitting does to a setup that runs.
+const setupStops = "Setup stops, and keeps none of its answers."
+
+// closeOverlay closes the dialog that shows, and shows the setup's
+// question again when one waits.
+func (m *model) closeOverlay() {
+	m.overlay = overlay{}
+	if m.setup.Asking() {
+		m.overlay.kind = overlayQuestion
+	}
 }
 
 // anythingRunning reports whether anything runs that D stops.
@@ -168,13 +250,14 @@ func (m *model) anythingRunning() bool {
 
 func (m *model) quitKeys(msg tea.KeyPressMsg) tea.Cmd {
 	keepsRunning := m.anythingRunning()
-	m.overlay = overlay{}
+	m.closeOverlay()
 	switch msg.String() {
 	case component.KeyEnter, "q", "y", component.KeyCtrlC:
 		m.state.Run.CancelJob()
+		m.stopSetup()
 		return tea.Quit
 	case "D":
-		if !keepsRunning || !m.state.Run.Job.RunsSteps() && m.busy() {
+		if !keepsRunning || m.stopAllWaits(true) {
 			return nil
 		}
 		m.askStopAll(true)
@@ -206,7 +289,7 @@ func (m *model) openWaiting() {
 
 func (m *model) confirmKeys(msg tea.KeyPressMsg) tea.Cmd {
 	yes := m.overlay.yes
-	m.overlay = overlay{}
+	m.closeOverlay()
 	if msg.String() != "y" && msg.String() != "Y" {
 		return nil
 	}
@@ -232,6 +315,10 @@ func (m *model) actionKeys(msg tea.KeyPressMsg) bool {
 		m.runChecks()
 	case key.Matches(msg, keys.Restart):
 		m.restartAgent()
+	case key.Matches(msg, keys.Setup):
+		m.openSettings()
+	case key.Matches(msg, keys.Demo):
+		m.openDemoPicker()
 	case key.Matches(msg, keys.StopAll):
 		m.stopAll()
 	default:
@@ -272,4 +359,248 @@ func (m *model) isDown() bool {
 	}
 	m.ui.Notify("The sandbox is down. Press u to bring it up.", true)
 	return true
+}
+
+// openDemoPicker lists the demos, with the cursor on the first one that
+// does not run now.
+func (m *model) openDemoPicker() {
+	if len(m.state.DemoList()) == 0 {
+		m.ui.Notify("No demo loads: "+component.FirstLine(m.state.DemosErr.Error()), true)
+		return
+	}
+	if m.busy() {
+		return
+	}
+	m.demos.Open()
+	m.overlay = overlay{kind: overlayDemo}
+}
+
+// demoKeys moves through the demos, and switches to the one chosen.
+func (m *model) demoKeys(msg tea.KeyPressMsg) {
+	name, pick := m.demos.Keys(msg)
+	switch pick {
+	case component.PickChosen:
+		m.overlay = overlay{}
+		m.switchDemo(name)
+	case component.PickClosed:
+		m.overlay = overlay{}
+	case component.PickNone:
+	}
+}
+
+// switchDemo asks the demo's questions with the demo already chosen. Its
+// credentials come next, then the review, where enter brings the sandbox
+// up with it.
+func (m *model) switchDemo(name string) {
+	m.state.Record("▸", "Switching the demo to "+name)
+	m.startWizard(screenDashboard, map[string]string{sandbox.QuestionDemo: name}, sandbox.SectionScenario)
+}
+
+// welcomeKeys handles a key on the welcome screen.
+func (m *model) welcomeKeys(msg tea.KeyPressMsg) tea.Cmd {
+	switch {
+	case msg.String() == component.KeyEnter:
+		m.startWizard(screenWelcome, nil, m.welcome.Fix...)
+	case key.Matches(msg, m.ui.Keys.Setup) && !m.state.FirstRun():
+		m.showSettings(screenWelcome)
+	case msg.String() == "r" && !m.welcome.Checking():
+		return m.checkAgain()
+	}
+	return nil
+}
+
+// checkAgain reads the settings again, as after the keychain was unlocked,
+// and checks the machine again. With nothing left to fix, the review shows.
+func (m *model) checkAgain() tea.Cmd {
+	m.state.RefreshSettings()
+	if len(m.state.Problems) == 0 && m.session.Local().Initialized() {
+		m.screen = screenReview
+		return nil
+	}
+	return m.welcome.Open()
+}
+
+// reviewKeys handles a key on the review screen.
+func (m *model) reviewKeys(msg tea.KeyPressMsg) tea.Cmd {
+	keys := m.ui.Keys
+	switch {
+	case msg.String() == component.KeyEnter, key.Matches(msg, keys.Start):
+		return m.launch()
+	case key.Matches(msg, keys.Setup):
+		m.showSettings(screenReview)
+	case key.Matches(msg, keys.Back):
+		m.screen = screenDashboard
+		if m.state.Up() {
+			m.ui.Notify("The sandbox still runs with the settings from before. Press u to bring it up "+
+				"with the new ones.", false)
+		}
+	}
+	return nil
+}
+
+// settingsKeys handles a key on the settings screen.
+func (m *model) settingsKeys(msg tea.KeyPressMsg) tea.Cmd {
+	keys := m.ui.Keys
+	if m.settings.Move(msg) {
+		return nil
+	}
+	switch {
+	case msg.String() == component.KeyEnter:
+		m.startWizard(screenSettings, nil, m.settings.Selected())
+	case msg.String() == "a":
+		m.startWizard(screenSettings, nil)
+	case msg.String() == "F":
+		m.forgetSettings()
+	case key.Matches(msg, keys.Start):
+		return m.launch()
+	case key.Matches(msg, keys.Back):
+		return m.leaveSettings()
+	}
+	return nil
+}
+
+// openWelcome shows the welcome screen: for a first run, or to fix the
+// problems the settings have.
+func (m *model) openWelcome() tea.Cmd {
+	m.screen = screenWelcome
+	return m.welcome.Open()
+}
+
+// startWizard lays the rail out and starts the setup for the sections, or
+// for every section when there are none. preset answers choices by
+// question, without asking them. While other work runs, the screen stays
+// as it is.
+func (m *model) startWizard(back screen, preset map[string]string, ids ...string) {
+	if m.busy() {
+		return
+	}
+	m.setup.Begin(ids...)
+	m.wizardBack = back
+	m.screen = screenWizard
+	m.startSetup(preset, ids...)
+}
+
+// launch brings the sandbox up and shows the dashboard, when the settings
+// have no problems.
+func (m *model) launch() tea.Cmd {
+	if len(m.state.Problems) > 0 {
+		m.ui.Notify("Fix the settings first.", true)
+		return nil
+	}
+	if m.busy() {
+		return nil
+	}
+	m.screen = screenDashboard
+	m.startBringUp(0, false)
+	return m.poll()
+}
+
+// openSettings shows the settings with the demo selected, as the setting
+// changed most.
+func (m *model) openSettings() {
+	if m.busy() {
+		return
+	}
+	m.settings.SelectDemo()
+	m.showSettings(screenDashboard)
+}
+
+// showSettings shows the settings, and remembers from for esc to go back
+// to.
+func (m *model) showSettings(from screen) {
+	m.settingsBack = from
+	m.screen = screenSettings
+}
+
+// leaveSettings goes back to the screen the settings came from. The
+// welcome screen checks the machine again, and says what still needs a
+// fix. With nothing left to fix, the review shows in its place.
+func (m *model) leaveSettings() tea.Cmd {
+	switch {
+	case m.settingsBack != screenWelcome:
+		m.screen = m.settingsBack
+	case len(m.state.Problems) == 0 && m.session.Local().Initialized():
+		m.screen = screenReview
+	default:
+		return m.openWelcome()
+	}
+	return nil
+}
+
+// settingsBackWord names where esc goes from the settings.
+func (m *model) settingsBackWord() string {
+	switch m.settingsBack {
+	case screenWelcome:
+		return "back"
+	case screenReview:
+		return "review"
+	case screenDashboard, screenWizard, screenSettings:
+	}
+	return "dashboard"
+}
+
+// forgetDoneMsg says how deleting the saved settings went.
+type forgetDoneMsg struct{ err error }
+
+// forgetSettings asks, then deletes the saved settings and the secrets in
+// the keychain, in the background. The settings last for this session.
+func (m *model) forgetSettings() {
+	local := m.session.Local()
+	store := local.Store
+	if !store.Saved() {
+		return
+	}
+	m.confirm("Forget the saved settings?", "This deletes "+sandbox.HomeRelative(store.Path())+" and the secrets in "+
+		store.KeychainWhere()+".\nThe sandbox keeps them until you quit, and setup asks for them next time.",
+		forgetSettingsMsg{})
+}
+
+// forget deletes the saved settings and the secrets in the keychain, in the
+// background, while they are saved.
+func (m *model) forget() tea.Cmd {
+	local := m.session.Local()
+	if !local.Store.Saved() {
+		return nil
+	}
+	return func() tea.Msg {
+		_, err := local.Forget()
+		return forgetDoneMsg{err: err}
+	}
+}
+
+func (m *model) onForgetDone(msg forgetDoneMsg) {
+	if msg.err != nil {
+		m.ui.Notify("Forgetting the settings: "+component.FirstLine(msg.err.Error()), true)
+		return
+	}
+	m.state.Record("✓", "Deleted the saved settings")
+	m.ui.Notify("Deleted the saved settings. They last until you quit.", false)
+}
+
+// ask shows the setup's question. A dialog that shows stays on top until it
+// closes. A question from a setup that stopped goes unanswered.
+func (m *model) ask(quest *page.Question) tea.Cmd {
+	if !m.setup.Open() {
+		return nil
+	}
+	cmd := m.setup.Ask(quest)
+	if m.overlay.kind == overlayNone {
+		m.overlay = overlay{kind: overlayQuestion}
+	}
+	return cmd
+}
+
+// answer passes msg to the setup's question, and closes it once answered.
+// Esc stops the setup.
+func (m *model) answer(msg tea.Msg) tea.Cmd {
+	cmd, state := m.setup.Answer(msg)
+	switch state {
+	case page.Stopped:
+		m.stopSetup()
+		m.overlay = overlay{}
+	case page.Answered:
+		m.overlay = overlay{}
+	case page.Asking:
+	}
+	return cmd
 }

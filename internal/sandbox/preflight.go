@@ -45,7 +45,7 @@ func (s *Session) PreflightItems() []PreflightItem {
 		{Name: "Docker", Run: local.preflightDocker},
 		{Name: "Sandbox images", Run: local.checkImages},
 		{Name: "Tools", Run: local.checkTools},
-		{Name: "Keycard account", Run: func(context.Context) Check { return local.checkAccount() }},
+		{Name: accountTitle, Run: func(context.Context) Check { return local.checkAccount() }},
 	}
 }
 
@@ -119,7 +119,7 @@ func firstLine(err error) string {
 // checkAccount says where the Keycard service account comes from: the
 // environment, the saved settings, or setup's questions.
 func (l *Local) checkAccount() Check {
-	check := Check{Name: "Keycard account"}
+	check := Check{Name: accountTitle}
 	secret, key := l.envSecret()
 	saved := l.previousValues().values.ManagementServiceAccount
 	switch {

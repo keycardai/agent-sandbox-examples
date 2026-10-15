@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
@@ -31,6 +32,10 @@ const (
 	// reasonUnanswered is the reason on a request the server did not
 	// answer.
 	reasonUnanswered = "upstream_failed"
+	// The kinds of a demo's inputs, as its scenario file names them.
+	inputGitHub = "github"
+	inputSecret = "secret"
+	inputText   = "text"
 )
 
 // piScenario is the pi demo's endpoints, under the default demo's name so
@@ -106,6 +111,7 @@ func upModel(t *testing.T) *model {
 	settings := root.session.Local().Settings
 	settings[sandbox.KeyUserEmail] = sampleUser
 	settings[sandbox.KeyZoneURL] = "https://wvqowjom3ctf3eysdimuj4h745.keycard.cloud"
+	root.screen = screenDashboard
 	root.state.Loaded = piScenario()
 	root.state.Reads.Status = sandbox.Status{
 		Deployed: true, ClusterExists: true, Tunnel: sandbox.ServiceState{Running: true},
@@ -135,6 +141,7 @@ func quietModel(t *testing.T) *model {
 	writeSettings(t, root)
 	root.session.Local().Settings[sandbox.KeyKubeContext] = "keycard-test-none"
 	root.state.ResetSteps()
+	root.state.Demos = sampleDemos()
 	return root
 }
 
@@ -142,11 +149,13 @@ func quietModel(t *testing.T) *model {
 func TestHomeStates(t *testing.T) {
 	t.Parallel()
 	down := testModel(t)
+	down.screen = screenDashboard
 	bringingUp := upModel(t)
 	bringingUp.state.Run.Job = state.Job{Kind: state.JobBringUp}
 	bringingUp.state.Run.Steps[2].State = state.StepRunning
 	bringingUp.state.Run.Cursor = 2
 	failed := testModel(t)
+	failed.screen = screenDashboard
 	failed.Update(stepDoneMsg{index: 1, err: sandbox.ErrDocker})
 	reading := testModel(t)
 	reading.state.Reads.Done = false
@@ -187,6 +196,94 @@ func TestHomeStates(t *testing.T) {
 				t.Errorf("%s: Home lacks %q:\n%s", name, want, view)
 			}
 		}
+	}
+}
+
+// sampleDemos are the checkout's three demos, as their scenario files
+// describe them.
+func sampleDemos() []*sandbox.Scenario {
+	piDemo := piScenario()
+	piDemo.Name, piDemo.Title = "pi", samplePi
+	piDemo.Inputs = []sandbox.ScenarioInput{
+		{ID: inputGitHub, Kind: inputGitHub},
+		{ID: "openrouter-api-key", Kind: inputSecret, Prompt: "OpenRouter API key"},
+		{ID: "repo", Kind: inputText, Prompt: "GitHub repository for pi to work in, as owner/name"},
+		{ID: "model", Kind: inputText, Prompt: "OpenRouter model for pi", Default: "anthropic/claude-sonnet-5"},
+	}
+	slack := &sandbox.Scenario{
+		Name:  sampleSlack,
+		Title: "Slack agent for GitHub and Linear",
+		Run:   sandbox.ScenarioRun{Mode: sandbox.ModeBackground},
+		Inputs: []sandbox.ScenarioInput{
+			{ID: "slack-bot-token", Kind: inputSecret, Prompt: "Slack bot token (xoxb-), with the im:write scope"},
+			{
+				ID:     "slack-user",
+				Kind:   inputText,
+				Prompt: "Your Slack member ID, such as U012AB3CDE. The agent answers only you.",
+			},
+			{ID: inputGitHub, Kind: inputGitHub},
+			{ID: "linear-api-key", Kind: inputSecret, Prompt: "Linear personal API key"},
+		},
+	}
+	smoke := &sandbox.Scenario{Name: sandbox.DefaultScenario, Title: sampleSmoke}
+	return []*sandbox.Scenario{piDemo, slack, smoke}
+}
+
+// TestDemoPicker lists every demo with the current one marked, and enter
+// starts the chosen demo's questions with the demo already chosen.
+func TestDemoPicker(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	root.state.Demos = sampleDemos()
+	view := ansi.Strip(root.View().Content)
+	if !strings.Contains(view, "Switch to another demo: pi or slack") || !strings.Contains(view, "switch demo") {
+		t.Errorf("Home does not offer the other demos:\n%s", view)
+	}
+	root.Update(press("p"))
+	view = ansi.Strip(root.View().Content)
+	if root.overlay.kind != overlayDemo || !strings.Contains(view, "▸ pi") {
+		t.Fatalf("p: overlay %v; want the picker on pi:\n%s", root.overlay.kind, view)
+	}
+	for _, want := range []string{
+		"Switch the demo", samplePi, "a opens pi-session", "Slack agent for GitHub and Linear",
+		"Smoke checks  ● running now", "Asks for GitHub, OpenRouter API key, GitHub repository for pi to work in.",
+		"Asks for Slack bot token, Slack member ID, GitHub, Linear personal API key.", "Asks for nothing.",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("picker lacks %q:\n%s", want, view)
+		}
+	}
+	root.Update(press("j"))
+	root.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	defer root.stopSetup()
+	if root.overlay.kind == overlayDemo || root.screen != screenWizard || !root.state.Run.Job.Is(state.JobSetup) {
+		t.Errorf("enter: overlay %v, screen %v, setup running %v; want the wizard", root.overlay.kind, root.screen,
+			root.state.Run.Job.Is(state.JobSetup))
+	}
+}
+
+// TestDemoPickerWhileDown marks the demo the settings name as chosen, and
+// none as running, while the sandbox is down.
+func TestDemoPickerWhileDown(t *testing.T) {
+	t.Parallel()
+	root := testModel(t)
+	root.state.Demos = sampleDemos()
+	root.Update(press("p"))
+	if view := ansi.Strip(root.View().Content); !strings.Contains(view, "Smoke checks  ● chosen") ||
+		strings.Contains(view, "running now") {
+		t.Errorf("the picker while the sandbox is down:\n%s", view)
+	}
+}
+
+// TestReviewLaunchesOnU launches from the review with u as well as enter.
+func TestReviewLaunchesOnU(t *testing.T) {
+	t.Parallel()
+	root := testModel(t)
+	root.screen = screenReview
+	root.state.Problems = []error{sandbox.ErrSettings}
+	root.Update(press("u"))
+	if !strings.Contains(root.ui.Toast.Text, "Fix the settings first") {
+		t.Errorf("u on the review: notice %q, want the launch to run", root.ui.Toast.Text)
 	}
 }
 

@@ -858,6 +858,43 @@ func TestInitSections(t *testing.T) {
 	checkErr(t, err, []error{sandbox.ErrNoTerminal}, "")
 }
 
+// stopAsker answers as scriptedAsker does, and stops at the question that
+// starts with stop, as esc does in the TUI's setup.
+type stopAsker struct {
+	*scriptedAsker
+
+	stop string
+}
+
+func (a *stopAsker) Confirm(ctx context.Context, question string, value bool) (bool, error) {
+	if strings.HasPrefix(question, a.stop) {
+		return false, errStop
+	}
+	return a.scriptedAsker.Confirm(ctx, question, value)
+}
+
+// TestInitStoppedKeepsNoSecret keeps none of the secrets an Init typed
+// before it stopped, so that a later Init that saves does not change the
+// keychain.
+func TestInitStoppedKeepsNoSecret(t *testing.T) {
+	t.Parallel()
+	run := firstRun(t)
+	run.local.Ask = &stopAsker{scriptedAsker: &scriptedAsker{t: t, answers: map[string][]string{
+		"Keep the saved OpenRouter API key?": {"n"},
+		openRouterKeyQuestion:                {"or-typed"},
+	}}, stop: "Turn on the sandbox's access rules"}
+	if _, err := run.local.InitSections(t.Context(), sandbox.SectionScenario); !errors.Is(err, errStop) {
+		t.Fatalf("InitSections = %v, want it stopped", err)
+	}
+	run.local.Ask = &scriptedAsker{t: t}
+	if _, err := run.local.InitSections(t.Context(), sandbox.SectionCluster); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := run.keychain.Get(openRouterSecret); got != orKey {
+		t.Errorf("the keychain holds %q, want %q from before the stopped Init", got, orKey)
+	}
+}
+
 // TestInitWithoutATerminal refuses to ask without a terminal, and names the
 // command to run in one.
 func TestInitWithoutATerminal(t *testing.T) {
@@ -966,7 +1003,7 @@ func checkKept(t *testing.T, run initRun) {
 	checkContains(t, "output", run.out.String(), []string{
 		"  Keycard account          " + strings.TrimPrefix(run.server.URL, "https://") +
 			", with the service account sa-1\n",
-		"  Demo and credentials     Check the proxy with GitHub and OpenRouter (smoke). GitHub: each person " +
+		"  Demo                     Check the proxy with GitHub and OpenRouter (smoke). GitHub: each person " +
 			"signs in (provider github), GitHub git: each person signs in (provider github), OpenRouter: your key\n",
 		"  Cluster                  The local cluster keycard-sandbox-local, reached through a Cloudflare quick tunnel\n",
 		"Kept your settings as they are.\n",

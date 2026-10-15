@@ -16,19 +16,31 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
+	"github.com/keycardai/agent-sandbox-examples/internal/tui/page"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/proxylog"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/state"
+	"github.com/keycardai/agent-sandbox-examples/internal/tui/style"
 )
 
 // Sample data the tests share.
 const (
-	sampleMethod  = "GET"
-	sampleDenied  = "example.com"
-	samplePod     = "u7k2vjw9ab"
-	verdictAllow  = "allow"
-	verdictDeny   = "deny"
-	sampleAllowed = "endpoint_allowed"
-	sampleReason  = "no_matching_endpoint"
+	sampleMethod   = "GET"
+	sampleDenied   = "example.com"
+	sampleCheck    = "Docker"
+	sampleDocker   = "OrbStack, engine 29.4.0"
+	sampleZone     = "Sandbox Test"
+	samplePod      = "u7k2vjw9ab"
+	verdictAllow   = "allow"
+	verdictDeny    = "deny"
+	sampleAllowed  = "endpoint_allowed"
+	sampleReason   = "no_matching_endpoint"
+	sampleTools    = "Tools"
+	sampleAccount  = "Keycard account"
+	sampleAPITitle = "Keycard API URL"
+	sampleAPIURL   = "https://api.keycard.ai"
+	sampleSlack    = "slack"
+	samplePi       = "pi coding agent"
+	sampleSmoke    = "Smoke checks"
 )
 
 // testSession is a session for a checkout with no settings.
@@ -247,21 +259,25 @@ func TestQuitLeavesTheSandboxRunning(t *testing.T) {
 	}
 }
 
-// TestViewSizes draws Home at a laptop size and a small size, and says
-// when the window is too small.
+// TestViewSizes draws every screen at a laptop size and a small size, and
+// says when the window is too small.
 func TestViewSizes(t *testing.T) {
 	t.Parallel()
 	root := testModel(t)
 	for _, size := range []tea.WindowSizeMsg{{Width: 140, Height: 40}, {Width: 80, Height: 22}} {
 		root.Update(size)
-		content := ansi.Strip(root.View().Content)
-		if lines := strings.Split(content, "\n"); len(lines) > size.Height {
-			t.Errorf("%dx%d: %d lines, want at most %d", size.Width, size.Height, len(lines), size.Height)
-		}
-		for line := range strings.SplitSeq(content, "\n") {
-			if ansi.StringWidth(line) > size.Width {
-				t.Errorf("%dx%d: line wider than the window: %q", size.Width, size.Height, line)
-				break
+		for _, view := range []screen{screenDashboard, screenWelcome, screenWizard, screenReview, screenSettings} {
+			root.screen = view
+			content := ansi.Strip(root.View().Content)
+			if lines := strings.Split(content, "\n"); len(lines) > size.Height {
+				t.Errorf("%dx%d screen %d: %d lines, want at most %d", size.Width, size.Height, view, len(lines),
+					size.Height)
+			}
+			for line := range strings.SplitSeq(content, "\n") {
+				if ansi.StringWidth(line) > size.Width {
+					t.Errorf("%dx%d screen %d: line wider than the window: %q", size.Width, size.Height, view, line)
+					break
+				}
 			}
 		}
 	}
@@ -282,6 +298,163 @@ func TestChecksScore(t *testing.T) {
 	root.Update(stepDoneMsg{index: last, err: sandbox.ErrCheck})
 	if row.Passed != 2 || row.Total != 3 {
 		t.Errorf("checks = %d/%d, want 2 of 3 passed", row.Passed, row.Total)
+	}
+}
+
+// TestFirstRunWelcome greets a checkout with no settings: the mark, what
+// the sandbox does, and the machine checks as they run.
+func TestFirstRunWelcome(t *testing.T) {
+	t.Parallel()
+	root := testModel(t)
+	root.screen = screenWelcome
+	root.welcome.Preflight([]sandbox.PreflightItem{{Name: sampleCheck}, {Name: sampleTools}})
+	root.Update(
+		page.CheckDoneMsg{Run: root.welcome.Run(), Index: 0, Check: sandbox.Check{Name: sampleCheck, Detail: sampleDocker}},
+	)
+	mark := style.Logo(root.ui.Styles, root.ui.Background, style.Glint{})
+	view := ansi.Strip(root.View().Content)
+	for _, want := range []string{
+		"Run an AI agent that never holds a secret.", "egress proxy", "Keycard zone", "This machine",
+		sampleDocker, "checking…", "start setup", ansi.Strip(strings.SplitN(mark, "\n", 2)[0]),
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("welcome lacks %q:\n%s", want, view)
+		}
+	}
+	activity, _ := root.ui.Logs.Log(state.SourceActivity).Snapshot()
+	if len(activity) != 1 || !strings.Contains(activity[0], "✓ Docker: OrbStack") {
+		t.Errorf("activity = %q, want the Docker check", activity)
+	}
+}
+
+// TestStoppedSetupGoesBack shows the screen the wizard started from when
+// the setup stops before it saves. A setup that failed says why there,
+// until the next setup starts.
+func TestStoppedSetupGoesBack(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"stopped", sandbox.ErrInterrupted, ""},
+		{"refused", fmt.Errorf("%w: signing in: refused", sandbox.ErrSettings), "✕ Setup stopped: settings"},
+	} {
+		root := testModel(t)
+		root.screen, root.wizardBack = screenWizard, screenWelcome
+		root.Update(setupDoneMsg{err: tc.err})
+		view := ansi.Strip(root.View().Content)
+		if root.screen != screenWelcome || strings.Contains(view, "✕ Setup stopped") != (tc.want != "") ||
+			!strings.Contains(view, tc.want) {
+			t.Errorf("%s: screen %v; want the welcome screen, with %q:\n%s", tc.name, root.screen, tc.want, view)
+		}
+	}
+}
+
+// TestSetupNotSaved shows the review when saving the settings failed, as
+// for settings kept for the session, and the activity says why, whatever
+// the result says.
+func TestSetupNotSaved(t *testing.T) {
+	t.Parallel()
+	root := testModel(t)
+	root.screen, root.wizardBack = screenWizard, screenWelcome
+	root.Update(setupDoneMsg{
+		result: sandbox.InitResult{Saved: true}, err: fmt.Errorf("%w: the keychain is locked", sandbox.ErrNotSaved),
+	})
+	activity, _ := root.ui.Logs.Log(state.SourceActivity).Snapshot()
+	if root.screen != screenReview || len(activity) == 0 ||
+		!strings.Contains(activity[len(activity)-1], "✕ the settings are not saved: the keychain is locked") {
+		t.Errorf("screen %v, activity %q; want the review, and the activity to say why", root.screen, activity)
+	}
+}
+
+// pump hands what background work sends to the model until done reports
+// true.
+func pump(t *testing.T, root *model, done func() bool) {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	for !done() {
+		select {
+		case msg := <-root.bus.ch:
+			root.Update(msg)
+		case <-deadline:
+			t.Fatal("the background work did not finish")
+		}
+	}
+}
+
+// TestEscStopsTheSetup stops a setup between questions, while it works,
+// and goes back to the screen it started from.
+func TestEscStopsTheSetup(t *testing.T) {
+	t.Parallel()
+	root := testModel(t)
+	root.screen = screenWelcome
+	root.startWizard(screenWelcome, nil)
+	root.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	pump(t, root, func() bool { return !root.state.Run.Job.Is(state.JobSetup) })
+	if root.screen != screenWelcome || root.overlay.kind != overlayNone {
+		t.Errorf("after esc: screen %v, overlay %v; want the welcome screen", root.screen, root.overlay.kind)
+	}
+}
+
+// TestQuestionWaitsForTheDialog keeps the quit dialog over a setup question
+// that comes while it shows, so that a key meant for the dialog does not
+// answer the question. The question shows once the dialog closes.
+func TestQuestionWaitsForTheDialog(t *testing.T) {
+	t.Parallel()
+	root := testModel(t)
+	root.screen, root.state.Run.Job = screenWizard, state.Job{Kind: state.JobSetup}
+	asker := root.setup.Start(root.bus.Send, nil, nil)
+	defer root.stopSetup()
+	root.Update(press("q"))
+	if view := ansi.Strip(root.View().Content); !strings.Contains(view, "Setup stops, and keeps none") {
+		t.Errorf("the quit dialog does not say the setup stops:\n%s", view)
+	}
+	go func() { _, _ = asker.Confirm(t.Context(), "Turn on the sandbox's access rules in this zone?", false) }()
+	root.Update(<-root.bus.ch)
+	if root.overlay.kind != overlayQuit {
+		t.Fatalf("overlay %v once the question came, want the quit dialog", root.overlay.kind)
+	}
+	root.Update(press("n"))
+	if root.overlay.kind != overlayQuestion {
+		t.Errorf("overlay %v once the dialog closed, want the question", root.overlay.kind)
+	}
+}
+
+// TestPolicyAnswerHolds takes the answer about the zone's policy set from
+// the last setup that looked at the zone, so that a no after a yes holds.
+func TestPolicyAnswerHolds(t *testing.T) {
+	t.Parallel()
+	root := testModel(t)
+	for _, tc := range []struct {
+		name          string
+		asks          []string
+		replace, want bool
+	}{
+		{"yes", []string{sandbox.SectionZone, sandbox.SectionPolicy}, true, true},
+		{"the cluster alone", []string{sandbox.SectionCluster}, false, true},
+		{"no", []string{sandbox.SectionZone, sandbox.SectionPolicy}, false, false},
+	} {
+		root.setup.Begin(tc.asks[0])
+		for _, id := range tc.asks {
+			root.Update(page.SectionMsg{ID: id})
+		}
+		root.Update(setupDoneMsg{result: sandbox.InitResult{ReplaceActive: tc.replace}})
+		if got := root.session.ReplaceActive; got != tc.want {
+			t.Errorf("after %s: replace the active set %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestBringUpWaitsForTheSettings refuses u while the settings have a
+// problem, and says to fix them.
+func TestBringUpWaitsForTheSettings(t *testing.T) {
+	t.Parallel()
+	root := testModel(t)
+	root.state.Problems = []error{sandbox.ErrSettings}
+	if root.Update(press("u")); root.state.Run.Job.Busy() || !strings.Contains(root.ui.Toast.Text, "Fix the settings") {
+		t.Errorf("u with a problem: running %v, notice %q; want a notice to fix the settings",
+			root.state.Run.Job.Busy(), root.ui.Toast.Text)
 	}
 }
 
@@ -309,10 +482,10 @@ func TestChecksThatDidNotRun(t *testing.T) {
 
 // busyKeys are the keys that change the sandbox, and so wait for the
 // bring-up, the action or the setup that runs.
-func busyKeys() []string { return []string{"u", "c", "R", "D", "x"} }
+func busyKeys() []string { return []string{"u", "c", "R", "D", "x", "e", "p"} }
 
 // TestOneJobAtATime refuses, with a notice, to start work that changes the
-// sandbox while a bring-up or an action runs. A running
+// sandbox while a bring-up, an action or the setup runs. A running
 // bring-up still stops with u.
 func TestOneJobAtATime(t *testing.T) {
 	t.Parallel()
@@ -325,6 +498,7 @@ func TestOneJobAtATime(t *testing.T) {
 			root.Update(press("R"))
 			answerYes(root)
 		}, busyKeys()},
+		{"the setup", "Setup is open", func(root *model) { root.state.Run.Job = state.Job{Kind: state.JobSetup} }, busyKeys()},
 		{
 			"a bring-up", "bring-up is running", func(root *model) { root.state.Run.Job = state.Job{Kind: state.JobBringUp} },
 			slices.DeleteFunc(busyKeys(), func(key string) bool { return key == "u" || key == "D" }),
@@ -335,10 +509,10 @@ func TestOneJobAtATime(t *testing.T) {
 			tc.start(root)
 			running := root.state.Run.Job
 			_, cmd := root.Update(press(key))
-			if root.overlay.kind != overlayNone || root.state.Run.Job.Kind != running.Kind || cmd != nil ||
-				!strings.Contains(root.ui.Toast.Text, tc.notice) {
-				t.Errorf("%s while %s runs: overlay %v, job %+v, command %v, notice %q; want only a notice "+
-					"that says %q", key, tc.name, root.overlay.kind, root.state.Run.Job, cmd != nil,
+			if root.overlay.kind != overlayNone || root.screen != screenDashboard ||
+				root.state.Run.Job.Kind != running.Kind || cmd != nil || !strings.Contains(root.ui.Toast.Text, tc.notice) {
+				t.Errorf("%s while %s runs: overlay %v, screen %v, job %+v, command %v, notice %q; want only "+
+					"a notice that says %q", key, tc.name, root.overlay.kind, root.screen, root.state.Run.Job, cmd != nil,
 					root.ui.Toast.Text, tc.notice)
 			}
 			root.state.Run.CancelJob()
@@ -693,5 +867,26 @@ func TestRecreateQuestionGoesWithD(t *testing.T) {
 	root.Update(recreateClusterMsg{from: cluster})
 	if root.state.Run.Job.Busy() || !strings.Contains(root.ui.Toast.Text, "does not need to be recreated") {
 		t.Errorf("a late answer: job %+v, notice %q; want no bring-up", root.state.Run.Job, root.ui.Toast.Text)
+	}
+}
+
+// TestStopEverythingAfterTheSetup stops the setup first, from D in the
+// quit dialog once answered yes, and stops everything once the setup
+// reports back.
+func TestStopEverythingAfterTheSetup(t *testing.T) {
+	t.Parallel()
+	root := localQuietModel(t)
+	root.screen, root.state.Run.Job = screenWizard, state.Job{Kind: state.JobSetup}
+	root.setup.Start(root.bus.Send, nil, nil)
+	root.Update(press("q"))
+	root.Update(press("D"))
+	answerYes(root)
+	if job := root.state.Run.Job; root.setup.Open() || !job.Is(state.JobSetup) || !job.StopAfter || !job.QuitAfter {
+		t.Errorf("after D: setup asks %v, job %+v; want the setup stopped, then a stop and a quit",
+			root.setup.Open(), job)
+	}
+	root.Update(setupDoneMsg{err: sandbox.ErrInterrupted})
+	if job := root.state.Run.Job; !job.Is(state.JobStop) || !job.QuitAfter {
+		t.Errorf("once the setup ended, job = %+v, want everything to stop, then a quit", job)
 	}
 }

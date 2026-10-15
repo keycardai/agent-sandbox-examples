@@ -1,0 +1,22 @@
+ keycard sandbox   setup · step 1 of 5
+
+  Keycard account
+  Setup signs in to Keycard with your organization's service account. It uses
+  the account only to set up the sandbox.
+
+  Keycard API URL
+  ╭──────────────────────────────────────────────────────────────────────────╮
+  │ https://api.keycard.ai                                                   │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+  enter keeps it. ctrl+u clears it to type another.
+
+
+
+
+
+
+
+
+
+
+  enter  continue   esc  stop setup

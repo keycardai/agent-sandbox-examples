@@ -3,6 +3,7 @@
 package page
 
 import (
+	"image/color"
 	"strconv"
 	"strings"
 	"time"
@@ -25,18 +26,22 @@ const (
 	shortID = 8
 	// half halves a size, to center or split it.
 	half = 2
-	// wordQuit, wordKeys and wordAgent are words several pages show.
-	wordQuit  = "quit"
-	wordKeys  = "keys"
-	wordAgent = "agent"
+	// wordQuit, wordKeys, wordChoose and wordAgent are words several pages
+	// show.
+	wordQuit   = "quit"
+	wordKeys   = "keys"
+	wordChoose = "choose"
+	wordAgent  = "agent"
 )
 
 // UI is what the pages draw with. The root model sets it.
 type UI struct {
 	Styles style.Styles
 	Keys   component.KeyMap
-	// Width and Height are the window's.
+	// Width and Height are the window's, and Background the terminal's
+	// background, once it reports it.
 	Width, Height int
+	Background    color.Color
 	// Frame counts the redraws, and turns the spinners.
 	Frame int
 	// Logs holds every log, and shows one.
@@ -55,6 +60,12 @@ func NewUI() *UI {
 // Notify shows text in the footer for a while.
 func (u *UI) Notify(text string, isErr bool) {
 	u.Toast = component.Toast{Text: text, Err: isErr, Until: time.Now().Add(toastFor)}
+}
+
+// Page draws a full screen: the header band with title, the body under it,
+// and the footer with the keys that apply.
+func (u *UI) Page(title, body string, hints []component.Hint) string {
+	return u.PageUnder(component.Band(u.Styles, u.Width, u.Styles.BandLabel.Render(title), ""), body, hints)
 }
 
 // PageUnder draws body between header and the footer, cut to the window.

@@ -19,4 +19,4 @@
      o  Open the zone's events in the Keycard console
      x  Open a shell in the agent
 
-  a  open pi-session   o  zone events   x  shell   ?  keys   q  quit
+  a  open pi-session   p  switch demo   o  zone events   x  shell   ?  keys   …

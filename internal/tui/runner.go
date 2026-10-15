@@ -62,6 +62,12 @@ type (
 		plain bool
 		err   error
 	}
+	setupDoneMsg struct {
+		result   sandbox.InitResult
+		err      error
+		describe map[string]string
+		problems []error
+	}
 	eventsMsg struct {
 		url string
 		err error
@@ -75,6 +81,7 @@ type (
 	recreateClusterMsg struct{ from int }
 	restartPodMsg      struct{}
 	stopAllMsg         struct{ quit bool }
+	forgetSettingsMsg  struct{}
 )
 
 // errPanic reports a panic in background work. The TUI keeps running.
@@ -117,6 +124,7 @@ func (m *model) startBringUp(from int, recreate bool) {
 		cancel()
 		return
 	}
+	m.state.Launched = m.state.DemoName()
 	switch {
 	case kind == state.JobChecks:
 		m.state.Record("▸", "Running the checks")
@@ -278,6 +286,10 @@ func (m *model) toggleBringUp() {
 		if m.busy() {
 			return
 		}
+		if len(m.state.Problems) > 0 {
+			m.ui.Notify("Fix the settings first. Press e to open them.", true)
+			return
+		}
 		from := m.state.ResumeIndex()
 		if from > 0 {
 			m.ui.Notify("Starting again at: "+m.state.Run.Steps[from].Step.Title, false)
@@ -291,7 +303,8 @@ func (m *model) toggleBringUp() {
 
 // updateAnswers acts on the answer a confirmation sent, and reports whether
 // msg was one. A question that waited opens after it.
-func (m *model) updateAnswers(msg tea.Msg) bool {
+func (m *model) updateAnswers(msg tea.Msg) (tea.Cmd, bool) {
+	var cmd tea.Cmd
 	switch msg := msg.(type) {
 	case stopBringUpMsg:
 		if m.state.Run.Job.RunsSteps() {
@@ -303,20 +316,31 @@ func (m *model) updateAnswers(msg tea.Msg) bool {
 		m.restartPod()
 	case stopAllMsg:
 		m.stopAllNow(msg.quit)
+	case forgetSettingsMsg:
+		cmd = m.forget()
 	default:
-		return false
+		return nil, false
 	}
 	m.openWaiting()
-	return true
+	return cmd, true
 }
 
-// stopAllNow stops everything, then quits with quit, unless a job other
-// than a bring-up or the checks runs.
+// stopAllNow stops everything, then quits with quit, unless D waits for
+// the job that runs.
 func (m *model) stopAllNow(quit bool) {
-	if !m.state.Run.Job.RunsSteps() && m.busy() {
+	if m.stopAllWaits(quit) {
 		return
 	}
 	m.stopEverything(quit)
+}
+
+// stopAllWaits reports whether D waits for the job that runs, and says
+// which in the footer. D stops a bring-up or the checks first, and to
+// quit, the setup too. It waits for any other job.
+func (m *model) stopAllWaits(quit bool) bool {
+	job := m.state.Run.Job
+	stopsFirst := job.RunsSteps() || quit && job.Is(state.JobSetup)
+	return !stopsFirst && m.busy()
 }
 
 // recreateCluster deletes the cluster and brings the sandbox up again from
@@ -380,7 +404,7 @@ func (m *model) restartPod() {
 
 // stopAll asks, then stops everything.
 func (m *model) stopAll() {
-	if !m.state.Run.Job.RunsSteps() && m.busy() {
+	if m.stopAllWaits(false) {
 		return
 	}
 	m.askStopAll(false)
@@ -401,12 +425,13 @@ func (m *model) askStopAll(quit bool) {
 }
 
 // stopEverything stops the tunnel and the mirror and deletes the cluster,
-// then quits with quit. A running bring-up or checks run stops first, and
-// onBringUpDone stops everything once it has.
+// then quits with quit. A running bring-up, checks run or setup stops
+// first, and everything stops once it has.
 func (m *model) stopEverything(quit bool) {
 	// A question about the cluster's issuer is gone with the cluster.
 	m.waiting = nil
-	if m.state.Run.Job.RunsSteps() {
+	switch {
+	case m.state.Run.Job.RunsSteps():
 		what := "the bring-up"
 		if m.state.Run.Job.Is(state.JobChecks) {
 			what = "the checks"
@@ -414,6 +439,10 @@ func (m *model) stopEverything(quit bool) {
 		m.state.Run.StopAfterJob(quit)
 		m.state.Run.CancelJob()
 		m.ui.Notify("Stopping "+what+" first…", false)
+		return
+	case m.state.Run.Job.Is(state.JobSetup):
+		m.state.Run.Job.StopAfter, m.state.Run.Job.QuitAfter = true, quit
+		m.stopSetup()
 		return
 	}
 	m.runAction(state.Job{Kind: state.JobStop, Name: "Stopping everything", QuitAfter: quit}, m.session.Down)
@@ -628,6 +657,100 @@ func readRecords(stdout io.Reader, pod string, store *proxylog.Store) error {
 		return fmt.Errorf("reading the proxy's log: %w", err)
 	}
 	return nil
+}
+
+// startSetup runs the wizard for the sections in the background, with
+// preset's answers. Its questions come back as page.AskMsg, its steps as
+// page.SectionMsg, and its notes go to the setup log. Once it is done, the
+// same goroutine reads the settings again, since that reads the keychain.
+func (m *model) startSetup(preset map[string]string, ids ...string) {
+	ctx, cancel := context.WithCancel(m.ctx)
+	if !m.state.Run.StartJob(state.Job{Kind: state.JobSetup}, cancel) {
+		cancel()
+		return
+	}
+	m.state.SetupErr = nil
+	log := m.ui.Logs.Log(state.SourceSetup)
+	log.Reset()
+	ask := m.setup.Start(m.bus.Send, preset, log)
+	session, out := m.session, m.bus
+	m.state.Record("▸", "Setup started")
+	m.jobs.Go(func() {
+		var done setupDoneMsg
+		defer func() {
+			if r := recover(); r != nil {
+				done.err = fmt.Errorf("%w: %v", errPanic, r)
+			}
+			done.describe, done.problems = session.Describe(), session.Problems()
+			out.Send(done)
+		}()
+		done.result, done.err = session.Setup(ctx, ask, log, ids...)
+	})
+}
+
+// onSetupDone takes the new settings and shows the review, also when
+// saving them failed. A setup that stopped goes back where it started. The
+// answer about the zone's policy set holds until a setup looks at the zone
+// again. When D stopped the setup, everything stops now.
+func (m *model) onSetupDone(msg setupDoneMsg) {
+	m.state.Run.CancelJob()
+	ended := m.state.EndJob()
+	if m.overlay.kind == overlayQuestion {
+		m.overlay = overlay{}
+	}
+	m.setup.End()
+	m.state.Describe, m.state.Problems = msg.describe, msg.problems
+	if ended.StopAfter {
+		m.screen = screenDashboard
+		m.stopEverything(ended.QuitAfter)
+		return
+	}
+	if msg.err != nil && !errors.Is(msg.err, sandbox.ErrNotSaved) {
+		m.screen = m.wizardBack
+		if errors.Is(msg.err, sandbox.ErrInterrupted) || errors.Is(msg.err, context.Canceled) {
+			m.state.Record("•", "Setup stopped without saving")
+		} else {
+			m.state.SetupErr = msg.err
+			m.state.Record("✕", "Setup failed: "+component.FirstLine(msg.err.Error()))
+			m.ui.Notify("Setup stopped: "+component.FirstLine(msg.err.Error()), true)
+		}
+		return
+	}
+	if m.setup.Asked(sandbox.SectionZone) || m.setup.Asked(sandbox.SectionPolicy) {
+		m.session.ReplaceActive = msg.result.ReplaceActive
+	}
+	m.setup.Finish()
+	m.state.ResetSteps()
+	m.recordSaved(msg)
+	m.screen = screenReview
+}
+
+// recordSaved says whether setup saved the settings. When saving failed,
+// setup kept them for the session, and the activity says why.
+func (m *model) recordSaved(msg setupDoneMsg) {
+	switch {
+	case msg.err != nil:
+		m.state.Record("✕", component.FirstLine(msg.err.Error()))
+		m.ui.Notify("The settings are not saved. They last until you quit.", true)
+	case msg.result.Saved:
+		m.state.Record("✓", "Saved the settings")
+	default:
+		m.state.Record("✓", "Kept the settings for this session")
+	}
+}
+
+// stopSetup ends the wizard without writing the settings: the question
+// goes, and what the setup waits on stops. The setup's job ends once its
+// work reports back.
+func (m *model) stopSetup() {
+	if !m.state.Run.Job.Is(state.JobSetup) || !m.setup.Open() {
+		return
+	}
+	m.setup.Stop()
+	m.state.Run.CancelJob()
+	if m.overlay.kind == overlayQuestion {
+		m.overlay = overlay{}
+	}
 }
 
 // openEvents opens the zone's event log in the console, where the zone

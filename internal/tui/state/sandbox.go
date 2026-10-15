@@ -12,8 +12,11 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/proxylog"
 )
 
-// SourceActivity names the activity log.
-const SourceActivity = "activity"
+// The logs the state keeps, besides the steps'.
+const (
+	SourceSetup    = "setup"
+	SourceActivity = "activity"
+)
 
 // Sandbox is the sandbox as the TUI knows it, in parts. A part's methods
 // change only that part. The rules that read more than one part, the
@@ -31,8 +34,23 @@ type Sandbox struct {
 	Reads  Reads
 	Agents Agents
 
-	// Loaded is the demo the settings name, once it loaded.
-	Loaded *sandbox.Scenario
+	// Describe says what each section of the settings holds, and Problems
+	// what would stop the bring-up. KeychainErr is why the keychain cannot
+	// keep secrets, or nil. SetupErr is why the last setup failed, until
+	// the next one starts.
+	Describe    map[string]string
+	Problems    []error
+	KeychainErr error
+	SetupErr    error
+
+	// Loaded is the demo the settings name, once it loaded. Demos is every
+	// demo in the checkout that loads, read once, and DemosErr says why any
+	// did not load. Launched names the demo the last bring-up started with,
+	// or the one the settings named when the TUI started.
+	Loaded   *sandbox.Scenario
+	Demos    []*sandbox.Scenario
+	DemosErr error
+	Launched string
 }
 
 // Run is the job that runs, and the bring-up's steps.
@@ -67,6 +85,7 @@ type Agents struct {
 func New(session *sandbox.Session, logs func(source string) *component.Log) *Sandbox {
 	state := &Sandbox{session: session, logs: logs, Now: time.Now}
 	state.ResetSteps()
+	state.Launched = state.DemoName()
 	return state
 }
 
@@ -80,6 +99,23 @@ func (s *Sandbox) Setting(key string) string { return s.Local().Settings[key] }
 
 // StartsTunnel reports whether the bring-up starts a quick tunnel.
 func (s *Sandbox) StartsTunnel() bool { return s.Local().StartsTunnel() }
+
+// RefreshSettings reads the settings, their problems, and whether the
+// keychain works. The store asks the keychain once and keeps the answer.
+// The TUI reads the settings before it draws, so that on Linux a dialog to
+// unlock the keyring shows before the TUI, and the screens read the answer
+// without waiting on it.
+func (s *Sandbox) RefreshSettings() {
+	s.KeychainErr = s.Local().Store.KeychainErr()
+	s.Describe = s.session.Describe()
+	s.Problems = s.session.Problems()
+}
+
+// FirstRun reports whether the settings were never written.
+func (s *Sandbox) FirstRun() bool { return !s.Local().Initialized() }
+
+// PreflightItems are the machine checks the bring-up needs.
+func (s *Sandbox) PreflightItems() []sandbox.PreflightItem { return s.session.PreflightItems() }
 
 // Record adds an event to the activity log: the time, a mark and what
 // happened. ✓ is done, ✕ failed, ▸ started and • a note.
@@ -175,4 +211,13 @@ func (s *Sandbox) Demo() (*sandbox.Scenario, error) {
 func (s *Sandbox) LoadedDemo() *sandbox.Scenario {
 	scenario, _ := s.Demo()
 	return scenario
+}
+
+// DemoList returns the checkout's demos that load, read once, sorted by
+// name.
+func (s *Sandbox) DemoList() []*sandbox.Scenario {
+	if s.Demos == nil && s.DemosErr == nil {
+		s.Demos, s.DemosErr = sandbox.Scenarios(s.Local().Root)
+	}
+	return s.Demos
 }

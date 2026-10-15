@@ -17,6 +17,8 @@ const (
 	JobAction
 	// JobStop stops the tunnel and the mirror, and deletes the cluster.
 	JobStop
+	// JobSetup asks the setup's questions, and keeps the settings.
+	JobSetup
 )
 
 // Job is the background work that changes the sandbox. At most one runs,
@@ -30,7 +32,7 @@ type Job struct {
 	// StopAfter stops everything once the job ends. QuitAfter quits once the
 	// job, and the stop after it, end without an error.
 	StopAfter, QuitAfter bool
-	// cancel stops the job. Only a job that runs steps has one.
+	// cancel stops the job. A job that runs steps and the setup have one.
 	cancel context.CancelFunc
 }
 
@@ -52,6 +54,8 @@ func (j Job) WaitText() string {
 		return "The checks are running. Wait for them to finish, or press u to stop them."
 	case JobAction, JobStop:
 		return j.Name + " is running. Wait for it to finish."
+	case JobSetup:
+		return "Setup is open. Finish it first."
 	case JobNone:
 	}
 	return ""

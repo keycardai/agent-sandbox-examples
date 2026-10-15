@@ -34,13 +34,28 @@ func (m *model) View() tea.View {
 				style.AppName, component.MinWidth, component.MinHeight, m.ui.Width, m.ui.Height,
 			)))
 	default:
-		content = m.withOverlay(m.dashboardView())
+		content = m.withOverlay(m.screenView())
 	}
 	view := tea.NewView(content)
 	view.AltScreen = true
 	view.WindowTitle = "Keycard sandbox · " + ansi.Strip(m.statusBadge())
 	view.ProgressBar = m.progress()
 	return view
+}
+
+func (m *model) screenView() string {
+	switch m.screen {
+	case screenWelcome:
+		return m.welcome.View()
+	case screenWizard:
+		return m.setup.WizardView()
+	case screenReview:
+		return m.setup.ReviewView()
+	case screenSettings:
+		return m.settings.View(m.settingsBackWord())
+	case screenDashboard:
+	}
+	return m.dashboardView()
 }
 
 // dashboardView draws Home, under the header band and over the footer
@@ -134,7 +149,8 @@ func (m *model) progress() *tea.ProgressBar {
 	return nil
 }
 
-// withOverlay draws the open overlay, if any, in the middle of base.
+// withOverlay draws the open overlay, if any, in the middle of base. A
+// setup question is part of the wizard's screen, and not an overlay.
 func (m *model) withOverlay(base string) string {
 	var modal string
 	switch m.overlay.kind {
@@ -144,7 +160,9 @@ func (m *model) withOverlay(base string) string {
 		modal = m.confirmModal()
 	case overlayQuit:
 		modal = m.quitModal()
-	case overlayNone:
+	case overlayDemo:
+		modal = m.demos.View()
+	case overlayQuestion, overlayNone:
 		return base
 	}
 	return component.Overlay(base, modal, m.ui.Width, m.ui.Height)
@@ -174,9 +192,13 @@ func (m *model) confirmModal() string {
 func (m *model) quitModal() string {
 	theme := m.ui.Styles
 	if !m.anythingRunning() {
-		return theme.Modal.Render(lipgloss.JoinVertical(lipgloss.Left, theme.ModalTitle.Render(m.overlay.title), "",
+		parts := []string{theme.ModalTitle.Render(m.overlay.title), ""}
+		if m.state.Run.Job.Is(state.JobSetup) {
+			parts = append(parts, theme.Muted.Render(setupStops), "")
+		}
+		return theme.Modal.Render(lipgloss.JoinVertical(lipgloss.Left, append(parts,
 			component.Chips(theme, component.Hint{Key: component.KeyEnter, Desc: "quit"},
-				component.Hint{Key: component.KeyEsc, Desc: "stay"})))
+				component.Hint{Key: component.KeyEsc, Desc: "stay"}))...))
 	}
 	chips := []component.Hint{{Key: component.KeyEnter, Desc: "quit, leave it running"}}
 	if !m.session.Local().Existing() {

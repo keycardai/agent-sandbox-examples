@@ -1,0 +1,42 @@
+ keycard sandbox   setup · step 6 of 6
+
+
+
+
+
+
+
+                   ○  Keycard account                  Zone policy
+                   │                                   A zone uses one set of access rules, called a policy set, at a time. The
+                   ✓  Zone and user                    sandbox needs its own set turned on, so that the agent can work for the
+                   │                                   user.
+                   ○  Demo
+                   │                                   Replace it with "sandbox" when the sandbox runs?
+                   ○  Credentials                      The zone's active policy set is "default". Only one set can be active. Its
+                   │                                   policies will stop applying to everyone in the zone.
+                   ○  Cluster
+                   │                                     Yes     No
+                   ●  Zone policy                      y or n answers it.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ←→  choose   enter  continue   esc  stop setup

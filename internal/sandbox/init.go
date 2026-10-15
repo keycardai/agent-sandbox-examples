@@ -87,6 +87,9 @@ type wizard struct {
 	demos map[string][]string
 	// heading is the section the asker shows the questions under.
 	heading string
+	// typed holds the secrets typed in this Init, by name. They go in the
+	// store with the settings, so that an Init that stops keeps none.
+	typed map[string]string
 }
 
 // previous holds the settings from before Init, as zone-setup's values,
@@ -180,7 +183,7 @@ func (l *Local) InitSections(ctx context.Context, sections ...string) (InitResul
 // newWizard returns a wizard that asks with l.Ask and starts from the
 // settings.
 func (l *Local) newWizard() *wizard {
-	w := &wizard{l: l, ask: l.Ask, prev: l.previousValues(), env: Settings{}}
+	w := &wizard{l: l, ask: l.Ask, prev: l.previousValues(), env: Settings{}, typed: map[string]string{}}
 	w.out = w.prev.values
 	w.demos = maps.Clone(w.prev.agents.Demos)
 	return w
@@ -206,6 +209,13 @@ func (w *wizard) run(ctx context.Context, change map[string]bool) (InitResult, e
 	err = w.write(save)
 	return InitResult{ReplaceActive: replace, Saved: w.l.Store.Saved()}, err
 }
+
+// QuestionClientID and QuestionClientSecret are the questions Init asks
+// for the service account.
+const (
+	QuestionClientID     = "Service account client ID"
+	QuestionClientSecret = "Service account client secret"
+)
 
 // QuestionSave is the question Init asks to save the settings.
 const QuestionSave = "Save these settings for next time?"
@@ -247,6 +257,81 @@ const (
 	changeNothing    = "\x00nothing"
 )
 
+// accountTitle names the Keycard service account: a section of the setup,
+// and a check of the machine.
+const accountTitle = "Keycard account"
+
+// SectionInfo is one section of the setup, as every screen names it.
+type SectionInfo struct {
+	ID string
+	// Title names the section: on the wizard's steps, the settings screen
+	// and the subcommands' headings.
+	Title string
+	// About says what the section asks, for someone new to Keycard.
+	About string
+	// Short says what the section holds, in a few words.
+	Short string
+	// Change is the answer to "What do you want to change?" that asks the
+	// section again, or "" for a section that cannot be asked on its own.
+	Change string
+}
+
+// Sections returns every section of the setup, in the order Init asks
+// them.
+func Sections() []SectionInfo {
+	return []SectionInfo{
+		{
+			ID: SectionAccount, Title: accountTitle, Change: "The Keycard account",
+			Short: "the service account that sets up the zone",
+			About: "Setup signs in to Keycard with your organization's service account. It uses the account " +
+				"only to set up the sandbox.",
+		},
+		{
+			ID: SectionZone, Title: "Zone and user", Change: "The zone, and who the agent acts as",
+			Short: "the zone, and who the agent acts as",
+			About: "A zone is a Keycard workspace with its own users and apps. Pick one you use for testing, " +
+				"because the sandbox turns on its own access rules there. Then pick who the agent acts as, " +
+				"usually you. Every demo has an agent for them. Only people who have signed in to the zone " +
+				"are listed.",
+		},
+		{
+			ID: SectionScenario, Title: "Demo", Change: "The demo, its credentials and its settings",
+			Short: "what the agent does, and its credentials",
+			About: "Pick what the agent does, from the demos in this checkout.",
+		},
+		{
+			ID: SectionCredentials, Title: "Credentials", Short: "the keys the demo needs",
+			About: "The keys the demo needs, such as a GitHub token. The agent never sees them. The egress " +
+				"proxy adds them to its requests on the way out.",
+		},
+		{
+			ID: SectionCluster, Title: "Cluster", Change: "The cluster, and how Keycard reaches it",
+			Short: "where the sandbox runs, and how Keycard reaches it",
+			About: "Where the agent runs. The default runs it on this machine, and needs no other accounts.",
+		},
+		{
+			ID: SectionPolicy, Title: "Zone policy", Short: "the access rules the zone uses",
+			About: "A zone uses one set of access rules, called a policy set, at a time. The sandbox needs its " +
+				"own set turned on, so that the agent can work for the user.",
+		},
+		{
+			ID: SectionSave, Title: "Save", Short: "whether setup saves the settings",
+			About: "Saved settings come back the next time you start the sandbox. Without saving, setup asks " +
+				"for them again next time.",
+		},
+	}
+}
+
+// SectionOf returns the section id names, or a zero SectionInfo.
+func SectionOf(id string) SectionInfo {
+	for _, section := range Sections() {
+		if section.ID == id {
+			return section
+		}
+	}
+	return SectionInfo{}
+}
+
 // chooseChanges returns the sections to ask. On a first run that is every
 // section. When there are settings, it shows them and asks what to change.
 // If the answer is nothing, it returns an empty map. Init then keeps the
@@ -257,14 +342,16 @@ func (w *wizard) chooseChanges(ctx context.Context) (map[string]bool, error) {
 		return all, nil
 	}
 	_, _ = fmt.Fprintf(w.l.Out, "Your current settings:\n\n%s\n", w.summary())
-	choice, err := w.choose(ctx, "What do you want to change?", []Option{
+	options := []Option{
 		{Label: "Nothing. Keep these settings.", Value: changeNothing},
 		{Label: "Everything. Answer each question again, starting from these answers.", Value: changeEverything},
-		{Label: "The Keycard account", Value: SectionAccount},
-		{Label: "The zone, and who the agent acts as", Value: SectionZone},
-		{Label: "The demo, its credentials and its settings", Value: SectionScenario},
-		{Label: "The cluster, and how Keycard reaches it", Value: SectionCluster},
-	}, changeNothing)
+	}
+	for _, section := range Sections() {
+		if section.Change != "" {
+			options = append(options, Option{Label: section.Change, Value: section.ID})
+		}
+	}
+	choice, err := w.choose(ctx, "What do you want to change?", options, changeNothing)
 	switch {
 	case err != nil:
 		return nil, err
@@ -276,18 +363,31 @@ func (w *wizard) chooseChanges(ctx context.Context) (map[string]bool, error) {
 	return map[string]bool{choice: true}, nil
 }
 
+// allSections are the sections that can be asked on their own.
 func allSections() map[string]bool {
-	return map[string]bool{SectionAccount: true, SectionZone: true, SectionScenario: true, SectionCluster: true}
+	all := map[string]bool{}
+	for _, section := range Sections() {
+		if section.Change != "" {
+			all[section.ID] = true
+		}
+	}
+	return all
 }
 
-// summary describes the current settings, one line per section, in plain
-// words.
+// summary describes the current settings, one line per section that can
+// be asked on its own, in plain words.
 func (w *wizard) summary() string {
-	return fmt.Sprintf("  Keycard account          %s\n"+
-		"  Zone and user            %s\n"+
-		"  Demo and credentials     %s\n"+
-		"  Cluster                  %s\n",
-		w.accountSummary(), w.zoneSummary(), w.scenarioSummary(), w.clusterSummary())
+	described := map[string]string{
+		SectionAccount: w.accountSummary(), SectionZone: w.zoneSummary(),
+		SectionScenario: w.scenarioSummary(), SectionCluster: w.clusterSummary(),
+	}
+	var lines strings.Builder
+	for _, section := range Sections() {
+		if section.Change != "" {
+			_, _ = fmt.Fprintf(&lines, "  %-25s%s\n", section.Title, described[section.ID])
+		}
+	}
+	return lines.String()
 }
 
 // accountSummary names the Keycard API by its host, and the service
@@ -580,8 +680,8 @@ func (w *wizard) login(ctx context.Context) error {
 
 // signIn asks for the service account and signs in. It asks for the account
 // again while the token endpoint refuses it, unless the environment holds
-// the whole account. Any other error stops Init. A typed secret goes in the
-// store once the sign-in succeeds.
+// the whole account. Any other error stops Init. It keeps a typed secret
+// once the sign-in succeeds.
 func (w *wizard) signIn(ctx context.Context) error {
 	clientID := w.prev.values.ManagementServiceAccount.ClientID
 	for useSaved := true; ; useSaved = false {
@@ -603,7 +703,7 @@ func (w *wizard) signIn(ctx context.Context) error {
 			return fmt.Errorf("signing in: %w", err)
 		}
 		if typed {
-			w.l.Store.setSecret(managementSecret, secret)
+			w.typed[managementSecret] = secret
 		}
 		w.out.ManagementServiceAccount = account
 		return nil
@@ -647,7 +747,7 @@ func (w *wizard) askAccount(
 		clientID = env
 	} else {
 		var err error
-		if clientID, err = w.input(ctx, "Service account client ID", clientID, required); err != nil {
+		if clientID, err = w.input(ctx, QuestionClientID, clientID, required); err != nil {
 			return account, "", false, err
 		}
 	}
@@ -663,7 +763,7 @@ func (w *wizard) askAccount(
 			return account, secret, false, err
 		}
 	}
-	secret, err := w.secret(ctx, "Service account client secret", required)
+	secret, err := w.secret(ctx, QuestionClientSecret, required)
 	account.ClientSecretEnv = secretEnv(managementSecret)
 	return account, secret, true, err
 }
@@ -1104,7 +1204,7 @@ func (w *wizard) staticToken(
 	if err != nil {
 		return "", err
 	}
-	w.l.Store.setSecret(name, secret)
+	w.typed[name] = secret
 	return secretEnv(name), nil
 }
 
@@ -1262,9 +1362,10 @@ func (w *wizard) askReplaceActive(ctx context.Context) (bool, error) {
 		false)
 }
 
-// write keeps what setup asked in the store as the config, and saves it
-// when save is set. When saving fails, it returns ErrNotSaved, and the
-// store keeps the config for the session.
+// write keeps what setup asked in the store as the config, with the
+// secrets typed in this Init, and saves it when save is set. When saving
+// fails, it returns ErrNotSaved, and the store keeps the config for the
+// session.
 func (w *wizard) write(save bool) error {
 	agents := ConfigAgents{Default: w.env[KeyUserEmail], Demos: w.demos}
 	w.answers.keepUsers(agents.everyone())
@@ -1273,6 +1374,9 @@ func (w *wizard) write(save bool) error {
 	store := w.l.Store
 	if store == nil {
 		return fmt.Errorf("%w: there is no store for the settings", ErrSettings)
+	}
+	for name, secret := range w.typed {
+		store.setSecret(name, secret)
 	}
 	store.setConfig(configFrom(w.env, &w.out, w.answers, w.demos))
 	if !save {

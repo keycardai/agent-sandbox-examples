@@ -32,7 +32,7 @@ type Home struct {
 }
 
 // NewHome returns Home.
-func NewHome(ui *UI, sandbox *state.Sandbox) *Home { return &Home{view{ui: ui, state: sandbox}} }
+func NewHome(ui *UI, sandbox *state.Sandbox) *Home { return &Home{ui: ui, state: sandbox} }
 
 // View draws Home for how the sandbox is.
 func (h *Home) View() string {
@@ -68,16 +68,17 @@ func (h *Home) phaseHints() []component.Hint {
 		if phase == state.PhaseStopped {
 			again = "start again"
 		}
-		return []component.Hint{{Key: "u", Desc: again}}
+		return []component.Hint{{Key: "u", Desc: again}, {Key: "e", Desc: "settings"}}
 	case state.PhaseUp:
 		return []component.Hint{
 			{Key: "a", Desc: h.AgentActionName()},
+			{Key: "p", Desc: "switch demo"},
 			{Key: "o", Desc: "zone events"},
 			{Key: "x", Desc: "shell"},
 		}
 	case state.PhaseReading, state.PhaseDown:
 	}
-	return []component.Hint{{Key: "u", Desc: "bring up"}}
+	return []component.Hint{{Key: "u", Desc: "bring up"}, {Key: "e", Desc: "settings"}}
 }
 
 // bringUp shows the steps and the end of the running step's log.
@@ -126,6 +127,7 @@ func (h *Home) failed(row *state.StepRow) string {
 	}
 	lines = append(lines, "",
 		h.ui.actionLine("u", "Start again from: "+h.state.Run.Steps[h.state.ResumeIndex()].Step.Title),
+		h.ui.actionLine("e", "Change the settings"),
 		"")
 	for _, step := range h.state.Run.Steps {
 		lines = append(lines, h.stepLine(step, min(h.ui.bodyWidth(), readWidth)))
@@ -151,6 +153,7 @@ func (h *Home) down() string {
 		h.ui.para(theme.Muted, why),
 		"",
 		h.ui.actionLine("u", "Bring it up. The first time takes a few minutes."),
+		h.ui.actionLine("e", "Change the settings"),
 		"",
 		h.contextLine(),
 	}, "\n")
@@ -252,6 +255,9 @@ func (h *Home) actions() []string {
 		h.ui.actionLine("o", "Open the zone's events in the Keycard console"),
 		h.ui.actionLine("x", "Open a shell in the agent"),
 	)
+	if others := h.otherDemos(); len(others) > 0 {
+		actions = append(actions, h.ui.actionLine("p", "Switch to another demo: "+strings.Join(others, " or ")))
+	}
 	return actions
 }
 
@@ -263,6 +269,17 @@ func (h *Home) checksScore() string {
 		}
 	}
 	return ""
+}
+
+// otherDemos names the checkout's demos besides the current one.
+func (h *Home) otherDemos() []string {
+	names := []string{}
+	for _, scenario := range h.state.DemoList() {
+		if scenario.Name != h.state.DemoName() {
+			names = append(names, scenario.Name)
+		}
+	}
+	return names
 }
 
 // contextLine names the demo, the zone, the user and the cluster.
@@ -328,17 +345,14 @@ func HintFor(err error) string {
 		{sandbox.ErrBuild, "Fix what the build's output says, then press u."},
 		{sandbox.ErrOtherIssuer, "The cluster was made for another issuer URL. Press u and recreate it."},
 		{sandbox.ErrBrokenCluster, "Your kubeconfig has no context for the cluster. Press u and recreate it."},
-		{zonesetup.ErrPolicySetActive, "Run sandbox init, and allow replacing the active policy set."},
+		{zonesetup.ErrPolicySetActive, "Press e, choose Zone and user, and allow replacing the active policy set."},
 		{zonesetup.ErrAuth, "Keycard refused the service account. Check KEYCARD_CLIENT_ID and KEYCARD_CLIENT_SECRET."},
-		{zonesetup.ErrMissingSecret, "A credential has no value. Run sandbox init to enter it."},
-		{zonesetup.ErrValues, "Run sandbox init to fix the setting the error names."},
+		{zonesetup.ErrMissingSecret, "A credential has no value. Press e and choose Demo to enter it."},
+		{zonesetup.ErrValues, "Press e and fix the setting the error names."},
 		{zonesetup.ErrUserNotFound, "The zone has no user with this email. Add them in the Keycard console."},
-		{
-			zonesetup.ErrProviderNotFound,
-			"The zone lacks a provider the demo names. Run sandbox init and choose the demo again.",
-		},
-		{sandbox.ErrSettings, "Run sandbox init to set the sandbox up."},
-		{sandbox.ErrScenario, "Run sandbox init and choose a demo."},
+		{zonesetup.ErrProviderNotFound, "The zone lacks a provider the demo names. Press e and choose Demo."},
+		{sandbox.ErrSettings, "Press e to set the sandbox up."},
+		{sandbox.ErrScenario, "Press e and choose Demo."},
 		{sandbox.ErrService, "Read the service's log: local/out/tunnel.log or local/out/mirror.log."},
 		{sandbox.ErrIssuer, "Read local/out/tunnel.log and local/out/mirror.log, then press u."},
 		{sandbox.ErrPod, "Run sandbox logs to follow the agent's log."},

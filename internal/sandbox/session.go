@@ -138,6 +138,16 @@ func (s *Session) Steps() []Step {
 	}, deploy)
 }
 
+// Setup asks the setup's questions for the sections with ask, or every
+// section without any, and writes its notes to out. The session takes the
+// settings setup kept: after it saved them, and after saving them failed,
+// since the store keeps them for the session then too.
+func (s *Session) Setup(ctx context.Context, ask Asker, out io.Writer, sections ...string) (InitResult, error) {
+	result, err := s.Local().WithIO(out, ask).InitSections(ctx, sections...)
+	s.keepAfterSetup(err)
+	return result, err
+}
+
 // Run runs one step with its output on out.
 func (s *Session) Run(ctx context.Context, stepID StepID, out io.Writer) error {
 	local := s.Local().WithIO(out, nil)
@@ -402,6 +412,9 @@ func (s *Session) Down(ctx context.Context, out io.Writer) error {
 	return local.Down(ctx, "", true)
 }
 
+// ErrNoSetup is a Problem of settings that setup never made.
+var ErrNoSetup = errors.New("setup has not run yet")
+
 // placeholderIssuer stands in for the cluster's issuer while Problems
 // checks the values file, before the tunnel has a URL.
 const placeholderIssuer = "https://issuer.invalid"
@@ -412,7 +425,7 @@ const placeholderIssuer = "https://issuer.invalid"
 func (s *Session) Problems() []error {
 	local := s.Local()
 	if !local.Initialized() {
-		return []error{fmt.Errorf("%w: setup has not run yet", ErrSettings)}
+		return []error{fmt.Errorf("%w: %w", ErrSettings, ErrNoSetup)}
 	}
 	var problems []error
 	var users []zonesetup.UserValues
@@ -606,6 +619,14 @@ func (s *Session) RemoveAgent(ctx context.Context, email string, out io.Writer) 
 	}
 	local = s.Local().WithIO(out, nil)
 	return s.runZone(ctx, local)
+}
+
+// keepAfterSetup reads the settings again when setup kept them, as err
+// says.
+func (s *Session) keepAfterSetup(err error) {
+	if err == nil || errors.Is(err, ErrNotSaved) {
+		s.Reload()
+	}
 }
 
 // agentRemoval is what RemoveAgent changes for one person.
