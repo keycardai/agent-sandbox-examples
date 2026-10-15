@@ -11,11 +11,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strings"
 	"sync"
 
 	"github.com/zalando/go-keyring"
-	yaml "go.yaml.in/yaml/v3"
 )
 
 // Keychain keeps secrets between runs, by name.
@@ -249,34 +247,25 @@ const keychainService, keychainPrefix = "keycard", "sandbox/"
 
 // OSKeychain is the OS keychain: the macOS Keychain, the Secret Service on
 // Linux, or the Windows Credential Manager. It keeps each secret under the
-// service keycard, as prefix and the secret's name. On a platform the
-// keychain library does not support, it keeps them in the file Fallback,
-// readable by its owner alone, and Where says so.
+// service keycard, as prefix and the secret's name.
 type OSKeychain struct {
-	Fallback string
-	prefix   string
-	mu       sync.Mutex
-	inFile   bool
+	prefix string
 }
 
 // NewOSKeychain returns the keychain of the settings file at configPath.
-// Its fallback file sits next to that file: sandbox.yaml falls back to
-// sandbox-secrets.yaml. The default settings
-// file keeps its secrets as sandbox/<name>. Another file keeps its own as
-// sandbox/<id>/<name>, where <id> is the first 8 hex digits of a SHA-256 of
-// its path.
+// The default settings file keeps its secrets as sandbox/<name>. Another
+// file keeps its own as sandbox/<id>/<name>, where <id> is the first 8 hex
+// digits of a SHA-256 of its path.
 func NewOSKeychain(configPath string) *OSKeychain {
 	prefix := keychainPrefix
 	if path, err := DefaultConfigPath(os.Getenv); err != nil || filepath.Clean(configPath) != path {
 		sum := sha256.Sum256([]byte(filepath.Clean(configPath)))
 		prefix += hex.EncodeToString(sum[:])[:8] + "/"
 	}
-	name := strings.TrimSuffix(filepath.Base(configPath), filepath.Ext(configPath)) + "-secrets.yaml"
-	return &OSKeychain{Fallback: filepath.Join(filepath.Dir(configPath), name), prefix: prefix}
+	return &OSKeychain{prefix: prefix}
 }
 
-// Get reads a secret from the keychain, or from the fallback file on a
-// system with no keychain.
+// Get reads a secret from the keychain.
 func (k *OSKeychain) Get(name string) (string, error) {
 	secret, err := keyring.Get(keychainService, k.prefix+name)
 	switch {
@@ -284,44 +273,21 @@ func (k *OSKeychain) Get(name string) (string, error) {
 		return secret, nil
 	case errors.Is(err, keyring.ErrNotFound):
 		return "", fmt.Errorf("%w: %s", ErrNoSecret, name)
-	case !errors.Is(err, keyring.ErrUnsupportedPlatform):
-		return "", k.failed("reading", name, err)
 	}
-	secrets, err := readSecretFile(k.Fallback)
-	if err != nil {
-		return "", err
-	}
-	if secret, ok := secrets[name]; ok {
-		return secret, nil
-	}
-	return "", fmt.Errorf("%w: %s", ErrNoSecret, name)
+	return "", k.failed("reading", name, err)
 }
 
-// Set puts a secret in the keychain, or in the fallback file on a system
-// with no keychain. When the keychain refuses, as it does when it is locked
-// or the operator denies access, Set returns the error and writes nothing.
+// Set puts a secret in the keychain. When the keychain refuses, as it does
+// when it is locked or the operator denies access, Set returns the error.
 func (k *OSKeychain) Set(name, secret string) error {
-	err := keyring.Set(keychainService, k.prefix+name, secret)
-	switch {
-	case err == nil:
-		return nil
-	case !errors.Is(err, keyring.ErrUnsupportedPlatform):
+	if err := keyring.Set(keychainService, k.prefix+name, secret); err != nil {
 		return k.failed("saving", name, err)
 	}
-	k.mu.Lock()
-	k.inFile = true
-	k.mu.Unlock()
-	secrets, err := readSecretFile(k.Fallback)
-	if err != nil {
-		return err
-	}
-	secrets[name] = secret
-	return writeSecretFile(k.Fallback, secrets)
+	return nil
 }
 
-// Delete removes a secret from the keychain, or from the fallback file on a
-// system with no keychain. It returns ErrNoSecret only for a secret neither
-// keeps.
+// Delete removes a secret from the keychain. It returns ErrNoSecret for a
+// secret the keychain does not keep.
 func (k *OSKeychain) Delete(name string) error {
 	err := keyring.Delete(keychainService, k.prefix+name)
 	switch {
@@ -329,27 +295,12 @@ func (k *OSKeychain) Delete(name string) error {
 		return nil
 	case errors.Is(err, keyring.ErrNotFound):
 		return fmt.Errorf("%w: %s", ErrNoSecret, name)
-	case !errors.Is(err, keyring.ErrUnsupportedPlatform):
-		return k.failed("deleting", name, err)
 	}
-	secrets, err := readSecretFile(k.Fallback)
-	if err != nil {
-		return err
-	}
-	if _, ok := secrets[name]; !ok {
-		return fmt.Errorf("%w: %s", ErrNoSecret, name)
-	}
-	delete(secrets, name)
-	return writeSecretFile(k.Fallback, secrets)
+	return k.failed("deleting", name, err)
 }
 
-// Where names the keychain, or the fallback file once a secret went there.
-func (k *OSKeychain) Where() string {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	if k.inFile {
-		return HomeRelative(k.Fallback) + ", readable only by you, because this system has no keychain"
-	}
+// Where names the keychain.
+func (*OSKeychain) Where() string {
 	switch runtime.GOOS {
 	case "darwin":
 		return "the macOS keychain"
@@ -363,29 +314,4 @@ func (k *OSKeychain) Where() string {
 func (k *OSKeychain) failed(doing, name string, err error) error {
 	return fmt.Errorf("%w: %s %s in %s: %w. Unlock the keychain and allow access, "+
 		"or give the secret as %s and do not save it", ErrKeychain, doing, name, k.Where(), err, secretEnv(name))
-}
-
-// readSecretFile reads the fallback file. For a missing file, it returns an
-// empty map.
-func readSecretFile(path string) (map[string]string, error) {
-	secrets := map[string]string{}
-	raw, err := os.ReadFile(path) //nolint:gosec // G304: the path is next to this program's config file.
-	if errors.Is(err, fs.ErrNotExist) {
-		return secrets, nil
-	}
-	if err == nil {
-		err = yaml.Unmarshal(raw, &secrets)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
-	}
-	return secrets, nil
-}
-
-func writeSecretFile(path string, secrets map[string]string) error {
-	raw, err := yaml.Marshal(secrets)
-	if err != nil {
-		return fmt.Errorf("encoding the secrets: %w", err)
-	}
-	return writePrivate(path, raw)
 }
