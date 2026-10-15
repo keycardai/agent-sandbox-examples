@@ -85,6 +85,8 @@ type wizard struct {
 	answers scenarioAnswers
 	// demos holds, for each demo, the other people with an agent in it.
 	demos map[string][]string
+	// heading is the section the asker shows the questions under.
+	heading string
 }
 
 // previous holds the settings from before Init, as zone-setup's values,
@@ -516,10 +518,15 @@ func (w *wizard) keepCluster(context.Context) error {
 	return nil
 }
 
-// section tells a SectionAsker that the next questions are about id.
-func (w *wizard) section(id string) {
+// section tells a SectionAsker that the next questions are about name,
+// when they were about another section.
+func (w *wizard) section(name string) {
+	if name == w.heading {
+		return
+	}
+	w.heading = name
 	if asker, ok := w.ask.(SectionAsker); ok {
-		asker.Section(id)
+		asker.Section(name)
 	}
 }
 
@@ -940,6 +947,7 @@ func (w *wizard) askPerUser(ctx context.Context, input ScenarioInput, missingOnl
 		answer := saved
 		if !missingOnly || saved == "" {
 			var err error
+			w.section(SectionCredentials)
 			prompt := strings.ReplaceAll(input.Prompt, userRef, email)
 			if answer, err = w.input(ctx, prompt, cmp.Or(saved, input.Default), required); err != nil {
 				return err

@@ -44,6 +44,7 @@ const QuestionNewUser = "Who else gets an agent in this demo?"
 // gets one. It lists them again until the operator picks one. It says once
 // that everyone has an agent, however often the operator checks again.
 func (w *wizard) chooseNewUser(ctx context.Context) (string, error) {
+	w.section(SectionZone)
 	have := w.people()
 	told := false
 	for {

@@ -16,7 +16,9 @@ import (
 
 // TestAddAgent offers only the zone's users without an agent in the demo,
 // asks the per-user input for the new one alone, and gives them an agent in
-// that demo alone. Problems then names an agent whose answer is gone.
+// that demo alone. It asks who under the zone's heading, and the input
+// under the credentials'. Problems then names an agent whose answer is
+// gone.
 func TestAddAgent(t *testing.T) {
 	t.Parallel()
 	run := firstRun(t)
@@ -29,13 +31,17 @@ func TestAddAgent(t *testing.T) {
 	ask := &scriptedAsker{t: t, answers: map[string][]string{
 		sandbox.QuestionNewUser: {otherEmail}, "Chat ID of " + otherEmail: {graceChat},
 	}}
-	local.Ask = ask
+	sections := &sectionAsker{scriptedAsker: ask}
+	local.Ask = sections
 	added, err := local.AddAgent(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if added != otherEmail {
 		t.Errorf("AddAgent = %q, want %q", added, otherEmail)
+	}
+	if want := []string{sandbox.SectionZone, sandbox.SectionCredentials}; !slices.Equal(sections.sections, want) {
+		t.Errorf("sections = %q, want %q", sections.sections, want)
 	}
 	if offered := ask.offered[sandbox.QuestionNewUser]; slices.Contains(offered, email) ||
 		!slices.Contains(offered, otherEmail) {
