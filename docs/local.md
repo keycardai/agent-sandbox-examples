@@ -66,12 +66,17 @@ fails or you press Ctrl-C, `up` prints the commands that are left. After the
 checks, `up` keeps the tunnel and the mirror running until you press Ctrl-C.
 It asks whether to run the checks again, and stops when you answer no. If
 the last checks failed, `up` exits with status 1 when it stops. If the
-cluster was created with a different issuer, `up` asks to delete the cluster
-and create it again. The default answer keeps the cluster.
+cluster was created with a different issuer, or your kubeconfig has no
+context for it, `up` asks to delete the cluster and create it again. The
+default answer keeps the cluster.
+
+Before it creates the cluster, `up` asks to remove the containers of an
+earlier k3d cluster of the same name that k3d does not list. k3d cannot
+create the cluster while they exist. The default answer keeps them.
 
 `up` and `down` ask questions only when stdin is a terminal. If it isn't,
-`up` doesn't offer to run the checks again, and it keeps a cluster with a
-different issuer. `down` then deletes only with `--yes`.
+`up` doesn't offer to run the checks again, keeps such a cluster, and stops
+at a leftover container. `down` then deletes only with `--yes`.
 
 `sandbox up --print` prints the commands without running them:
 

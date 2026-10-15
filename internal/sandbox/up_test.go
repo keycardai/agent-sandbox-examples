@@ -196,11 +196,12 @@ esac
 }
 
 // TestUpRecreates checks that Up asks down's question before it deletes a
-// cluster with another issuer, and deletes it only on yes. Up prints the
-// issuers, but not Bootstrap's advice to run down. When Up keeps the
-// cluster, the commands left start with bootstrap. The issuer is a closed
-// port, so after a recreate check-issuer fails at once and the commands left
-// include the mirror. A nil ask means stdin is not a terminal.
+// cluster with another issuer, or one without a kubeconfig context, and
+// deletes it only on yes. Up prints why, but not Bootstrap's advice to run
+// down. When Up keeps the cluster, the commands left start with bootstrap.
+// The issuer is a closed port, so after a recreate check-issuer fails at
+// once and the commands left include the mirror. A nil ask means stdin is
+// not a terminal.
 func TestUpRecreates(t *testing.T) {
 	t.Parallel()
 	const closed = "https://127.0.0.1:1"
@@ -208,12 +209,19 @@ func TestUpRecreates(t *testing.T) {
 		name     string
 		ask      *confirmAsker
 		recreate bool
+		// before runs ahead of recreateTool.
+		before   string
 		want     []error
 		wantText string
 	}{
 		{
 			name: "answered yes", ask: &confirmAsker{answer: true}, recreate: true,
 			want: []error{sandbox.ErrIssuer}, wantText: "discovery refused",
+		},
+		{
+			name: "no kubeconfig context, answered yes", ask: &confirmAsker{answer: true}, recreate: true,
+			before: noContextUntilDeleted,
+			want:   []error{sandbox.ErrIssuer}, wantText: "discovery refused",
 		},
 		{name: "answered no", ask: &confirmAsker{}, want: []error{sandbox.ErrConfirm}, wantText: nothingDeleted},
 		{name: "no terminal", want: []error{sandbox.ErrConfirm, sandbox.ErrNoTerminal}, wantText: noTerminal},
@@ -226,7 +234,7 @@ func TestUpRecreates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			local, calls := newLocal(t, sandbox.Settings{sandbox.KeyCluster: cluster, sandbox.KeyIssuer: closed},
-				recreateTool(closed))
+				tc.before+recreateTool(closed))
 			out := &bytes.Buffer{}
 			local.Out = out
 			tc.ask.use(local)
@@ -252,9 +260,11 @@ func TestUpRecreates(t *testing.T) {
 				t.Errorf("calls = %q, want no delete", got)
 			}
 			for text, want := range map[string]bool{
-				wantOut:                           true,
-				"was created with other settings": true,
-				deleteAdvice:                      false,
+				wantOut:                                  true,
+				"was created with other settings":        tc.before == "",
+				"your kubeconfig has no context k3d-asp": tc.before != "",
+				deleteAdvice:                             false,
+				"down --cluster asp":                     false,
 			} {
 				if got := strings.Contains(out.String(), text); got != want {
 					t.Errorf("output has %q = %t, want %t\n%s", text, got, want, out)
@@ -263,6 +273,10 @@ func TestUpRecreates(t *testing.T) {
 		})
 	}
 }
+
+// noContextUntilDeleted leaves the kubeconfig without the cluster's context
+// until recreateTool deletes the cluster.
+const noContextUntilDeleted = `[[ -f "$CALLS.deleted" ]] || ` + noContext
 
 // recreateTool is a fake k3d and kubectl for a cluster with another issuer.
 // After the delete, the cluster list is empty, and the discovery document and

@@ -672,3 +672,32 @@ esac
 	checkErr(t, err, []error{sandbox.ErrPod},
 		userID+" stopped (Failed) before it was ready. The agent's last log line: "+lastLine)
 }
+
+// TestRunPhaseUnknown checks that Run keeps waiting for the agent's pod when
+// it cannot read the pod's phase. Here the first wait times out, the phase
+// lookup fails, and the second wait finds the pod ready.
+func TestRunPhaseUnknown(t *testing.T) {
+	t.Parallel()
+	local, calls := newLocal(t, sandbox.Settings{
+		sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer,
+		sandbox.KeyZoneURL: zoneURL, sandbox.KeyUserEmail: email,
+	}, `case "$*" in
+*"wait --for=condition=Ready pod/`+userID+` --timeout=5s")
+	[[ -e "$CALLS.waited" ]] && exit 0
+	touch "$CALLS.waited"
+	echo 'error: timed out waiting for the condition' >&2; exit 1 ;;
+*"get pod `+userID+` -o jsonpath={.status.phase}")
+	echo 'error: the server is currently unable to handle the request' >&2; exit 1 ;;
+esac
+`+healthy().script())
+	local.Out = &bytes.Buffer{}
+	linkCharts(t, local.Root)
+	writeFile(t, filepath.Join(local.Root, "local", "out", "zone-setup.yaml"), zoneSetupOutput)
+	if err := local.Run(t.Context(), sandbox.RunOptions{SkipZoneSetup: true}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	wait := "wait --for=condition=Ready pod/" + userID
+	if got := strings.Count(readCalls(t, calls), wait); got != 2 {
+		t.Errorf("waited %d times, want 2", got)
+	}
+}

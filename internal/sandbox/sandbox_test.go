@@ -49,12 +49,14 @@ func newLocal(t *testing.T, settings sandbox.Settings, body string) (*sandbox.Lo
 	t.Helper()
 	dir := t.TempDir()
 	script, calls := filepath.Join(dir, "tool"), filepath.Join(dir, "calls")
-	//nolint:gosec // G306: the fake tool must be executable.
-	if err := os.WriteFile(script, []byte(record+body), 0o700); err != nil {
+	if err := os.WriteFile(script, []byte(record+body), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// bash reads the script. On Linux, executing a file that was just written
+	// can fail with "text file busy" while a parallel test forks.
 	tool := func(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
-		cmd := exec.CommandContext(ctx, script, args...) //nolint:gosec // G204: the script is the test's fake tool.
+		//nolint:gosec // G204: the script is the test's fake tool.
+		cmd := exec.CommandContext(ctx, "bash", append([]string{script}, args...)...)
 		cmd.Env = append(os.Environ(), "FAKE_TOOL="+name, "CALLS="+calls)
 		return cmd, nil
 	}
