@@ -154,72 +154,82 @@ func fakeService(name, address string) int {
 	return 0
 }
 
-// startStandIn starts sh with args after its script, which sleeps, and
-// returns its pid. setsid makes it the leader of a process group of its
-// own, as the services are.
-func startStandIn(t *testing.T, setsid bool, args ...string) int {
+// startStandIn starts sh, which sleeps, as the leader of a process group
+// of its own, as the services are. With pidFile, it holds the lock on that
+// file and its pid is in it, as for a service spawnService starts.
+func startStandIn(t *testing.T, pidFile string) int {
 	t.Helper()
 	// The second command keeps sh from replacing itself with sleep.
-	//nolint:gosec // G204: a fixed script; the arguments only name a service.
-	cmd := exec.CommandContext(t.Context(), "sh", append([]string{"-c", "sleep 30; :"}, args...)...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: setsid}
+	cmd := exec.CommandContext(t.Context(), "sh", "-c", "sleep 30; :")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	var lock *os.File
+	if pidFile != "" {
+		if err := os.MkdirAll(filepath.Dir(pidFile), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		var err error
+		//nolint:gosec // G304: the path is the test's own pid file.
+		if lock, err = os.OpenFile(pidFile, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = lock.Close() }()
+		if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			t.Fatal(err)
+		}
+		cmd.ExtraFiles = []*os.File{lock}
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	go func() { _ = cmd.Wait() }()
+	if lock != nil {
+		if _, err := fmt.Fprintf(lock, "%d\n", cmd.Process.Pid); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return cmd.Process.Pid
 }
 
-// TestServiceStatus reads a service's pid file. A pid that runs the
-// service as the steps start it counts, and StopService stops it.
+// TestServiceStatus counts a service that holds the lock on its pid file,
+// and StopService stops it.
 func TestServiceStatus(t *testing.T) {
 	t.Parallel()
 	local, _ := newLocal(t, sandbox.Settings{}, "")
 	pidFile := filepath.Join(local.Root, "local", "out", sandbox.ServiceTunnel+".pid")
-	if state := local.ServiceStatus(t.Context(), sandbox.ServiceTunnel); state.Running {
+	if state := local.ServiceStatus(sandbox.ServiceTunnel); state.Running {
 		t.Errorf("status with no pid file = %+v, want not running", state)
 	}
-
-	service := startStandIn(t, true, sandbox.ServiceTunnel, "--listen", "127.0.0.1:8480")
-	writeFile(t, pidFile, strconv.Itoa(service)+"\n")
-	if state := local.ServiceStatus(t.Context(), sandbox.ServiceTunnel); !state.Running {
-		t.Fatalf("status = %+v, want running", state)
+	service := startStandIn(t, pidFile)
+	if state := local.ServiceStatus(sandbox.ServiceTunnel); !state.Running || state.PID != service {
+		t.Fatalf("status = %+v, want pid %d running", state, service)
 	}
-	if state := local.ServiceStatus(t.Context(), sandbox.ServiceMirror); state.Running {
+	if state := local.ServiceStatus(sandbox.ServiceMirror); state.Running {
 		t.Errorf("mirror status = %+v, want not running", state)
 	}
 	if err := local.StopService(t.Context(), sandbox.ServiceTunnel); err != nil {
 		t.Fatal(err)
 	}
-	if state := local.ServiceStatus(t.Context(), sandbox.ServiceTunnel); state.Running {
+	if state := local.ServiceStatus(sandbox.ServiceTunnel); state.Running {
 		t.Errorf("status after stop = %+v, want not running", state)
-	}
-	if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
-		t.Errorf("stat %s: %v, want it removed", pidFile, err)
 	}
 }
 
-// TestServiceStatusOtherProgram does not count a pid of another program as
-// the service, even one whose arguments name the service, and StopService
-// leaves that program alone.
-func TestServiceStatusOtherProgram(t *testing.T) {
+// TestServiceStatusUnlocked does not count a pid file that no service
+// locks, whatever program runs with that pid, and StopService leaves that
+// program alone.
+func TestServiceStatusUnlocked(t *testing.T) {
 	t.Parallel()
 	local, _ := newLocal(t, sandbox.Settings{}, "")
-	pidFile := filepath.Join(local.Root, "local", "out", sandbox.ServiceTunnel+".pid")
-	for name, pid := range map[string]int{
-		"arguments that name the service":     startStandIn(t, true, sandbox.ServiceTunnel),
-		"not the leader of its process group": startStandIn(t, false, sandbox.ServiceTunnel, "--listen", "127.0.0.1:8480"),
-	} {
-		writeFile(t, pidFile, strconv.Itoa(pid)+"\n")
-		if state := local.ServiceStatus(t.Context(), sandbox.ServiceTunnel); state.Running {
-			t.Errorf("%s: status = %+v, want not running", name, state)
-		}
-		if err := local.StopService(t.Context(), sandbox.ServiceTunnel); !errors.Is(err, sandbox.ErrNotRunning) {
-			t.Errorf("%s: StopService = %v, want ErrNotRunning", name, err)
-		}
-		if err := syscall.Kill(pid, 0); err != nil {
-			t.Errorf("%s: the process is gone after StopService: %v", name, err)
-		}
+	pid := startStandIn(t, "")
+	writeFile(t, filepath.Join(local.Root, "local", "out", sandbox.ServiceTunnel+".pid"), strconv.Itoa(pid)+"\n")
+	if state := local.ServiceStatus(sandbox.ServiceTunnel); state.Running {
+		t.Errorf("status = %+v, want not running", state)
+	}
+	if err := local.StopService(t.Context(), sandbox.ServiceTunnel); !errors.Is(err, sandbox.ErrNotRunning) {
+		t.Errorf("StopService = %v, want ErrNotRunning", err)
+	}
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Errorf("the process is gone after StopService: %v", err)
 	}
 }
 
@@ -238,7 +248,7 @@ func TestSessionTunnel(t *testing.T) {
 		if err := named.NewSession("127.0.0.1:8480", time.Second).Run(t.Context(), sandbox.StepTunnel, out); err != nil {
 			t.Fatal(err)
 		}
-		return out.String(), local.ServiceStatus(t.Context(), sandbox.ServiceTunnel)
+		return out.String(), local.ServiceStatus(sandbox.ServiceTunnel)
 	}
 
 	_, first := run(namedTunnel)
@@ -316,7 +326,7 @@ func TestSessionMirror(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state := local.ServiceStatus(t.Context(), sandbox.ServiceMirror); !state.Running {
+	if state := local.ServiceStatus(sandbox.ServiceMirror); !state.Running {
 		t.Errorf("mirror status = %+v, want running", state)
 	}
 }

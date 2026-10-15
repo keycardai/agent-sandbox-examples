@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,11 +26,10 @@ const (
 	listenFlag = "--listen"
 )
 
-// ErrNotRunning means the service's pid file is missing or does not name
-// the running service.
+// ErrNotRunning means no service holds the lock on its pid file.
 var ErrNotRunning = errors.New("not running")
 
-// ServiceState is what a service's pid file says, and whether that process
+// ServiceState is what a service's pid file says, and whether the service
 // still runs.
 type ServiceState struct {
 	Name    string
@@ -38,34 +39,37 @@ type ServiceState struct {
 	LogPath string
 }
 
-// ServiceStatus reads local/out/<name>.pid and reports whether the process
-// it names is still that service. A pid the system gave to another program
-// since does not count, even when that program's arguments name the
-// service.
-func (l *Local) ServiceStatus(ctx context.Context, name string) ServiceState {
+// ServiceStatus reads local/out/<name>.pid. A running service holds an
+// exclusive lock on that file, and the kernel releases the lock when the
+// service exits, even on SIGKILL. A pid file nobody locks names no running
+// service, whatever program has that pid now.
+func (l *Local) ServiceStatus(name string) ServiceState {
 	state := ServiceState{Name: name, LogPath: l.serviceFile(name, ".log")}
-	raw, err := os.ReadFile(l.serviceFile(name, ".pid"))
+	file, err := os.Open(l.serviceFile(name, ".pid"))
 	if err != nil {
 		return state
 	}
-	if state.PID, err = strconv.Atoi(strings.TrimSpace(string(raw))); err != nil || state.PID <= 0 {
-		state.PID = 0
+	defer func() { _ = file.Close() }()
+	if err = syscall.Flock(int(file.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); !errors.Is(err, syscall.EWOULDBLOCK) {
 		return state
 	}
-	state.Running = processRuns(ctx, state.PID, name)
+	raw, err := io.ReadAll(file)
+	if err != nil {
+		return state
+	}
+	if state.PID, err = strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && state.PID > 0 {
+		state.Running = true
+	}
 	return state
 }
 
 // spawnService starts `sandbox <name> --listen <listen>` in a session of
-// its own, writes its pid to local/out/<name>.pid, and returns without
-// waiting for it. The service gets the settings in its environment, and no
-// config file, so that it runs with this session's settings, saved or not.
-// Its output replaces local/out/<name>.log. A service that already runs is
-// stopped first.
-func (l *Local) spawnService(ctx context.Context, name, listen string) error {
-	if err := l.StopService(ctx, name); err != nil && !errors.Is(err, ErrNotRunning) {
-		return err
-	}
+// its own, and returns without waiting for it. The service holds an
+// exclusive lock on local/out/<name>.pid, which names its pid, until it
+// exits. It gets the settings in its environment, and no config file, so
+// that it runs with this session's settings, saved or not. Its output
+// replaces local/out/<name>.log. The caller stops a running service first.
+func (l *Local) spawnService(name, listen string) error {
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("%w: finding this program to start %s: %w", ErrService, name, err)
@@ -76,41 +80,67 @@ func (l *Local) spawnService(ctx context.Context, name, listen string) error {
 		return err
 	}
 	defer func() { _ = log.Close() }()
-	// The service must outlive ctx, which ends when the TUI quits.
+	lock, err := lockedPIDFile(l.outDir(), name)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(lock.Name()); _ = lock.Close() }()
+	// The service must outlive this process, which ends when the TUI quits.
 	cmd := exec.Command(self, args...) //nolint:gosec,noctx // G204: this program and its own subcommand.
 	cmd.Stdout, cmd.Stderr = log, log
 	cmd.Env = append(os.Environ(), l.serviceEnv()...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// The service inherits the locked file, and so holds the lock until it
+	// exits.
+	cmd.ExtraFiles = []*os.File{lock}
 	if err = cmd.Start(); err != nil {
 		return fmt.Errorf("%w: starting %s: %w", ErrService, name, err)
 	}
 	pid := cmd.Process.Pid
-	// Wait reaps the service if it exits while this process runs, so that a
-	// zombie does not look like a running service.
+	// Wait reaps the service if it exits while this process runs.
 	go func() { _ = cmd.Wait() }()
+	// The rename makes the pid file appear whole, and already locked.
 	pidFile := l.serviceFile(name, ".pid")
-	if err = os.WriteFile(pidFile, []byte(strconv.Itoa(pid)+"\n"), fileMode); err != nil {
-		_ = syscall.Kill(-pid, syscall.SIGTERM)
+	if _, err = fmt.Fprintf(lock, "%d\n", pid); err == nil {
+		err = os.Rename(lock.Name(), pidFile)
+	}
+	if err != nil {
+		l.signalService(ServiceState{Name: name, PID: pid}, syscall.SIGTERM, "SIGTERM")
 		return fmt.Errorf("writing %s: %w", pidFile, err)
 	}
 	return nil
 }
 
-// StopService sends SIGTERM to the service's process group, which holds
-// cloudflared too, and waits for it to exit. After serviceStop it sends
-// SIGKILL. It removes the pid file. A service that does not run returns
-// ErrNotRunning, and StopService signals nothing.
+// lockedPIDFile creates a new file in dir for the pid of the service name,
+// with an exclusive lock on it.
+func lockedPIDFile(dir, name string) (*os.File, error) {
+	file, err := os.CreateTemp(dir, "."+name+"-*.pid")
+	if err != nil {
+		return nil, fmt.Errorf("%w: starting %s: %w", ErrService, name, err)
+	}
+	if err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = os.Remove(file.Name())
+		_ = file.Close()
+		return nil, fmt.Errorf("%w: locking the pid file of %s: %w", ErrService, name, err)
+	}
+	return file, nil
+}
+
+// StopService stops a running service with SIGTERM to its process group,
+// which holds cloudflared too, and with SIGKILL when it still runs after
+// serviceStop. A service that does not run returns ErrNotRunning, and
+// StopService signals nothing. It says on l.Out when a step of the stop
+// fails.
 func (l *Local) StopService(ctx context.Context, name string) error {
-	state := l.ServiceStatus(ctx, name)
-	defer func() { _ = os.Remove(l.serviceFile(name, ".pid")) }()
+	state := l.ServiceStatus(name)
 	if !state.Running {
 		return fmt.Errorf("%w: %s", ErrNotRunning, name)
 	}
-	_ = syscall.Kill(-state.PID, syscall.SIGTERM)
+	l.signalService(state, syscall.SIGTERM, "SIGTERM")
 	deadline := time.Now().Add(serviceStop)
-	for processRuns(ctx, state.PID, name) {
+	for l.ServiceStatus(name).Running {
 		if time.Now().After(deadline) {
-			_ = syscall.Kill(-state.PID, syscall.SIGKILL)
+			l.signalService(state, syscall.SIGKILL, "SIGKILL")
 			break
 		}
 		select {
@@ -121,9 +151,19 @@ func (l *Local) StopService(ctx context.Context, name string) error {
 	}
 	if name == ServiceTunnel {
 		// A tunnel killed before it cleaned up leaves its URL behind.
-		_ = os.Remove(l.QuickIssuerFile())
+		if err := os.Remove(l.QuickIssuerFile()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			_, _ = fmt.Fprintf(l.Out, "Could not delete %s, which the tunnel left: %v\n", l.QuickIssuerFile(), err)
+		}
 	}
 	return nil
+}
+
+// signalService sends sig, named name, to the service's process group, and
+// says on l.Out when that fails.
+func (l *Local) signalService(state ServiceState, sig syscall.Signal, name string) {
+	if err := syscall.Kill(-state.PID, sig); err != nil {
+		_, _ = fmt.Fprintf(l.Out, "Could not send %s to the %s, process group %d: %v\n", name, state.Name, state.PID, err)
+	}
 }
 
 // serviceEnv is the environment that gives a service this session's
@@ -140,21 +180,4 @@ func (l *Local) serviceEnv() []string {
 
 func (l *Local) serviceFile(name, suffix string) string {
 	return filepath.Join(l.outDir(), name+suffix)
-}
-
-// processRuns reports whether pid runs the service name as spawnService
-// starts it: it leads a process group of its own, and its arguments end
-// with `<name> --listen <address>`.
-func processRuns(ctx context.Context, pid int, name string) bool {
-	if pgid, err := syscall.Getpgid(pid); err != nil || pgid != pid {
-		return false
-	}
-	//nolint:gosec // G204: ps is fixed, and the pid is a number this package wrote.
-	out, err := exec.CommandContext(ctx, "ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
-	if err != nil {
-		return false
-	}
-	fields := strings.Fields(string(out))
-	last := len(fields) - 1
-	return last >= 3 && fields[last-2] == name && fields[last-1] == listenFlag
 }

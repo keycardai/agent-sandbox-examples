@@ -458,8 +458,8 @@ type Status struct {
 func (s *Session) Status(ctx context.Context) Status {
 	local := s.Local()
 	status := Status{
-		Tunnel: local.ServiceStatus(ctx, ServiceTunnel),
-		Mirror: local.ServiceStatus(ctx, ServiceMirror),
+		Tunnel: local.ServiceStatus(ServiceTunnel),
+		Mirror: local.ServiceStatus(ServiceMirror),
 	}
 	status.ClusterExists = local.Existing()
 	if !status.ClusterExists {
@@ -623,14 +623,14 @@ func (s *Session) removeUser(ctx context.Context, local *Local, email string) er
 // working.
 func (s *Session) runTunnel(ctx context.Context, local *Local) error {
 	tunnel := local.Settings[KeyTunnel]
-	if running := s.runningTunnel(ctx, local); running != "" {
+	if running := s.runningTunnel(local); running != "" {
 		_, _ = fmt.Fprintln(local.Out, running)
 		return nil
 	}
 	if err := s.prepareTunnel(ctx, local); err != nil {
 		return err
 	}
-	if err := local.spawnService(ctx, ServiceTunnel, s.listen); err != nil {
+	if err := local.spawnService(ServiceTunnel, s.listen); err != nil {
 		return err
 	}
 	if err := os.WriteFile(local.serviceFile(ServiceTunnel, tunnelSuffix), []byte(tunnel), fileMode); err != nil {
@@ -678,10 +678,10 @@ const tunnelSuffix = ".name"
 // runningTunnel returns a line about the running tunnel when it started
 // with the tunnel the settings name. It returns "" when the step must start
 // one: no tunnel runs, another tunnel runs, or a quick tunnel has no URL.
-func (s *Session) runningTunnel(ctx context.Context, local *Local) string {
+func (s *Session) runningTunnel(local *Local) string {
 	tunnel := local.Settings[KeyTunnel]
 	started, err := os.ReadFile(local.serviceFile(ServiceTunnel, tunnelSuffix))
-	if err != nil || string(started) != tunnel || !local.ServiceStatus(ctx, ServiceTunnel).Running {
+	if err != nil || string(started) != tunnel || !local.ServiceStatus(ServiceTunnel).Running {
 		return ""
 	}
 	if tunnel != "" {
@@ -709,7 +709,7 @@ func (s *Session) runMirror(ctx context.Context, local *Local) error {
 		return fmt.Errorf("%w: something else answers on %s, where the mirror listens. "+
 			"Stop it, such as a sandbox mirror in another terminal, and run this step again", ErrService, s.listen)
 	}
-	if err := local.spawnService(ctx, ServiceMirror, s.listen); err != nil {
+	if err := local.spawnService(ServiceMirror, s.listen); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(local.Out, "Started the mirror on %s. Its log is %s.\n",
@@ -873,7 +873,7 @@ func (s *Session) needZone(local *Local) (*zonesetup.Output, error) {
 func (s *Session) waitService(ctx context.Context, local *Local, name, what string, ready func() bool) error {
 	timeout := time.After(serviceStart)
 	for !ready() {
-		if !local.ServiceStatus(ctx, name).Running {
+		if !local.ServiceStatus(name).Running {
 			return fmt.Errorf("%w: %s stopped before %s was ready. Its log is %s",
 				ErrService, name, what, local.serviceFile(name, ".log"))
 		}
