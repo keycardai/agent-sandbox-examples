@@ -2,6 +2,6 @@
   "private": true,
   "description": "The pi coding agent for the pi scenario. package-lock.json pins every package and its integrity hash.",
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.87.1"
+    "@earendil-works/pi-coding-agent": "1.2.0"
   }
 }
