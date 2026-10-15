@@ -20,6 +20,7 @@ zone fetches `<issuer>/.well-known/openid-configuration` and compares its
 - A user in the zone for the sandbox to act for. The management API can't
   create users. Add one in the Keycard console, or have the person sign in
   to the zone.
+
 Then:
 
     go run ./cmd/sandbox up
