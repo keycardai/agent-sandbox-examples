@@ -485,7 +485,10 @@ func (l *Local) printLeft(steps []upStep, from int, state *upRun) {
 	}
 	if l.config() != nil && !l.Store.Saved() {
 		advice := "Run " + l.Command("init") + " and save them first."
-		if !l.Store.CanSave() {
+		switch err := l.Store.KeychainErr(); {
+		case err != nil:
+			advice = "They cannot be saved, because " + err.Error() + "."
+		case !l.Store.CanSave():
 			advice = "Run " + sandboxCommand + " init, save the settings, and run these commands without --config -."
 		}
 		_, _ = fmt.Fprintln(l.Out, "\nThe settings are not saved, so these commands do not see them. "+advice)

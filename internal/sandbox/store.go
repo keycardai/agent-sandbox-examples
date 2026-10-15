@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/zalando/go-keyring"
 )
@@ -24,6 +25,9 @@ type Keychain interface {
 	Delete(name string) error
 	// Where names where the secrets are, in a sentence.
 	Where() string
+	// Check returns an error when the keychain cannot keep secrets, as on
+	// Linux without a Secret Service.
+	Check() error
 }
 
 var (
@@ -32,6 +36,8 @@ var (
 	// ErrKeychain means the keychain refused to read, save or delete a
 	// secret.
 	ErrKeychain = errors.New("the keychain refused")
+	// errKeychainTimeout means a keychain call did not return in time.
+	errKeychainTimeout = errors.New("the keychain did not answer")
 )
 
 // Store keeps what setup asked: the config and the secrets. It keeps them
@@ -44,6 +50,10 @@ type Store struct {
 	saved    bool
 	typed    map[string]string
 	keychain Keychain
+	// check asks the keychain once whether it works, and keychainErr
+	// keeps the answer.
+	check       sync.Once
+	keychainErr error
 }
 
 // NewStore returns a store that saves to the config file at path, or saves
@@ -82,9 +92,20 @@ func (s *Store) Saved() bool {
 	return s.saved
 }
 
-// CanSave reports whether the store has a file to save to.
+// CanSave reports whether the store has a file to save to and a keychain
+// that works.
 func (s *Store) CanSave() bool {
-	return s != nil && s.path != NoConfig && s.path != "" && s.keychain != nil
+	return s.hasFile() && s.KeychainErr() == nil
+}
+
+// KeychainErr returns why the keychain cannot keep secrets, or nil. It asks
+// the keychain once. On Linux that can open a dialog to unlock the keyring.
+func (s *Store) KeychainErr() error {
+	if s == nil || s.keychain == nil {
+		return nil
+	}
+	s.check.Do(func() { s.keychainErr = s.keychain.Check() })
+	return s.keychainErr
 }
 
 // KeychainWhere names where saved secrets go, in a sentence.
@@ -99,7 +120,7 @@ func (s *Store) KeychainWhere() string {
 // config names and the known ones. It returns how many secrets it deleted.
 // The session keeps the settings and the secrets the config names.
 func (s *Store) Forget(known ...string) (int, error) {
-	if !s.CanSave() {
+	if !s.hasFile() {
 		return 0, nil
 	}
 	s.mu.Lock()
@@ -125,6 +146,12 @@ func (s *Store) Forget(known ...string) (int, error) {
 	}
 	s.saved = false
 	return deleted, nil
+}
+
+// hasFile reports whether the store has a file to save to, and a keychain
+// for the secrets.
+func (s *Store) hasFile() bool {
+	return s != nil && s.path != NoConfig && s.path != "" && s.keychain != nil
 }
 
 // keepTyped reads each named secret from the keychain into the session,
@@ -181,7 +208,7 @@ func (s *Store) setSecret(name, secret string) {
 // the config to the config file. When a step fails, it puts back the
 // secrets it replaced, so the keychain and the file still agree.
 func (s *Store) save() error {
-	if !s.CanSave() {
+	if !s.hasFile() {
 		return fmt.Errorf("%w: there is no config file to save to", ErrSettings)
 	}
 	s.mu.Lock()
@@ -241,9 +268,35 @@ func (s *Store) restore(replaced []savedSecret) error {
 	return errors.Join(errs...)
 }
 
+// keychainTimeout bounds each call to the OS keychain. A call can wait for
+// the operator to unlock the keychain, and a broken Secret Service can hang.
+const keychainTimeout = time.Minute
+
+// withTimeout returns what call returns, or errKeychainTimeout once timeout
+// passes. go-keyring cannot cancel a call, so a late call finishes in the
+// background.
+func withTimeout(timeout time.Duration, call func() (string, error)) (string, error) {
+	type result struct {
+		value string
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		value, err := call()
+		done <- result{value, err}
+	}()
+	select {
+	case r := <-done:
+		return r.value, r.err
+	case <-time.After(timeout):
+		return "", fmt.Errorf("%w within %s", errKeychainTimeout, timeout)
+	}
+}
+
 // keychainService is the service the OS keychain keeps the secrets under,
-// and keychainPrefix starts the name of each.
-const keychainService, keychainPrefix = "keycard", "sandbox/"
+// and keychainPrefix starts the name of each. Check reads keychainProbe,
+// which names no secret.
+const keychainService, keychainPrefix, keychainProbe = "keycard", "sandbox/", "keychain-probe"
 
 // OSKeychain is the OS keychain: the macOS Keychain, the Secret Service on
 // Linux, or the Windows Credential Manager. It keeps each secret under the
@@ -267,7 +320,9 @@ func NewOSKeychain(configPath string) *OSKeychain {
 
 // Get reads a secret from the keychain.
 func (k *OSKeychain) Get(name string) (string, error) {
-	secret, err := keyring.Get(keychainService, k.prefix+name)
+	secret, err := withTimeout(keychainTimeout, func() (string, error) {
+		return keyring.Get(keychainService, k.prefix+name)
+	})
 	switch {
 	case err == nil:
 		return secret, nil
@@ -280,7 +335,10 @@ func (k *OSKeychain) Get(name string) (string, error) {
 // Set puts a secret in the keychain. When the keychain refuses, as it does
 // when it is locked or the operator denies access, Set returns the error.
 func (k *OSKeychain) Set(name, secret string) error {
-	if err := keyring.Set(keychainService, k.prefix+name, secret); err != nil {
+	_, err := withTimeout(keychainTimeout, func() (string, error) {
+		return "", keyring.Set(keychainService, k.prefix+name, secret)
+	})
+	if err != nil {
 		return k.failed("saving", name, err)
 	}
 	return nil
@@ -289,7 +347,9 @@ func (k *OSKeychain) Set(name, secret string) error {
 // Delete removes a secret from the keychain. It returns ErrNoSecret for a
 // secret the keychain does not keep.
 func (k *OSKeychain) Delete(name string) error {
-	err := keyring.Delete(keychainService, k.prefix+name)
+	_, err := withTimeout(keychainTimeout, func() (string, error) {
+		return "", keyring.Delete(keychainService, k.prefix+name)
+	})
 	switch {
 	case err == nil:
 		return nil
@@ -297,6 +357,18 @@ func (k *OSKeychain) Delete(name string) error {
 		return fmt.Errorf("%w: %s", ErrNoSecret, name)
 	}
 	return k.failed("deleting", name, err)
+}
+
+// Check reads a secret the keychain does not keep. A keychain that works
+// answers that it has none.
+func (k *OSKeychain) Check() error {
+	_, err := withTimeout(keychainTimeout, func() (string, error) {
+		return keyring.Get(keychainService, k.prefix+keychainProbe)
+	})
+	if err == nil || errors.Is(err, keyring.ErrNotFound) {
+		return nil
+	}
+	return fmt.Errorf("%s does not work: %w", k.Where(), err)
 }
 
 // Where names the keychain.

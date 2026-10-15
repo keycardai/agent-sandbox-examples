@@ -216,6 +216,8 @@ type testKeychain struct {
 	// refuse is a secret Set refuses to save, and getRefuse one Get refuses
 	// to read, as a locked keychain does.
 	refuse, getRefuse string
+	// broken is what Check returns.
+	broken error
 }
 
 // errRefused is the error testKeychain gives for the secret it refuses.
@@ -257,6 +259,8 @@ func (k *testKeychain) Delete(name string) error {
 }
 
 func (*testKeychain) Where() string { return "the test keychain" }
+
+func (k *testKeychain) Check() error { return k.broken }
 
 // The names of the account's secret and the GitHub token in the keychain.
 const managementName, githubTokenName = "management-client-secret", "github-token"
@@ -646,6 +650,41 @@ func TestInitSaveFails(t *testing.T) {
 			"keychain = %v, want the secrets saved before the refusal put back",
 			slices.Collect(maps.Keys(keychain.secrets)),
 		)
+	}
+	if _, err = os.Stat(local.Store.Path()); !os.IsNotExist(err) {
+		t.Errorf("stat %s: %v, want no config file", local.Store.Path(), err)
+	}
+}
+
+// TestInitKeychainBroken does not offer to save when the keychain does not
+// work, and says why. The settings and the secrets last for the session.
+func TestInitKeychainBroken(t *testing.T) {
+	t.Parallel()
+	server, caFile := fakeManagement(t, "https://192.0.2.10", noGitHubProviders, "")
+	local, keychain := initLocal(t, "")
+	out := &bytes.Buffer{}
+	local.Out = out
+	keychain.broken = errRefused
+	answers := signInAnswers(server.URL, caFile, goodSecret)
+	answers["GitHub personal access token"] = []string{ghpToken}
+	asker := &scriptedAsker{t: t, answers: answers}
+	local.Ask = asker
+	result, err := local.Init(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, question := range asker.asked {
+		if strings.HasPrefix(question, sandbox.QuestionSave) {
+			t.Errorf("asked %q, want no offer to save", question)
+		}
+	}
+	checkContains(t, "output", out.String(), []string{
+		"Setup cannot save the settings, because the keychain is locked.\n",
+		"Kept the settings for this session. Nothing was saved.\n",
+	})
+	if result.Saved || local.Store.Config() == nil || len(keychain.secrets) != 0 {
+		t.Errorf("saved = %t, config = %v, keychain = %v; want the settings for this session only",
+			result.Saved, local.Store.Config(), slices.Collect(maps.Keys(keychain.secrets)))
 	}
 	if _, err = os.Stat(local.Store.Path()); !os.IsNotExist(err) {
 		t.Errorf("stat %s: %v, want no config file", local.Store.Path(), err)

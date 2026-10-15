@@ -30,6 +30,21 @@ func TestKeychainRefuses(t *testing.T) {
 	checkErr(t, err, []error{sandbox.ErrKeychain, errDenied}, "deleting github-token")
 }
 
+// TestKeychainCheck finds a working keychain by reading a secret it does
+// not keep, and returns the keychain's error for one that does not work.
+//
+//nolint:paralleltest // keyring's mock is global.
+func TestKeychainCheck(t *testing.T) {
+	keyring.MockInit()
+	keychain := sandbox.NewOSKeychain(filepath.Join(t.TempDir(), "keycard", "sandbox.yaml"))
+	if err := keychain.Check(); err != nil {
+		t.Errorf("Check = %v, want nil for a working keychain", err)
+	}
+	keyring.MockInitWithError(errDenied)
+	t.Cleanup(keyring.MockInit)
+	checkErr(t, keychain.Check(), []error{errDenied}, "does not work")
+}
+
 // TestKeychainPerFile keeps the secrets of each settings file apart, so
 // that saving or forgetting one file's settings leaves another's secrets.
 // The default file keeps its secrets as sandbox/<name>.

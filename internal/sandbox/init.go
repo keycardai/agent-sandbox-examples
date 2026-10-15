@@ -187,9 +187,14 @@ func (w *wizard) run(ctx context.Context, change map[string]bool) (InitResult, e
 const QuestionSave = "Save these settings for next time?"
 
 // askSave asks whether to save the settings, when they are not saved yet.
-// Settings saved before stay saved, with the changes.
+// Settings saved before stay saved, with the changes. When the keychain does
+// not work, it says so and does not ask.
 func (w *wizard) askSave(ctx context.Context) (bool, error) {
 	store := w.l.Store
+	if err := store.KeychainErr(); err != nil {
+		_, _ = fmt.Fprintf(w.l.Out, "Setup cannot save the settings, because %v.\n", err)
+		return false, nil
+	}
 	switch {
 	case !store.CanSave():
 		return false, nil

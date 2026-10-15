@@ -64,7 +64,8 @@ such as the service account's client secret or an OpenRouter key, go in
 your OS keychain, under the service `keycard`, as `sandbox/<name>`. A
 settings file you name with `--config` keeps its secrets apart, as
 `sandbox/<id>/<name>`. The config file never holds a secret. On Linux the keychain is the Secret
-Service of your desktop session. When the keychain refuses, as it does when
+Service of your desktop session. When no keychain answers, as on Linux
+without a Secret Service, setup says so and does not offer to save. When the keychain refuses, as it does when
 it is locked or you deny access, setup stops and says so, and writes
 nothing.
 
