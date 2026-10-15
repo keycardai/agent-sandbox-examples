@@ -47,9 +47,9 @@ func addScenario(t *testing.T, root, name, body string, dockerfile bool) {
 	}
 }
 
-// agentImage is the image LoadScenario names for agentScenario with a
-// Dockerfile.
-func agentImage(t *testing.T) string {
+// agentImage is the image NameImage names for agentScenario with a
+// Dockerfile, built FROM base.
+func agentImage(t *testing.T, base string) string {
 	t.Helper()
 	root := t.TempDir()
 	addScenario(t, root, agentName, agentScenario, true)
@@ -57,25 +57,36 @@ func agentImage(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err = scenario.NameImage(base); err != nil {
+		t.Fatal(err)
+	}
 	return scenario.Image
 }
 
 // TestScenarioImage checks that the tag of a scenario's image follows its
-// files, so that run replaces the pod after an edit to one of them.
+// files and its base image, so that run replaces the pod after an edit to
+// one of the files or on another sandbox-base.
 func TestScenarioImage(t *testing.T) {
 	t.Parallel()
-	before := agentImage(t)
+	base := pinnedImages()[2]
+	before := agentImage(t, base)
 	if !strings.HasPrefix(before, "ghcr.io/keycardai/sandbox-"+agentName+":local-") {
 		t.Fatalf("image = %q, want sandbox-%s tagged local-<digest>", before, agentName)
 	}
-	if again := agentImage(t); again != before {
+	if again := agentImage(t, base); again != before {
 		t.Errorf("the same files gave %q, then %q", before, again)
+	}
+	if other := agentImage(t, "ghcr.io/keycardai/sandbox-base:"+devTag); other == before {
+		t.Errorf("another base kept the image %q", before)
 	}
 	root := t.TempDir()
 	addScenario(t, root, agentName, agentScenario, true)
 	writeFile(t, filepath.Join(root, "scenarios", agentName, "Dockerfile"), "FROM ghcr.io/keycardai/sandbox-base:v2\n")
 	scenario, err := sandbox.LoadScenario(root, agentName)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err = scenario.NameImage(base); err != nil {
 		t.Fatal(err)
 	}
 	if scenario.Image == before {
@@ -176,6 +187,9 @@ func TestScenarioValues(t *testing.T) {
 	addScenario(t, root, agentName, agentScenario, true)
 	scenario, err := sandbox.LoadScenario(root, agentName)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err = scenario.NameImage(pinnedImages()[2]); err != nil {
 		t.Fatal(err)
 	}
 	got, err := scenario.Values(map[string]string{"repo": agentRepo})

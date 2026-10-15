@@ -253,6 +253,24 @@ func TestExistingClusterValues(t *testing.T) {
 	}
 }
 
+// scenarioValues returns the scenario's values file, with "answer" for
+// each input and the image named for sandbox-base:local.
+func scenarioValues(t *testing.T, scenario *sandbox.Scenario) []byte {
+	t.Helper()
+	answers := map[string]string{}
+	for _, input := range scenario.Inputs {
+		answers[input.ID] = "answer"
+	}
+	if err := scenario.NameImage("ghcr.io/keycardai/sandbox-base:local"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := scenario.Values(answers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 // TestScenarioPods renders both charts with the local values and each
 // scenario's values file, as `sandbox run` does. The two pods must match,
 // the agent must run the scenario's image, and the proxy's document must be
@@ -270,15 +288,7 @@ func TestScenarioPods(t *testing.T) {
 	for _, scenario := range scenarios {
 		t.Run(scenario.Name, func(t *testing.T) {
 			t.Parallel()
-			answers := map[string]string{}
-			for _, input := range scenario.Inputs {
-				answers[input.ID] = "answer"
-			}
-			raw, err := scenario.Values(answers)
-			if err != nil {
-				t.Fatal(err)
-			}
-			values := writeValues(t, string(raw))
+			values := writeValues(t, string(scenarioValues(t, scenario)))
 			install, sandboxYAML := runValues(t, false)
 			dir, err := filepath.Abs("../../install")
 			if err != nil {

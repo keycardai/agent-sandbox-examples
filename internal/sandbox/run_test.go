@@ -441,13 +441,13 @@ func TestCheckTargetFor(t *testing.T) {
 // and none in notCalls. Without KEYCARD_LOCAL_IMAGE_TAG, the pod runs the
 // images the charts pin and Run does not import the three images. With it,
 // Run imports the images at that tag, and a missing image stops Run before
-// the import. A scenario with a Dockerfile builds its image FROM the pinned
-// sandbox-base and imports it, and the sandbox runs it with the scenario's
-// environment. Run deletes a pod that no longer matches the Sandbox, or
+// the import. A scenario with a Dockerfile builds its image FROM the
+// sandbox-base the pod would run and imports it, and the sandbox runs it
+// with the scenario's environment. Run deletes a pod that no longer matches the Sandbox, or
 // whose agent exited, so the controller creates it again.
 func TestRun(t *testing.T) {
 	t.Parallel()
-	image := agentImage(t)
+	image, imageAtTag := agentImage(t, pinnedImages()[2]), agentImage(t, "ghcr.io/keycardai/sandbox-base:"+devTag)
 	const (
 		images = "ghcr.io/keycardai/egress-netsetup:local ghcr.io/keycardai/egress-proxy:local" +
 			" ghcr.io/keycardai/sandbox-base:local"
@@ -567,6 +567,19 @@ func TestRun(t *testing.T) {
 				"- name: \"REPO\"\n", "value: \"https://github.com/octo/demo.git\"\n",
 				"url: https://api.example.com\n",
 			},
+		},
+		{
+			name:     "scenario with an image at a tag",
+			tag:      devTag,
+			sandbox:  healthy(),
+			output:   zoneSetupOutput,
+			scenario: true,
+			wantCalls: []string{
+				inspects + "docker KUBERC= build --tag " + imageAtTag +
+					" --build-arg BASE_IMAGE=ghcr.io/keycardai/sandbox-base:" + devTag + " ",
+				"k3d KUBERC= image import --cluster asp " + images + " " + imageAtTag + "\n",
+			},
+			wantManifest: []string{"image: " + imageAtTag + "\n"},
 		},
 		{
 			name:    "sandbox template changed",

@@ -392,7 +392,7 @@ func (l *Local) importImages(ctx context.Context, cluster, tag string, scenario 
 		all = images(tag)
 	}
 	if scenario.Image != "" {
-		if err := l.buildImage(ctx, tag, scenario); err != nil {
+		if err := l.buildImage(ctx, scenario); err != nil {
 			return err
 		}
 		all = append(all, scenario.Image)
@@ -428,19 +428,11 @@ func (l *Local) inspectImages(ctx context.Context, tag string) error {
 	return nil
 }
 
-// buildImage builds the scenario's agent image. The build gets the
-// sandbox-base image as BASE_IMAGE: at tag when it is set, or the one the
-// install chart pins.
-func (l *Local) buildImage(ctx context.Context, tag string, scenario *Scenario) error {
-	base := imageRegistry + "sandbox-base:" + tag
-	if tag == "" {
-		var err error
-		if base, err = l.pinnedBase(); err != nil {
-			return err
-		}
-	}
+// buildImage builds the scenario's agent image FROM the base image
+// NameImage named it for.
+func (l *Local) buildImage(ctx context.Context, scenario *Scenario) error {
 	l.step("Building " + scenario.Image + " from " + filepath.Join(scenariosDir, scenario.Name))
-	cmd, err := l.Tool(ctx, "docker", "build", "--tag", scenario.Image, "--build-arg", "BASE_IMAGE="+base,
+	cmd, err := l.Tool(ctx, "docker", "build", "--tag", scenario.Image, "--build-arg", "BASE_IMAGE="+scenario.base,
 		filepath.Join(l.Root, scenariosDir, scenario.Name))
 	if err != nil {
 		return err
@@ -451,6 +443,16 @@ func (l *Local) buildImage(ctx context.Context, tag string, scenario *Scenario) 
 	}
 	_, _ = fmt.Fprintf(l.Out, "Built the image %s.\n", scenario.Image)
 	return nil
+}
+
+// baseImage returns the sandbox-base image a scenario's Dockerfile builds
+// FROM: the one tagged KEYCARD_LOCAL_IMAGE_TAG when it is set, or the one
+// the install chart pins.
+func (l *Local) baseImage() (string, error) {
+	if tag := l.Settings[KeyImageTag]; tag != "" {
+		return imageRegistry + "sandbox-base:" + tag, nil
+	}
+	return l.pinnedBase()
 }
 
 // pinnedBase returns the sandbox-base image the install chart pins. The

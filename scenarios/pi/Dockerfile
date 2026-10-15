@@ -1,8 +1,8 @@
 # The pi coding agent on sandbox-base. `sandbox run` builds it from this
-# directory as ghcr.io/keycardai/sandbox-pi, tagged with a digest of the
-# directory, and with BASE_IMAGE set to the sandbox-base image the pod would
-# run. Each download waits at most 20 seconds for the server and retries at
-# most twice.
+# directory as ghcr.io/keycardai/sandbox-pi, with BASE_IMAGE set to the
+# sandbox-base image the pod would run. The tag is a digest of BASE_IMAGE
+# and the directory. Each download waits at most 20 seconds for the server
+# and retries at most twice.
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
