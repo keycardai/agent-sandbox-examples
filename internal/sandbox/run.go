@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -26,13 +25,17 @@ const (
 	// zoneTrustConfigMap is the ConfigMap that holds KEYCARD_LOCAL_CA_FILE
 	// for the proxy.
 	zoneTrustConfigMap = "egress-zone-trust"
-	imageRegistry      = "ghcr.io/keycardai/"
+	// namespaceFlag is kubectl's flag for the namespace.
+	namespaceFlag = "--namespace"
+	imageRegistry = "ghcr.io/keycardai/"
 )
 
 var (
-	// ErrImages means Docker does not have an image the sandbox runs, or
-	// cannot build it.
+	// ErrImages means Docker does not have an image the sandbox runs, or the
+	// install chart does not name one.
 	ErrImages = errors.New("images missing")
+	// ErrBuild means a demo's image did not build from its Dockerfile.
+	ErrBuild = errors.New("the demo's image did not build")
 	// ErrZoneSetup is a failed zone-setup run, or zone-setup output that
 	// lacks what the sandbox needs.
 	ErrZoneSetup = errors.New("zone-setup")
@@ -86,14 +89,19 @@ type runSettings struct {
 	// clusterCIDRs is set for an existing cluster.
 	clusterCIDRs []string
 	scenario     *Scenario
-	// scenarioValues is the scenario's values file for both charts.
+	// scenarioValues is the scenario's values file for the install chart,
+	// with the answers for email.
 	scenarioValues []byte
+	// answers are the answers each agent's values file is made from.
+	answers scenarioAnswers
 }
 
 // Run runs the sandbox flow end to end: the k3d cluster and the images,
 // zone-setup against the Keycard zone, the install chart, a sandbox for
-// KEYCARD_LOCAL_USER_EMAIL that runs the agent of KEYCARD_LOCAL_SCENARIO,
-// and the checks. It writes to the cluster and to the zone.
+// each user in the values file that runs the agent of
+// KEYCARD_LOCAL_SCENARIO, and the checks in each. It deletes the sandboxes
+// of users no longer in the values file. It writes to the cluster and to
+// the zone.
 //
 // Run does not publish the issuer. Before the checks run, start the mirror,
 // and the tunnel or your own proxy that forwards the issuer's https URL to
@@ -135,16 +143,15 @@ func (l *Local) Run(ctx context.Context, opts RunOptions) error {
 	if err != nil {
 		return err
 	}
-	access, err := userAccess(out, cfg.email)
-	if err != nil {
+	if _, err = userAccess(out, cfg.email); err != nil {
 		return err
 	}
-	return l.deploy(ctx, cfg, out, access)
+	return l.deploy(ctx, cfg, out)
 }
 
-// deploy installs the chart and the user's sandbox from the zone-setup
-// output, waits for the pod, and runs the checks.
-func (l *Local) deploy(ctx context.Context, cfg runSettings, out *zonesetup.Output, access zonesetup.UserAccess) error {
+// deploy installs the chart and each user's sandbox from the zone-setup
+// output, waits for each pod, and runs the checks in each.
+func (l *Local) deploy(ctx context.Context, cfg runSettings, out *zonesetup.Output) error {
 	namespace := out.K8sSandbox.Namespace
 	l.step("Writing the Helm values for this cluster")
 	if err := l.writeLocalValues(ctx, cfg); err != nil {
@@ -154,23 +161,114 @@ func (l *Local) deploy(ctx context.Context, cfg runSettings, out *zonesetup.Outp
 	if err := l.install(ctx, cfg.cluster, namespace); err != nil {
 		return err
 	}
-	l.step("Creating the sandbox for " + cfg.email + " (user " + access.UserID + ")")
+	if err := l.createSandboxes(ctx, cfg, out); err != nil {
+		return err
+	}
+	for _, access := range out.SandboxUserAccess {
+		if err := l.waitForAgent(ctx, cfg.cluster, out, access); err != nil {
+			return err
+		}
+	}
+	return l.checkAgents(ctx, cfg.cluster, out, out.SandboxUserAccess)
+}
+
+// createSandboxes creates or updates the sandbox of each user in the
+// zone-setup output, and deletes the sandboxes of users no longer in it.
+func (l *Local) createSandboxes(ctx context.Context, cfg runSettings, out *zonesetup.Output) error {
+	for _, access := range out.SandboxUserAccess {
+		if err := l.createSandbox(ctx, cfg, out, access); err != nil {
+			return err
+		}
+	}
+	return l.pruneSandboxes(ctx, cfg.cluster, out.K8sSandbox.Namespace, out.SandboxUserAccess)
+}
+
+// createSandbox creates or updates one user's sandbox, and replaces its pod
+// when it no longer matches the sandbox.
+func (l *Local) createSandbox(ctx context.Context, cfg runSettings, out *zonesetup.Output,
+	access zonesetup.UserAccess,
+) error {
+	namespace := out.K8sSandbox.Namespace
+	l.step("Creating the sandbox for " + access.UserEmail + " (user " + access.UserID + ")")
 	generation := l.sandboxGeneration(ctx, cfg.cluster, namespace, access.UserID)
-	if err := l.newSandbox(ctx, cfg.cluster, out, access); err != nil {
+	if err := l.newSandbox(ctx, cfg, out, access); err != nil {
 		return err
 	}
-	if err := l.replaceStalePod(ctx, cfg.cluster, namespace, access.UserID, generation); err != nil {
-		return err
+	return l.replaceStalePod(ctx, cfg.cluster, namespace, access.UserID, generation)
+}
+
+// waitForAgent waits for one user's sandbox pod.
+func (l *Local) waitForAgent(ctx context.Context, cluster string, out *zonesetup.Output,
+	access zonesetup.UserAccess,
+) error {
+	l.step("Waiting for the pod of " + access.UserEmail + "'s agent to become ready")
+	return l.waitForPod(ctx, cluster, out.K8sSandbox.Namespace, access.UserID)
+}
+
+// checkAgents runs the checks in the sandbox of each user in agents, and
+// returns what failed in any of them.
+func (l *Local) checkAgents(ctx context.Context, cluster string, out *zonesetup.Output,
+	agents []zonesetup.UserAccess,
+) error {
+	var failed []error
+	for _, access := range agents {
+		l.step("Running the end-to-end checks in " + access.UserEmail + "'s agent")
+		if err := l.Check(ctx, l.agentTarget(cluster, out, access)); err != nil {
+			failed = append(failed, err)
+		}
 	}
-	l.step("Waiting for the sandbox pod to become ready")
-	if err := l.waitForPod(ctx, cfg.cluster, namespace, access.UserID); err != nil {
-		return err
+	return errors.Join(failed...)
+}
+
+// agentTarget is one user's sandbox pod. The agent of the person setup
+// picked must show the GitHub login the settings name.
+func (l *Local) agentTarget(cluster string, out *zonesetup.Output, access zonesetup.UserAccess) CheckTarget {
+	target := CheckTarget{
+		Cluster:   cluster,
+		Namespace: out.K8sSandbox.Namespace,
+		Pod:       access.UserID,
+		UserID:    access.UserID,
 	}
-	l.step("Running the end-to-end checks")
-	return l.Check(
-		ctx,
-		CheckTarget{Cluster: cfg.cluster, Namespace: namespace, Pod: access.UserID, UserID: access.UserID},
-	)
+	if access.UserEmail == l.Settings[KeyUserEmail] {
+		target.GitHubLogin = l.Settings[KeyGitHubLogin]
+	}
+	return target
+}
+
+// sandboxSelector selects the objects of the sandbox chart: each user's
+// Sandbox, ConfigMap and ServiceAccount. userLabel holds the user's ID.
+const sandboxSelector, userLabel = "app.kubernetes.io/name=keycard-sandbox-user", "keycard.ai/user-id"
+
+// pruneSandboxes deletes each sandbox in namespace whose user is not in
+// keep. zone-setup has archived the policies of such a user, so their
+// agent can reach nothing.
+func (l *Local) pruneSandboxes(ctx context.Context, cluster, namespace string, keep []zonesetup.UserAccess) error {
+	raw, err := l.kubectl(ctx, cluster, nil, namespaceFlag, namespace, "get", "sandbox", "-l", sandboxSelector,
+		"-o", `jsonpath={range .items[*]}{.metadata.labels.keycard\.ai/user-id}{"\n"}{end}`)
+	if err != nil {
+		return fmt.Errorf("%w: listing the sandboxes: %w", ErrPod, err)
+	}
+	for id := range strings.FieldsSeq(string(raw)) {
+		if slices.ContainsFunc(keep, func(access zonesetup.UserAccess) bool { return access.UserID == id }) {
+			continue
+		}
+		if err = l.deleteSandbox(ctx, cluster, namespace, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deleteSandbox deletes one user's sandbox, with its ConfigMap and
+// ServiceAccount. The controller then deletes the pod.
+func (l *Local) deleteSandbox(ctx context.Context, cluster, namespace, userID string) error {
+	if _, err := l.kubectl(ctx, cluster, nil, namespaceFlag, namespace, "delete",
+		"sandbox,configmap,serviceaccount", "-l", sandboxSelector+","+userLabel+"="+userID,
+		"--ignore-not-found", "--wait=true"); err != nil {
+		return fmt.Errorf("%w: deleting the sandbox of user %s: %w", ErrPod, userID, err)
+	}
+	_, _ = fmt.Fprintf(l.Out, "Deleted the sandbox of user %s, and its pod.\n", userID)
+	return nil
 }
 
 // LocalValuesInput is what LocalValues writes into the values files.
@@ -267,7 +365,7 @@ func (l *Local) k3dCluster(ctx context.Context, cfg runSettings) error {
 	return l.importImages(ctx, cfg.cluster, cfg.imageTag, cfg.scenario)
 }
 
-// runSettings validates local.env before it reads the issuer. For an
+// runSettings validates the settings before it reads the issuer. For an
 // existing cluster, reading the issuer is the first call to the cluster.
 func (l *Local) runSettings(ctx context.Context) (runSettings, error) {
 	var cfg runSettings
@@ -281,8 +379,8 @@ func (l *Local) runSettings(ctx context.Context) (runSettings, error) {
 			ErrSettings, KeyZoneURL, cfg.zoneURL)
 	}
 	if cfg.email == "" {
-		return cfg, fmt.Errorf("%w: %s is empty. Set it to the email of a user in zone-setup.yaml",
-			ErrSettings, KeyUserEmail)
+		return cfg, fmt.Errorf("%w: %s is empty. Run %s init and pick who the agent acts as",
+			ErrSettings, KeyUserEmail, l.Command("init"))
 	}
 	if cfg.zoneOnHost, err = l.zoneOnHost(); err != nil {
 		return cfg, err
@@ -301,6 +399,7 @@ func (l *Local) runSettings(ctx context.Context) (runSettings, error) {
 	if cfg.scenario, cfg.scenarioValues, err = l.scenarioValues(); err != nil {
 		return cfg, err
 	}
+	cfg.answers = l.answers()
 	if cfg, err = l.existingSettings(cfg); err != nil {
 		return cfg, err
 	}
@@ -439,7 +538,7 @@ func (l *Local) buildImage(ctx context.Context, scenario *Scenario) error {
 	}
 	cmd.Stdout, cmd.Stderr = l.Out, l.Out
 	if err = cmd.Run(); err != nil {
-		return fmt.Errorf("%w: building %s: %w", ErrImages, scenario.Image, err)
+		return fmt.Errorf("%w: %s: %w", ErrBuild, scenario.Image, err)
 	}
 	_, _ = fmt.Fprintf(l.Out, "Built the image %s.\n", scenario.Image)
 	return nil
@@ -484,18 +583,14 @@ func (l *Local) zoneSetup(ctx context.Context, cfg runSettings, opts RunOptions)
 		return l.readZoneSetup()
 	}
 	l.step("Running zone-setup against " + cfg.zoneURL)
-	valuesFile := filepath.Join(l.Root, cmp.Or(l.Settings[KeyZoneSetupValues], "zone-setup.yaml"))
-	if _, err := os.Stat(valuesFile); err != nil {
-		return nil, fmt.Errorf("%w: %s does not exist. Copy zone-setup.example.yaml to it and edit it",
-			ErrZoneSetup, valuesFile)
-	}
-	values, err := zonesetup.ReadValuesFile(valuesFile, cfg.issuerURL, "the cluster's issuer")
+	values, err := l.zoneSetupValues(cfg.issuerURL, "the cluster's issuer")
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrZoneSetup, err)
 	}
-	secrets, err := zonesetup.LoadSecrets(values, os.LookupEnv, os.ReadFile)
+	l.useAccountEnv(&values.ManagementServiceAccount)
+	secrets, err := l.loadSecrets(values)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s: %w", ErrZoneSetup, valuesFile, err)
+		return nil, fmt.Errorf("%w: %w", ErrZoneSetup, err)
 	}
 	roots, err := rootsFrom(cfg.caFile)
 	if err != nil {
@@ -573,7 +668,7 @@ func userAccess(out *zonesetup.Output, email string) (zonesetup.UserAccess, erro
 		}
 	}
 	return zonesetup.UserAccess{}, fmt.Errorf(
-		"%w: %s is not in the zone-setup output. Add it to users in zone-setup.yaml", ErrZoneSetup, email,
+		"%w: %s is not in the zone-setup output. Give them an agent in init", ErrZoneSetup, email,
 	)
 }
 
@@ -656,13 +751,25 @@ func (l *Local) install(ctx context.Context, cluster, namespace string) error {
 }
 
 // newSandbox renders the sandbox chart for one user, applies it, and writes
-// the manifests to local/out/sandbox.yaml.
+// the scenario's values file with the user's answers and the manifests to
+// local/out/agents/<user ID>.
 func (l *Local) newSandbox(
 	ctx context.Context,
-	cluster string,
+	cfg runSettings,
 	out *zonesetup.Output,
 	access zonesetup.UserAccess,
 ) error {
+	dir := filepath.Join(l.outDir(), "agents", access.UserID)
+	if err := os.MkdirAll(dir, dirMode); err != nil {
+		return fmt.Errorf("creating %s: %w", dir, err)
+	}
+	values, err := cfg.scenario.Values(cfg.answers.forUser(access.UserEmail))
+	if err != nil {
+		return fmt.Errorf("%s's agent: %w", access.UserEmail, err)
+	}
+	if err = os.WriteFile(filepath.Join(dir, "scenario.values.yaml"), values, fileMode); err != nil {
+		return fmt.Errorf("writing the scenario values of %s: %w", access.UserEmail, err)
+	}
 	sandbox := &newsandbox.Command{
 		Inputs: newsandbox.Inputs{
 			Namespace:             out.K8sSandbox.Namespace,
@@ -679,11 +786,11 @@ func (l *Local) newSandbox(
 			filepath.Join(l.Root, "sandbox", "values.example.yaml"),
 			filepath.Join(l.Root, "local", "values", "sandbox.yaml"),
 			filepath.Join(l.outDir(), "sandbox.values.yaml"),
-			filepath.Join(l.outDir(), "scenario.values.yaml"),
+			filepath.Join(dir, "scenario.values.yaml"),
 		},
 		Apply: true,
 		Kube: func(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
-			return l.kubectl(ctx, cluster, stdin, args...)
+			return l.kubectl(ctx, cfg.cluster, stdin, args...)
 		},
 		Log: l.Out,
 	}
@@ -691,10 +798,10 @@ func (l *Local) newSandbox(
 	if err != nil {
 		return fmt.Errorf("new-sandbox: %w", err)
 	}
-	if err = os.WriteFile(filepath.Join(l.outDir(), "sandbox.yaml"), manifests, fileMode); err != nil {
+	if err = os.WriteFile(filepath.Join(dir, "sandbox.yaml"), manifests, fileMode); err != nil {
 		return fmt.Errorf("writing sandbox.yaml: %w", err)
 	}
-	_, _ = fmt.Fprintln(l.Out, "Wrote the applied manifests to local/out/sandbox.yaml.")
+	_, _ = fmt.Fprintf(l.Out, "Wrote the applied manifests to local/out/agents/%s/sandbox.yaml.\n", access.UserID)
 	return nil
 }
 
@@ -733,8 +840,9 @@ func (l *Local) replaceStalePod(ctx context.Context, cluster, namespace, name, b
 	return nil
 }
 
-// waitForPod waits for the sandbox pod to exist and become Ready. If the pod
-// does not become Ready, it prints the last 40 lines of each container's log.
+// waitForPod waits for the sandbox pod to exist and become Ready, and on a
+// k3d cluster for the cluster's DNS too. If the pod does not become Ready,
+// it prints the last 40 lines of each container's log.
 func (l *Local) waitForPod(ctx context.Context, cluster, namespace, pod string) error {
 	_, err := l.kubectl(ctx, cluster, nil, "--namespace", namespace,
 		"wait", "--for=create", "pod/"+pod, "--timeout=120s")
@@ -742,7 +850,7 @@ func (l *Local) waitForPod(ctx context.Context, cluster, namespace, pod string) 
 		return fmt.Errorf("%w: %w", ErrPod, err)
 	}
 	if err = l.waitReady(ctx, cluster, namespace, pod); err == nil {
-		return nil
+		return l.waitForDNS(ctx, cluster)
 	}
 	for _, container := range []string{"egress-netsetup", "egress-proxy", agentContainer} {
 		logs, _ := l.kubectl(ctx, cluster, nil, "--namespace", namespace, "logs", pod, "-c", container, "--tail=40")
@@ -809,6 +917,22 @@ func (l *Local) podStopped(ctx context.Context, cluster, namespace, pod, phase s
 		stopped += ". The agent's last log line: " + line
 	}
 	return fmt.Errorf("%w: %s", ErrPod, stopped)
+}
+
+// waitForDNS waits for CoreDNS on a k3d cluster. The proxy resolves the
+// names it allows through it, so the agent cannot reach any host before it
+// runs. On a new cluster, CoreDNS can start minutes after the sandbox pod,
+// while its image downloads.
+func (l *Local) waitForDNS(ctx context.Context, cluster string) error {
+	if l.Existing() {
+		return nil
+	}
+	_, _ = fmt.Fprintln(l.Out, "Waiting for the cluster's DNS (CoreDNS) to be ready.")
+	if _, err := l.kubectl(ctx, cluster, nil, namespaceFlag, "kube-system",
+		"rollout", "status", "deployment/coredns", "--timeout=300s"); err != nil {
+		return fmt.Errorf("%w: the cluster's DNS (CoreDNS) did not become ready: %w", ErrPod, err)
+	}
+	return nil
 }
 
 func (l *Local) outDir() string {

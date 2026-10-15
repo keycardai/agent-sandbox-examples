@@ -192,7 +192,7 @@ func TestScenarioValues(t *testing.T) {
 	if err = scenario.NameImage(pinnedImages()[2]); err != nil {
 		t.Fatal(err)
 	}
-	got, err := scenario.Values(map[string]string{"repo": agentRepo})
+	got, err := scenario.Values(map[string]string{repoID: agentRepo})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ images:
 		t,
 		err,
 		[]error{sandbox.ErrScenario},
-		"local/answers.yaml has no answer for {repo}. Run go run ./cmd/sandbox init",
+		"the settings have no answer for {repo}. Run init to answer it",
 	)
 }
 

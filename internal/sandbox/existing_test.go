@@ -110,7 +110,7 @@ func TestRunExistingSettings(t *testing.T) {
 			local, calls := newLocal(t, settings, eksTool(healthy()))
 			linkCharts(t, local.Root)
 			addScenario(t, local.Root, agentName, agentScenario, true)
-			writeFile(t, filepath.Join(local.Root, "local", "answers.yaml"), "repo: octo/demo\n")
+			withAnswers(local, map[string]string{repoID: agentRepo})
 			checkErr(t, local.Run(t.Context(), sandbox.RunOptions{}), []error{tc.want}, tc.wantText)
 			if got := readCalls(t, calls); got != "" {
 				t.Fatalf("calls = %q, want none", got)
@@ -150,7 +150,7 @@ func TestRunExisting(t *testing.T) {
 			}
 		}
 	}
-	manifest, err := os.ReadFile(filepath.Join(local.Root, "local", "out", "sandbox.yaml"))
+	manifest, err := os.ReadFile(filepath.Join(local.Root, "local", "out", "agents", userID, "sandbox.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,10 +264,10 @@ func TestInitExisting(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			server, caFile := fakeManagement(t, tc.zoneURL, gitHubProviders, "")
-			local := initLocal(t, eksTool(healthy()))
+			local, _ := initLocal(t, eksTool(healthy()))
 			answers := signInAnswers(server.URL, caFile, goodSecret)
-			answers["Which cluster runs the sandbox?"] = []string{eksContext}
-			answers["The cluster's pod and service ranges"] = []string{"10.0.0.0", eksRanges}
+			answers["Where does the agent run?"] = []string{eksContext}
+			answers["Your cluster's pod and service IP ranges"] = []string{"10.0.0.0", eksRanges}
 			ask := &scriptedAsker{t: t, answers: answers}
 			local.Ask = ask
 
@@ -284,20 +284,21 @@ func TestInitExisting(t *testing.T) {
 				t.Errorf("refused answer = %v, want no ErrSettings", ask.refused[0])
 			}
 			for _, question := range ask.asked {
-				if strings.HasPrefix(question, "How does the zone reach") {
+				if strings.HasPrefix(question, "How does Keycard reach") {
 					t.Errorf("asked %q, want no issuer question for an existing cluster", question)
 				}
 			}
-			settings, err := sandbox.LoadSettings(local.Root, "", func(string) string { return "" })
+			config, err := sandbox.LoadConfig(local.Store.Path())
 			if err != nil {
 				t.Fatal(err)
 			}
+			settings := sandbox.SettingsFrom(config, func(string) string { return "" })
 			for key, want := range map[string]string{
 				sandbox.KeyKubeContext: eksContext, sandbox.KeyImageTag: "",
 				sandbox.KeyClusterCIDRs: eksRanges, sandbox.KeyZoneOnHost: "", sandbox.KeyIssuer: "",
 			} {
 				if settings[key] != want {
-					t.Errorf("local.env %s = %q, want %q", key, settings[key], want)
+					t.Errorf("setting %s = %q, want %q", key, settings[key], want)
 				}
 			}
 		})

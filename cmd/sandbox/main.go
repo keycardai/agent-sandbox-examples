@@ -1,6 +1,7 @@
 // Command sandbox runs the sandbox demo: an agent in a Kubernetes sandbox
 // whose HTTPS goes through the Keycard egress proxy. Each subcommand is one
-// step, and each step reads its settings from local/local.env.
+// step, and each step reads its settings from ~/.config/keycard/sandbox.yaml,
+// which init saves when you ask it to, and from the environment.
 // docs/local.md describes the steps. `up` runs them all:
 //
 //	go run ./cmd/sandbox up
@@ -17,7 +18,7 @@
 //	go run ./cmd/sandbox down
 //
 // `install` installs the controller and the chart into any cluster. It does
-// not read local.env.
+// not read the settings.
 //
 //	go run ./cmd/sandbox install --context NAME --values FILE
 package main
@@ -28,6 +29,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -40,8 +42,9 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
-var errNotInitialized = errors.New("there are no settings yet. " +
-	"Run go run ./cmd/sandbox init in a terminal to create local/local.env and zone-setup.yaml")
+// errNotInitialized means a step ran before setup, without a terminal to
+// run setup on.
+var errNotInitialized = errors.New("there are no settings yet")
 
 const (
 	defaultListen     = "127.0.0.1:8480"
@@ -62,7 +65,8 @@ To set up the demo and run it:
 
     go run ./cmd/sandbox up
 
-The first time, up asks for your Keycard service account, zone and user.
+The first time, up asks for your Keycard service account, the zone and who
+the agent acts as, and whether to save the settings.
 Then it runs each step and prints the command for it, so you can run the
 steps yourself later. To list the steps, run go run ./cmd/sandbox --help.
 
@@ -85,11 +89,16 @@ func newCommand() *cli.Command {
 		HideHelpCommand: true,
 		Action:          start,
 		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "env", Usage: "settings file (default local/local.env)"},
+			&cli.StringFlag{
+				Name:    "config",
+				Usage:   "settings file (default ~/.config/keycard/sandbox.yaml). - reads the environment alone",
+				Sources: cli.EnvVars(sandbox.EnvConfig),
+			},
 		},
 		Commands: []*cli.Command{
 			initCommand(),
 			upCommand(),
+			forgetCommand(),
 			tunnelCommand(),
 			bootstrapCommand(),
 			mirrorCommand(),
@@ -115,8 +124,8 @@ func start(ctx context.Context, cmd *cli.Command) error {
 		return nil //nolint:nilerr // Declining or pressing Ctrl-C ends the intro.
 	}
 	args := []string{cmd.Name}
-	if env := cmd.String("env"); env != "" {
-		args = append(args, "--env", env)
+	if config := cmd.String("config"); config != "" {
+		args = append(args, "--config", config)
 	}
 	if err = newCommand().Run(ctx, append(args, "up")); err != nil {
 		return fmt.Errorf("up: %w", err)
@@ -128,11 +137,49 @@ func initCommand() *cli.Command {
 	return &cli.Command{
 		Name:     "init",
 		Category: startCategory,
-		Usage:    "ask for your Keycard service account, zone and user, and write the settings files",
-		Action: step(func(ctx context.Context, _ *cli.Command, local *sandbox.Local) error {
-			_, err := runInit(ctx, local)
+		Usage:    "ask for your Keycard service account, the zone and who the agent acts as, and save the settings",
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if err := noArgs(cmd); err != nil {
+				return err
+			}
+			local, err := loadLocal(cmd, false)
+			if err != nil {
+				return err
+			}
+			_, err = runInit(ctx, local)
 			return err
-		}),
+		},
+	}
+}
+
+func forgetCommand() *cli.Command {
+	return &cli.Command{
+		Name:     "forget",
+		Category: startCategory,
+		Usage:    "delete the saved settings and the secrets setup put in the keychain",
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			if err := noArgs(cmd); err != nil {
+				return err
+			}
+			local, err := loadLocal(cmd, false)
+			if err != nil {
+				return err
+			}
+			_, statErr := os.Stat(local.Store.Path())
+			saved := statErr == nil
+			deleted, err := local.Forget()
+			if err != nil {
+				return fmt.Errorf("forget: %w", err)
+			}
+			path := sandbox.HomeRelative(local.Store.Path())
+			if saved {
+				_, _ = fmt.Fprintf(cmd.Writer, "Deleted %s.\n", path)
+			} else {
+				_, _ = fmt.Fprintf(cmd.Writer, "There are no saved settings in %s.\n", path)
+			}
+			_, _ = fmt.Fprintf(cmd.Writer, "Deleted %d secrets from %s.\n", deleted, local.Store.KeychainWhere())
+			return nil
+		},
 	}
 }
 
@@ -154,21 +201,24 @@ func upCommand() *cli.Command {
 			run := runOptions(cmd)
 			if !cmd.Bool("print") && !local.Initialized() {
 				if local.Ask == nil {
-					return errNotInitialized
+					return fmt.Errorf("%w. Run %s in a terminal, and save the settings",
+						errNotInitialized, local.Command("init"))
 				}
+				// Saving is for later runs. When it fails, up goes on with the
+				// settings setup keeps for this one.
 				result, err := runInit(ctx, local)
-				if err != nil {
+				switch {
+				case errors.Is(err, sandbox.ErrNotSaved):
+					_, _ = fmt.Fprintf(cmd.Writer, "%v\nUp goes on with the settings for this run.\n", err)
+				case err != nil:
 					return err
 				}
-				if local, err = newLocal(cmd); err != nil {
-					return err
-				}
+				local.UseConfig()
 				run.ReplaceActive = run.ReplaceActive || result.ReplaceActive
 			}
 			return local.Up(ctx, sandbox.UpOptions{
 				Run:        run,
 				Listen:     cmd.String("listen"),
-				EnvFile:    cmd.String("env"),
 				Print:      cmd.Bool("print"),
 				IssuerWait: cmd.Duration("issuer-wait"),
 			})
@@ -432,7 +482,7 @@ func onTerminal() bool {
 func runInit(ctx context.Context, local *sandbox.Local) (sandbox.InitResult, error) {
 	result, err := local.Init(ctx)
 	if errors.Is(err, sandbox.ErrInterrupted) {
-		return result, fmt.Errorf("init: %w. The settings files are unchanged", err)
+		return result, fmt.Errorf("init: %w. Nothing was saved", err)
 	}
 	if err != nil {
 		return result, fmt.Errorf("init: %w", err)
@@ -441,16 +491,52 @@ func runInit(ctx context.Context, local *sandbox.Local) (sandbox.InitResult, err
 }
 
 func newLocal(cmd *cli.Command) (*sandbox.Local, error) {
+	return loadLocal(cmd, true)
+}
+
+// configPath returns the settings file --config names, as an absolute path,
+// or the default one, or NoConfig.
+func configPath(cmd *cli.Command) (string, error) {
+	path := cmd.String("config")
+	var err error
+	switch path {
+	case "":
+		path, err = sandbox.DefaultConfigPath(os.Getenv)
+	case sandbox.NoConfig:
+	default:
+		path, err = filepath.Abs(path)
+	}
+	if err != nil {
+		return "", fmt.Errorf("finding the settings file: %w", err)
+	}
+	return path, nil
+}
+
+// loadLocal returns the checkout and its settings. With strict unset, it
+// ignores a settings file that does not parse, so init can replace the file
+// and forget can delete it.
+func loadLocal(cmd *cli.Command, strict bool) (*sandbox.Local, error) {
 	root, err := pinned.Root()
 	if err != nil {
 		return nil, fmt.Errorf("finding the repository: %w", err)
 	}
-	settings, err := sandbox.LoadSettings(root, cmd.String("env"), os.Getenv)
+	path, err := configPath(cmd)
 	if err != nil {
+		return nil, err
+	}
+	config, err := sandbox.LoadConfig(path)
+	switch {
+	case err != nil && strict:
 		return nil, fmt.Errorf("loading the settings: %w", err)
+	case err != nil:
+		_, _ = fmt.Fprintf(cmd.Writer, "Ignoring the settings, which do not parse: %v\n", err)
+	}
+	var keychain sandbox.Keychain
+	if path != sandbox.NoConfig {
+		keychain = sandbox.NewOSKeychain(path)
 	}
 	local := &sandbox.Local{
-		Root: root, Settings: settings, SettingsFile: cmd.String("env"),
+		Root: root, Settings: sandbox.SettingsFrom(config, os.Getenv), Store: sandbox.NewStore(path, config, keychain),
 		Tool: sandbox.Tool, Out: cmd.Writer, Stdin: os.Stdin, Getenv: os.Getenv,
 	}
 	if onTerminal() {

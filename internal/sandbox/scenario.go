@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -22,10 +23,9 @@ const (
 	// DefaultScenario is the scenario `sandbox run` uses when
 	// KEYCARD_LOCAL_SCENARIO is empty.
 	DefaultScenario = "smoke"
-	scenariosDir    = "scenarios"
-	// answersFile holds the answers to the scenario's questions that are
-	// not secrets, relative to the repository root.
-	answersFile = "local/answers.yaml"
+	// QuestionDemo is the question Init asks to choose the demo.
+	QuestionDemo = "Which demo do you want to run?"
+	scenariosDir = "scenarios"
 	// The kinds of scenario input.
 	inputText   = "text"
 	inputSecret = "secret"
@@ -86,6 +86,10 @@ type ScenarioInput struct {
 	Confirm string `yaml:"confirm"`
 	// Default is the answer init offers for a text input.
 	Default string `yaml:"default"`
+	// PerUser makes a text input one answer for each person with an agent,
+	// such as their Slack member ID. init asks it once for each person, and
+	// {user} in the prompt stands for their email.
+	PerUser bool `yaml:"per_user"`
 }
 
 // ScenarioResource is one zone-setup resource.
@@ -196,24 +200,27 @@ func contextDigest(dir, base string) (string, error) {
 	return hex.EncodeToString(sum.Sum(nil))[:12], nil
 }
 
-// Scenarios loads every scenario under root, sorted by name.
+// Scenarios loads every scenario under root, sorted by name. It returns
+// the scenarios that load, and an error that names each one that does not.
 func Scenarios(root string) ([]*Scenario, error) {
 	paths, err := filepath.Glob(filepath.Join(root, scenariosDir, "*", "scenario.yaml"))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrScenario, err)
 	}
 	scenarios := make([]*Scenario, 0, len(paths))
+	var failed []error
 	for _, path := range paths {
 		scenario, err := LoadScenario(root, filepath.Base(filepath.Dir(path)))
 		if err != nil {
-			return nil, err
+			failed = append(failed, err)
+			continue
 		}
 		scenarios = append(scenarios, scenario)
 	}
-	if len(scenarios) == 0 {
+	if len(paths) == 0 {
 		return nil, fmt.Errorf("%w: %s has no scenario", ErrScenario, filepath.Join(root, scenariosDir))
 	}
-	return scenarios, nil
+	return scenarios, errors.Join(failed...)
 }
 
 // Values returns the values file for both charts that runs the scenario's
@@ -252,7 +259,8 @@ func (s *Scenario) Values(answers map[string]string) ([]byte, error) {
 		out.Agent.Env[name] = answerRef.ReplaceAllStringFunc(value, func(ref string) string {
 			answer, ok := withDefaults[ref[1:len(ref)-1]]
 			if !ok {
-				missing = fmt.Errorf("%w: %s has no answer for %s. Run %s init", ErrScenario, answersFile, ref, sandboxCommand)
+				missing = fmt.Errorf("%w: the settings have no answer for %s. Run init to answer it",
+					ErrScenario, ref)
 			}
 			return answer
 		})
@@ -270,11 +278,7 @@ func (s *Scenario) Values(answers map[string]string) ([]byte, error) {
 // scenario loads the scenario KEYCARD_LOCAL_SCENARIO names, or
 // DefaultScenario, and names its image for baseImage.
 func (l *Local) scenario() (*Scenario, error) {
-	name := l.Settings[KeyScenario]
-	if name == "" {
-		name = DefaultScenario
-	}
-	scenario, err := LoadScenario(l.Root, name)
+	scenario, err := LoadScenario(l.Root, l.demo())
 	if err != nil || scenario.buildDir == "" {
 		return scenario, err
 	}
@@ -286,6 +290,11 @@ func (l *Local) scenario() (*Scenario, error) {
 		return nil, err
 	}
 	return scenario, nil
+}
+
+// demo returns the name of the demo the settings name.
+func (l *Local) demo() string {
+	return cmp.Or(l.Settings[KeyScenario], DefaultScenario)
 }
 
 // modes returns the run modes a scenario can name.
@@ -372,41 +381,76 @@ func inputProblem(input ScenarioInput, kinds map[string]string) string {
 		return "kind must be text, secret or github"
 	case input.Kind != inputGitHub && input.Prompt == "":
 		return "prompt is required"
+	}
+	return kindProblem(input)
+}
+
+// kindProblem describes a key the input's kind does not take, or returns "".
+func kindProblem(input ScenarioInput) string {
+	switch {
 	case input.Confirm != "" && input.Kind != inputSecret:
 		return "confirm is only for a secret"
 	case input.Default != "" && input.Kind != inputText:
 		return "default is only for a text input"
+	case input.PerUser && input.Kind != inputText:
+		return "per_user is only for a text input"
 	}
 	return ""
 }
 
+// userRef stands for the person's email in a per-user input's prompt.
+const userRef = "{user}"
+
+// scenarioAnswers are the answers to the text inputs, by input id, and the
+// answers to the per-user inputs, by email and then input id.
+type scenarioAnswers struct {
+	Shared map[string]string
+	Users  map[string]map[string]string
+}
+
+// forUser returns the answers for one person's agent: the shared answers,
+// with the person's own over them.
+func (a *scenarioAnswers) forUser(email string) map[string]string {
+	answers := maps.Clone(a.Shared)
+	if answers == nil {
+		answers = map[string]string{}
+	}
+	maps.Copy(answers, a.Users[email])
+	return answers
+}
+
+// set keeps one person's answer to a per-user input.
+func (a *scenarioAnswers) set(email, inputID, answer string) {
+	if a.Users == nil {
+		a.Users = map[string]map[string]string{}
+	}
+	if a.Users[email] == nil {
+		a.Users[email] = map[string]string{}
+	}
+	a.Users[email][inputID] = answer
+}
+
+// keepUsers drops the answers of everyone not in emails.
+func (a *scenarioAnswers) keepUsers(emails []string) {
+	maps.DeleteFunc(a.Users, func(email string, _ map[string]string) bool { return !slices.Contains(emails, email) })
+}
+
 // scenarioValues loads the scenario and returns its values file with the
-// answers in local/answers.yaml.
+// answers of the person KEYCARD_LOCAL_USER_EMAIL names.
 func (l *Local) scenarioValues() (*Scenario, []byte, error) {
 	scenario, err := l.scenario()
 	if err != nil {
 		return nil, nil, err
 	}
-	answers, err := l.answers()
-	if err != nil {
-		return nil, nil, err
-	}
-	values, err := scenario.Values(answers)
+	answers := l.answers()
+	values, err := scenario.Values(answers.forUser(l.Settings[KeyUserEmail]))
 	return scenario, values, err
 }
 
-// answers reads local/answers.yaml. A missing file gives an empty map.
-func (l *Local) answers() (map[string]string, error) {
-	answers := map[string]string{}
-	raw, err := os.ReadFile(filepath.Join(l.Root, answersFile))
-	if errors.Is(err, fs.ErrNotExist) {
-		return answers, nil
+// answers returns the demo's answers from the config, or none.
+func (l *Local) answers() scenarioAnswers {
+	if config := l.config(); config != nil {
+		return config.answers()
 	}
-	if err == nil {
-		err = yaml.Unmarshal(raw, &answers)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s: %w", ErrScenario, answersFile, err)
-	}
-	return answers, nil
+	return scenarioAnswers{Shared: map[string]string{}}
 }
