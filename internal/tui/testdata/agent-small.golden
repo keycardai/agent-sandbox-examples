@@ -1,0 +1,22 @@
+ keycard sandbox    1 Home   2 Agents   3 Traffic   4 Health               ● up
+
+  ┌─ Agent ──────────────────────────────┐ ┌─ Response ────────────────────────┐
+  │ ● ada@example.com                    │ │ 200 OK in 412ms · GET https://ap… │
+  │   running · pod u7k2vjw9ab           │ │ Keycard  ✓ The proxy got          │
+  │ No other agent in this demo. n adds… │ │ ada@example.com's GitHub…         │
+  └──────────────────────────────────────┘ │                                   │
+  ┏━ Try a request ━━━━━━━━━━━━━━━━━━━━━━┓ │ In the agent's container          │
+  ┃ ▸ GET api.github.com/user            ┃ │ curl -sS -m 20 -X GET \           │
+  ┃   GET openrouter.ai/api/v1/key       ┃ │     -H \                          │
+  ┃   GET pypi.org/pypi/requests/json    ┃ │     'Authorization: Bearer pla'\  │
+  ┃   GET example.com/                   ┃ │ ceholder \                        │
+  ┃                                      ┃ │     -w \                          │
+  ┃ Needs ada@example.com's GitHub       ┃ │     '\n__sandbox_status__:%{ht'\  │
+  ┃ credential, which the proxy gets     ┃ │ 'tp_code}' \                      │
+  ┃ from Keycard.                        ┃ │     https://api.github.com/user   │
+  ┃                                      ┃ │                                   │
+  ┃ Enter sends it from                  ┃ │ Body                              │
+  ┃ ada@example.com's agent, with no     ┃ │ {                                 │
+  ┃ credential. The egress proxy asks    ┃ │   "login": "ada",                 │
+  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ └───────────────────────────────────┘
+  ↑↓  request   enter  send   tab  next pane   a  open pi-session   n  add age…

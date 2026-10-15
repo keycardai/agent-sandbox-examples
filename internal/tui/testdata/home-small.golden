@@ -1,4 +1,4 @@
- keycard sandbox   home                                                    ● up
+ keycard sandbox    1 Home   2 Agents   3 Traffic   4 Health               ● up
 
   ● ada@example.com's agent is running
   It acts as ada@example.com in zone wvqowjom…keycard.cloud, and does not hold
@@ -16,7 +16,7 @@
 
   TRY IT
      a  Open pi-session in the agent, and ask for something that needs your acc…
+     s  Send a request from the agent, and see what Keycard does with it
      o  Open the zone's events in the Keycard console
      x  Open a shell in the agent
-
-  a  open pi-session   p  switch demo   o  zone events   x  shell   ?  keys   …
+  a  open pi-session   s  send a request   p  switch demo   o  zone events   x…

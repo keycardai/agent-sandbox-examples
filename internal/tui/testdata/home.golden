@@ -1,4 +1,4 @@
- keycard sandbox   home                                                                                                                          ● up
+ keycard sandbox    1 Home   2 Agents   3 Traffic   4 Health                                                                                     ● up
 
   ● ada@example.com's agent is running
   It acts as ada@example.com in zone wvqowjom…keycard.cloud, and does not hold any secrets. The egress proxy asks
@@ -15,15 +15,17 @@
 
   TRY IT
      a  Open pi-session in the agent, and ask for something that needs your accounts
+     s  Send a request from the agent, and see what Keycard does with it
      o  Open the zone's events in the Keycard console
      x  Open a shell in the agent
 
   RECENT ACTIVITY
-    hh:mm:ss  ▸ Bring-up started
     hh:mm:ss  ✓ Start the tunnel (3s)
     hh:mm:ss  ✓ Install the charts (41s)
     hh:mm:ss  ✓ Checks: 6 of 6 passed
     hh:mm:ss  ✓ The sandbox is up
+    hh:mm:ss  ▸ The agent sent GET https://api.github.com/user
+    hh:mm:ss  ✓ GET https://api.github.com/user: 200 OK
 
 
 
@@ -37,6 +39,4 @@
 
 
 
-
-
-  a  open pi-session   p  switch demo   o  zone events   x  shell   ?  keys   q  quit
+  a  open pi-session   s  send a request   p  switch demo   o  zone events   x  shell   ?  keys   q  quit

@@ -1,12 +1,14 @@
-// Package page holds the TUI's screens. Each page keeps its own state,
-// draws itself, and takes the keys that move within it. The root model
-// routes messages and keys to the pages, and does the work that spans
-// them. What the pages share, such as the sandbox as the TUI last read it
-// and the logs, is in Shared.
+// Package page holds the TUI's screens and the dashboard's tabs. Each page
+// keeps its own state, draws itself, and takes the keys that move within
+// it. The root model routes messages and keys to the pages, and does the
+// work that spans them. What the pages share, such as the sandbox as the
+// TUI last read it and the log pane, is in Shared.
 package page
 
 import (
 	"cmp"
+	"context"
+	"fmt"
 	"image/color"
 	"slices"
 	"strconv"
@@ -22,17 +24,29 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/style"
 )
 
-// The logs the pages show, by name, besides those StepSource names.
+// The logs the pages show, by name, besides those StepSource, ServiceSource
+// and ContainerSource name.
 const (
 	SourceSetup    = "setup"
+	SourceAction   = "action"
 	SourceActivity = "activity"
+	// SourceTraffic is the feed of requests, with the lookups of hosts the
+	// proxy blocked, and SourceTrafficAll the feed with every DNS lookup.
+	SourceTraffic    = "traffic"
+	SourceTrafficAll = "traffic dns"
+	// SourceResponse holds the body of the last response the Agents tab
+	// got.
+	SourceResponse = "response"
 )
 
 // The containers of the sandbox's pod, and the state of one that finished.
 const (
-	AgentContainer  = "agent"
-	ProxyContainer  = "egress-proxy"
-	StateTerminated = "terminated"
+	AgentContainer = "agent"
+	ProxyContainer = "egress-proxy"
+	// netsetupContainer is the pod's init container, which sets the
+	// firewall rules.
+	netsetupContainer = "egress-netsetup"
+	StateTerminated   = "terminated"
 )
 
 const (
@@ -80,8 +94,22 @@ type ContainerRow struct {
 	Container sandbox.ContainerStatus
 }
 
-// Shared is what the pages share: the session, the window, the logs and
-// the notice in the footer, and the sandbox as the TUI last read it.
+// Host is what a page asks of the root model, which owns the work in the
+// background and the overlays.
+type Host interface {
+	// Follow follows the log of a pod's container in the log pane, and
+	// stops following the one before.
+	Follow(row ContainerRow)
+	// ShowAgentList opens the list of agents, which the Agents tab draws.
+	ShowAgentList()
+	// Context is the TUI's context, which ends when it quits.
+	Context() context.Context
+	// Acting names the action that runs, or is "".
+	Acting() string
+}
+
+// Shared is what the pages share: the session, the window, the log pane
+// and the notice in the footer, and the sandbox as the TUI last read it.
 // The root model writes it, and the pages read it. Update runs on one
 // goroutine, so it does not need a lock.
 type Shared struct {
@@ -94,7 +122,7 @@ type Shared struct {
 	Background    color.Color
 	// Frame counts the redraws, and turns the spinners.
 	Frame int
-	// Logs holds every log.
+	// Logs holds every log, and shows one in the log pane.
 	Logs  *component.LogView
 	Toast component.Toast
 
@@ -112,13 +140,15 @@ type Shared struct {
 	Read   bool
 	// Agents lists an agent for each person the settings give one, and
 	// AllPods the containers of every pod. Pods holds those of the selected
-	// agent's pod, which Home shows. PodsErr is the last read's error.
+	// agent's pod, which every tab shows. PodsErr is the last read's error.
 	Agents  []sandbox.Agent
 	AllPods []ContainerRow
 	Pods    []ContainerRow
 	PodsErr error
-	// Traffic holds the proxy's decisions, from its audit log.
+	// Traffic holds the proxy's decisions, from its audit log, and ShowDNS
+	// adds the DNS lookups to the feed.
 	Traffic proxylog.Store
+	ShowDNS bool
 
 	// Describe says what each section of the settings holds, and Problems
 	// what would stop the bring-up.
@@ -143,7 +173,8 @@ type Shared struct {
 // its settings.
 func NewShared(session *sandbox.Session) *Shared {
 	shared := &Shared{Session: session, Styles: style.New(true), Keys: component.NewKeyMap()}
-	shared.Logs = component.NewLogView(func(_ string, lines []string) []string { return lines })
+	shared.Logs = component.NewLogView(shared.paint)
+	shared.Logs.FromTop(SourceResponse)
 	shared.ResetSteps()
 	shared.Launched = shared.CurrentDemo()
 	return shared
@@ -151,6 +182,14 @@ func NewShared(session *sandbox.Session) *Shared {
 
 // StepSource names a step's log.
 func StepSource(id sandbox.StepID) string { return "step " + string(id) }
+
+// ServiceSource names a service's log.
+func ServiceSource(name string) string { return "service " + name }
+
+// ContainerSource names the log of a pod's container.
+func ContainerSource(pod, container string) string {
+	return "container " + pod + "/" + container
+}
 
 // ResetSteps lists the steps for the current settings, all pending.
 func (s *Shared) ResetSteps() {
@@ -285,6 +324,15 @@ func (s *Shared) ResumeIndex() int {
 	return 0
 }
 
+// TrafficSource names the feed of the proxy's decisions the TUI shows:
+// with the DNS lookups, or without.
+func (s *Shared) TrafficSource() string {
+	if s.ShowDNS {
+		return SourceTrafficAll
+	}
+	return SourceTraffic
+}
+
 // AgentActionName says what a does, for the footer.
 func (s *Shared) AgentActionName() string {
 	scenario := s.Scenario()
@@ -325,6 +373,17 @@ func (s *Shared) endpoints() []sandbox.ScenarioEndpoint {
 		return scenario.EndpointList()
 	}
 	return nil
+}
+
+// agentBar says which agent the tab shows, when there is more than one.
+func (s *Shared) agentBar() []string {
+	if len(s.Agents) <= 1 {
+		return nil
+	}
+	theme := s.Styles
+	agent, index := s.SelectedAgent()
+	return []string{theme.Dim.Render("Showing ") + theme.Accent.Render(agent.Email+"'s agent") +
+		theme.Dim.Render(fmt.Sprintf(", %d of %d. Pick another on the Agents tab (2).", index+1, len(s.Agents)))}
 }
 
 // stepLine draws one step: its icon, its title, and how long it took.
@@ -397,6 +456,19 @@ func containerDetail(ctr sandbox.ContainerStatus) string {
 		detail += " ↻" + strconv.Itoa(ctr.Restarts)
 	}
 	return detail
+}
+
+// failedInit returns the init container of pod that failed, such as the
+// firewall that did not start.
+func (s *Shared) failedInit(pod string) (ContainerRow, bool) {
+	for _, row := range s.AllPods {
+		ctr := row.Container
+		if pod != "" && row.Pod == pod && ctr.Init &&
+			(ctr.State == StateTerminated && ctr.ExitCode != 0 || slices.Contains(crashReasons(), ctr.Reason)) {
+			return row, true
+		}
+	}
+	return ContainerRow{}, false
 }
 
 // crashReasons are the reasons of a container that does not come up by

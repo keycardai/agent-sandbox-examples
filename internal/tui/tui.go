@@ -1,12 +1,15 @@
 // Package tui is the sandbox's terminal UI. It sets the sandbox up through
 // the same questions as `sandbox init`, and brings it up one step at a
-// time. Then Home says what Keycard did for the agent and what to try. The
-// tunnel and the mirror run as services, so quitting the TUI leaves the
-// sandbox up, and starting it again shows it.
+// time. Then Home says what Keycard did for the agent and what to try, the
+// Agents tab lists an agent for each person, sends requests from the one
+// selected and shows what came back, the Traffic tab shows each decision of
+// its egress proxy, and the Health tab shows the checks, its pod and every
+// log. The tunnel and the mirror run as services, so quitting the TUI
+// leaves the sandbox up, and starting it again shows it.
 //
 // The root model in this package routes each message and key, and does
 // the work that spans the screens: the bring-up, the actions, the polling
-// and the logs it follows. Each screen is in the page package,
+// and the logs it follows. Each screen and tab is in the page package,
 // which draws it and keeps its state. The component package draws the
 // parts the screens share, style holds the colors, and proxylog reads the
 // egress proxy's audit log.
@@ -18,7 +21,6 @@ import (
 	"sync"
 	"time"
 
-	"charm.land/bubbles/v2/help"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
@@ -31,6 +33,8 @@ const (
 	frameEvery = 120 * time.Millisecond
 	// pollEvery is how often the TUI reads the pods and the services.
 	pollEvery = 2 * time.Second
+	// logTail is how many lines of a container's log the TUI starts with.
+	logTail = 500
 	// busSize is how many messages background work can queue before Send
 	// waits.
 	busSize = 1024
@@ -43,7 +47,8 @@ const (
 type screen int
 
 const (
-	// screenDashboard shows the sandbox's Home.
+	// screenDashboard shows the sandbox in tabs: Home, Agents, Traffic and
+	// Health.
 	screenDashboard screen = iota
 	// screenWelcome greets a first run, or says what the settings lack.
 	screenWelcome
@@ -53,6 +58,19 @@ const (
 	screenReview
 	// screenSettings lists the settings to change one.
 	screenSettings
+)
+
+// tab is a view of the dashboard. Home says what happens and what to do,
+// Agents is for working with the agents, Traffic for what they ask for,
+// and Health for how the sandbox is provisioned.
+type tab int
+
+const (
+	tabHome tab = iota
+	tabAgent
+	tabTraffic
+	tabHealth
+	tabCount
 )
 
 // Options configure the TUI.
@@ -67,19 +85,22 @@ type Options struct {
 type model struct {
 	shared *page.Shared
 	bus    *bus
-	help   help.Model
 	// ctx is what the work in the background runs in, and ends when Run
 	// returns. jobs counts that work's goroutines, for Run to wait for.
 	ctx  context.Context //nolint:containedctx // The model owns its background work, which ends with Run's context.
 	jobs sync.WaitGroup
 
 	screen  screen
+	tab     tab
 	overlay overlay
 
 	welcome  *page.Welcome
 	setup    *page.Setup
 	settings *page.Settings
 	home     *page.Home
+	agents   *page.Agents
+	traffic  *page.Traffic
+	health   *page.Health
 	demos    *page.Demos
 
 	// cancel stops a running bring-up, and downAfterBringUp stops
@@ -94,27 +115,35 @@ type model struct {
 	// set while it waits, so that one poll is planned at a time.
 	polling     int
 	tickPlanned bool
-	// trafficStop stops following the proxy's audit log.
+	// stream names the container log the TUI follows, and streamStop stops
+	// following it. trafficStop stops following the proxy's audit log.
+	stream      string
+	streamStop  context.CancelFunc
 	trafficStop context.CancelFunc
-	// shownPod is the selected agent's pod, which Home shows.
+	// shownPod is the selected agent's pod, which every tab shows.
 	shownPod string
 
 	// asking is set while the setup wizard runs. stopAsking ends its
-	// questions, and cancelSetup the work it waits on.
+	// questions, and cancelSetup the work it waits on. askTitle titles the
+	// questions outside the wizard, or is "" for setup.
 	asking      bool
 	stopAsking  chan struct{}
 	cancelSetup context.CancelFunc
+	askTitle    string
 	// wizardBack is the screen to go back to when the wizard stops, and
 	// settingsBack the one the settings came from, where esc goes back to.
 	wizardBack   screen
 	settingsBack screen
 
+	// mouse turns on mouse reporting, for the wheel. It is off by default,
+	// so the terminal can select and copy text.
+	mouse bool
 	// quitAfterAction quits once the running action is done.
 	quitAfterAction bool
 }
 
 // overlay is what covers the screen: nothing, the help, a confirmation, a
-// setup question, the quit dialog or the list of demos.
+// setup question, the quit dialog or a list to choose from.
 type overlay struct {
 	kind    overlayKind
 	title   string
@@ -131,11 +160,15 @@ const (
 	overlayNone overlayKind = iota
 	overlayHelp
 	overlayConfirm
-	// overlayQuestion is the setup's question, which the setup page keeps.
-	// It is part of the wizard's screen.
+	// overlayQuestion is the setup's question outside the wizard, which
+	// the setup page keeps. In the wizard, it is part of the screen.
 	overlayQuestion
 	overlayQuit
 	overlayDemo
+	// overlayLogs lists every log, for looking into a problem.
+	overlayLogs
+	// overlayAgents lists every agent, to switch to another.
+	overlayAgents
 )
 
 // bus queues messages from background work for Update, so that a step
@@ -167,12 +200,18 @@ func Run(ctx context.Context, opts Options) error {
 // in ctx.
 func newModel(ctx context.Context, session *sandbox.Session) *model {
 	shared := page.NewShared(session)
-	root := &model{shared: shared, bus: newBus(), help: help.New(), ctx: ctx}
+	root := &model{shared: shared, bus: newBus(), ctx: ctx}
 	root.welcome = page.NewWelcome(shared)
 	root.setup = page.NewSetup(shared)
 	root.settings = page.NewSettings(shared)
 	root.home = page.NewHome(shared)
+	root.agents = page.NewAgents(shared, root)
+	root.traffic = page.NewTraffic(shared)
+	root.health = page.NewHealth(shared, root)
 	root.demos = page.NewDemos(shared)
+	if len(shared.Steps) > 0 {
+		shared.Logs.Show(page.StepSource(shared.Steps[0].Step.ID))
+	}
 	return root
 }
 

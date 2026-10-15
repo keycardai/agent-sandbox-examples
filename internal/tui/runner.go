@@ -32,6 +32,8 @@ const (
 	streamRetry = 2 * time.Second
 	// trafficTail is how many of the proxy's records the TUI starts with.
 	trafficTail = 2000
+	// newAgentTitle titles the questions for a new agent.
+	newAgentTitle = "New agent"
 	// clearScreen clears the terminal and puts the cursor at the top.
 	clearScreen = "\x1b[2J\x1b[H"
 )
@@ -66,6 +68,19 @@ type (
 		describe map[string]string
 		problems []error
 	}
+	// agentAddedMsg reports the end of adding an agent.
+	agentAddedMsg struct {
+		email    string
+		err      error
+		agents   []sandbox.Agent
+		describe map[string]string
+		problems []error
+	}
+	// settingsMsg is the settings as an action left them.
+	settingsMsg struct {
+		describe map[string]string
+		problems []error
+	}
 	eventsMsg struct {
 		url string
 		err error
@@ -82,6 +97,13 @@ func frameTick() tea.Cmd {
 
 func pollTick() tea.Cmd {
 	return tea.Tick(pollEvery, func(time.Time) tea.Msg { return pollMsg{} })
+}
+
+// recoverInto writes a panic of the goroutine it is deferred in to log.
+func recoverInto(log *component.Log) {
+	if r := recover(); r != nil {
+		log.Add(fmt.Sprintf("✕ %v: %v", errPanic, r))
+	}
 }
 
 // startBringUp runs the steps from index from on, one after another, in the
@@ -146,9 +168,12 @@ func runSteps(ctx context.Context, cancel context.CancelFunc, run bringUp, from 
 	run.out.Send(bringUpDoneMsg{})
 }
 
-// trackStep follows step i on Home.
+// trackStep follows step i: on Home, and in the Health tab's log.
 func (m *model) trackStep(i int) {
 	m.shared.StepCursor = i
+	if m.tab == tabHealth {
+		m.health.Track(i)
+	}
 }
 
 func (m *model) onStepStart(msg stepStartMsg) {
@@ -264,11 +289,11 @@ func (m *model) notifyUp() {
 	switch {
 	case scenario == nil:
 	case scenario.Run.Mode == sandbox.ModeBackground:
-		shared.Notify("The sandbox is up, and the agent runs in the background. Run sandbox logs to follow it.", false)
+		shared.Notify("The sandbox is up, and the agent runs in the background. Its log is on the Agents tab.", false)
 	case scenario.Run.Mode == sandbox.ModeShell && len(scenario.Run.Command) > 0:
-		shared.Notify("The sandbox is up. Press a to open "+scenario.Run.Command[0]+".", false)
+		shared.Notify("The sandbox is up. Press a to open "+scenario.Run.Command[0]+", or s to send a request.", false)
 	default:
-		shared.Notify("The sandbox is up. Press x to open a shell in the agent.", false)
+		shared.Notify("The sandbox is up. Press s to send a request from the agent.", false)
 	}
 }
 
@@ -276,6 +301,15 @@ func (m *model) notifyUp() {
 func (m *model) stop() {
 	if m.cancel != nil {
 		m.cancel()
+	}
+}
+
+// watchBringUp shows a bring-up that starts: on Home, unless the Health
+// tab shows, which follows each step's log.
+func (m *model) watchBringUp() {
+	m.health.Focus = page.PaneChecks
+	if m.tab != tabHealth {
+		m.openTab(tabHome)
 	}
 }
 
@@ -292,6 +326,7 @@ func (m *model) toggleBringUp() {
 		if from > 0 {
 			m.shared.Notify("Starting again at: "+m.shared.Steps[from].Step.Title, false)
 		}
+		m.watchBringUp()
 		m.startBringUp(from, false)
 		return
 	}
@@ -313,6 +348,7 @@ func (m *model) runChecks() {
 	}
 	for i, row := range m.shared.Steps {
 		if row.Step.ID == sandbox.StepChecks {
+			m.watchBringUp()
 			m.startBringUp(i, false)
 		}
 	}
@@ -328,7 +364,8 @@ func (m *model) agent() tea.Cmd {
 		return nil
 	}
 	if scenario.Run.Mode == sandbox.ModeBackground {
-		m.shared.Notify("The agent runs in the background. Run sandbox logs to follow its log.", false)
+		m.openTab(tabAgent)
+		m.agents.FocusLog()
 		return nil
 	}
 	return m.openAgent(false)
@@ -342,6 +379,8 @@ func (m *model) restartAgent() {
 	m.confirm("Restart "+name+"'s pod?", "This deletes the pod, and the controller creates it again\n"+
 		"with the current images and settings. The agent loses what it kept in the pod.",
 		func() tea.Cmd {
+			m.stopStream()
+			m.agents.Reset()
 			m.runAction("Restarting "+name+"'s pod", session.RestartAgent)
 			return nil
 		})
@@ -367,6 +406,7 @@ func (m *model) stopAll() {
 // down stops the tunnel and the mirror and deletes the cluster. A running
 // bring-up stops first, and onBringUpDone calls down again once it has.
 func (m *model) down() {
+	m.stopStream()
 	if m.shared.Running {
 		m.stop()
 		m.downAfterBringUp = true
@@ -376,11 +416,16 @@ func (m *model) down() {
 	m.runAction("Stopping everything", m.shared.Session.Down)
 }
 
-// runAction runs work in the background, and reports when it is done. It
-// is the one action that runs until then.
+// runAction runs work in the background with its output in the action log,
+// which the log pane shows, and reports when it is done. It is the one
+// action that runs until then.
 func (m *model) runAction(what string, work func(ctx context.Context, out io.Writer) error) {
 	shared := m.shared
+	log := shared.Logs.Log(page.SourceAction)
+	log.Reset()
+	log.Add("$ " + what)
 	shared.Record("▸", what)
+	shared.Logs.Show(page.SourceAction)
 	shared.Notify(what+"…", false)
 	m.acting = what
 	ctx, out := m.ctx, m.bus
@@ -390,17 +435,23 @@ func (m *model) runAction(what string, work func(ctx context.Context, out io.Wri
 				out.Send(actionDoneMsg{what: what, err: fmt.Errorf("%w: %v", errPanic, r)})
 			}
 		}()
-		out.Send(actionDoneMsg{what: what, err: work(ctx, io.Discard)})
+		out.Send(actionDoneMsg{what: what, err: work(ctx, log)})
 	})
 }
 
 func (m *model) onActionDone(msg actionDoneMsg) tea.Cmd {
 	shared := m.shared
 	m.acting = ""
+	log := shared.Logs.Log(page.SourceAction)
 	if msg.err != nil {
+		log.Add("", "✕ "+msg.err.Error())
+		if hint := page.HintFor(msg.err); hint != "" {
+			log.Add("→ " + hint)
+		}
 		shared.Notify(msg.what+" failed: "+component.FirstLine(msg.err.Error()), true)
 		shared.Record("✕", msg.what+" failed: "+component.FirstLine(msg.err.Error()))
 	} else {
+		log.Add("", "✓ done")
 		shared.Notify(msg.what+": done", false)
 		shared.Record("✓", msg.what+": done")
 	}
@@ -460,10 +511,21 @@ func (m *model) onPods(msg podsMsg) {
 	if len(shared.Pods) > 0 {
 		m.startTraffic()
 	}
+	switch {
+	// The log pane keeps an action's log until the operator moves away
+	// from it, so that its outcome stays on screen.
+	case m.stream != "" || len(shared.Pods) == 0, shared.Logs.Source() == page.SourceAction:
+	case m.tab == tabAgent:
+		if row, ok := shared.Container(page.AgentContainer); ok {
+			m.Follow(row)
+		}
+	case m.tab == tabHealth:
+		m.health.OnPods()
+	}
 }
 
 // syncAgents keeps the selection on an agent in the list, and shows the
-// selected agent's pod alone. When that pod changed, Home moves to it.
+// selected agent's pod alone. When that pod changed, every tab moves to it.
 func (m *model) syncAgents() {
 	shared := m.shared
 	if _, index := shared.SelectedAgent(); index < 0 && len(shared.Agents) > 0 {
@@ -483,9 +545,71 @@ func (m *model) syncAgents() {
 	}
 }
 
-// agentSwitched points Home at the agent selected now: its traffic.
+// agentSwitched points the tabs at the agent selected now: its log, its
+// traffic, and no request yet.
 func (m *model) agentSwitched() {
+	m.agents.Reset()
+	m.stopStream()
 	m.startTraffic()
+	switch m.tab {
+	case tabAgent:
+		m.agents.ShowRight()
+	case tabHealth:
+		if m.health.Focus == page.PaneChecks {
+			m.health.ShowCheck()
+		}
+	case tabHome, tabTraffic, tabCount:
+	}
+	m.layout()
+}
+
+func (m *model) stopStream() {
+	if m.streamStop != nil {
+		m.streamStop()
+	}
+	m.stream, m.streamStop = "", nil
+}
+
+// followContainer follows a container's log until ctx ends. It follows it
+// again when kubectl stops, as it does when the container restarts. A
+// container that finished, such as the init container, is read once.
+func followContainer(ctx context.Context, session *sandbox.Session, pod, container string, finished bool,
+	log *component.Log,
+) {
+	defer recoverInto(log)
+	log.Reset()
+	for ctx.Err() == nil {
+		cmd, err := session.LogsCommand(ctx, pod, container, logTail, !finished)
+		if err != nil {
+			log.Add("✕ " + err.Error())
+			return
+		}
+		cmd.Stderr = log
+		stdout, err := cmd.StdoutPipe()
+		if err == nil {
+			err = cmd.Start()
+		}
+		if err == nil {
+			_ = component.ReadLines(stdout, func(line string) { log.Add(proxylog.ReadableLine(line)) })
+			err = cmd.Wait()
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if finished {
+			log.Add("", "── the container has finished ──")
+			return
+		}
+		if err != nil {
+			log.Add(fmt.Sprintf("… kubectl logs stopped (%v). Following again in %s.", err, streamRetry))
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(streamRetry):
+		}
+		log.Reset()
+	}
 }
 
 // startTraffic follows the proxy of the selected agent's pod, once there
@@ -500,6 +624,8 @@ func (m *model) startTraffic() {
 			m.trafficStop = nil
 		}
 		shared.Traffic.Reset("")
+		shared.Logs.Log(page.SourceTraffic).Reset()
+		shared.Logs.Log(page.SourceTrafficAll).Reset()
 		return
 	}
 	if _, pod := shared.Traffic.Snapshot(); pod == target.Pod && m.trafficStop != nil {
@@ -511,30 +637,42 @@ func (m *model) startTraffic() {
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.trafficStop = cancel
 	shared.Traffic.Reset(target.Pod)
+	feeds := [2]*component.Log{shared.Logs.Log(page.SourceTraffic), shared.Logs.Log(page.SourceTrafficAll)}
 	session, store, pod := shared.Session, &shared.Traffic, target.Pod
-	m.jobs.Go(func() { followTraffic(ctx, session, pod, store) })
+	m.jobs.Go(func() { followTraffic(ctx, session, pod, feeds, store) })
 }
 
-// followTraffic follows the proxy's log in pod until ctx ends, and keeps
-// each audit record in store. Other log lines are left out. When kubectl
-// stops, it follows the log again streamRetry later.
-func followTraffic(ctx context.Context, session *sandbox.Session, pod string, store *proxylog.Store) {
+// followTraffic follows the proxy's log in pod until ctx ends. Each audit
+// record goes to store, and as a row to the feeds: requests to the first,
+// and every record to the second. Other log lines are left out. What
+// kubectl says on its error output, and why it stopped, go to both feeds.
+func followTraffic(ctx context.Context, session *sandbox.Session, pod string, feeds [2]*component.Log,
+	store *proxylog.Store,
+) {
+	both := io.MultiWriter(feeds[0], feeds[1])
 	for ctx.Err() == nil {
+		feeds[0].Reset()
+		feeds[1].Reset()
 		store.Reset(pod)
 		cmd, err := session.LogsCommand(ctx, pod, page.ProxyContainer, trafficTail, true)
 		if err != nil {
+			_, _ = fmt.Fprintf(both, "✕ %v\n", err)
 			return
 		}
+		cmd.Stderr = both
 		stdout, err := cmd.StdoutPipe()
 		if err == nil {
 			err = cmd.Start()
 		}
 		if err == nil {
-			readRecords(stdout, store)
-			_ = cmd.Wait()
+			readRecords(stdout, feeds, store)
+			err = cmd.Wait()
 		}
 		if ctx.Err() != nil {
 			return
+		}
+		if err != nil {
+			_, _ = fmt.Fprintf(both, "… kubectl logs stopped (%v). Following again in %s.\n", err, streamRetry)
 		}
 		select {
 		case <-ctx.Done():
@@ -544,12 +682,23 @@ func followTraffic(ctx context.Context, session *sandbox.Session, pod string, st
 	}
 }
 
-// readRecords reads the proxy's audit records from stdout into store.
-func readRecords(stdout io.Reader, store *proxylog.Store) {
+// readRecords reads the proxy's audit records from stdout into store and
+// the feeds.
+func readRecords(stdout io.Reader, feeds [2]*component.Log, store *proxylog.Store) {
 	_ = component.ReadLines(stdout, func(line string) {
-		if record, ok := proxylog.Parse([]byte(line)); ok {
-			store.Add(record)
+		record, ok := proxylog.Parse([]byte(line))
+		if !ok {
+			return
 		}
+		store.Add(record)
+		row := record.Row()
+		// The feed of requests leaves out the routine lookups, and keeps a
+		// refused lookup of a host on the internet: the proxy blocks a host
+		// it does not allow there, before any connection.
+		if !record.RoutineLookup() {
+			feeds[0].Add(row)
+		}
+		feeds[1].Add(row)
 	})
 }
 
@@ -639,6 +788,125 @@ func (m *model) stopSetup() {
 	if m.overlay.kind == overlayQuestion {
 		m.overlay = overlay{}
 	}
+}
+
+// addAgent asks who gets a new agent, and the demo's questions for them, as
+// setup does. Once the settings are saved, the new agent comes up when the
+// sandbox is up.
+func (m *model) addAgent() {
+	shared := m.shared
+	if m.busy() {
+		return
+	}
+	if !shared.Session.Local().Initialized() {
+		shared.Notify("Set the sandbox up first: press e.", true)
+		return
+	}
+	m.openTab(tabAgent)
+	stop := make(chan struct{})
+	ctx, cancel := context.WithCancel(m.ctx)
+	m.asking, m.stopAsking, m.cancelSetup, m.askTitle = true, stop, cancel, newAgentTitle
+	log := shared.Logs.Log(page.SourceSetup)
+	log.Reset()
+	m.setup.ForgetNotes()
+	local := *shared.Session.Local()
+	local.Out = log
+	local.Ask = page.Asker{Send: m.bus.Send, Done: stop, Log: log}
+	session, out := shared.Session, m.bus
+	shared.Record("▸", "Adding an agent")
+	shared.Notify("Signing in to Keycard to list the zone's users…", false)
+	m.jobs.Go(func() {
+		var done agentAddedMsg
+		defer func() {
+			if r := recover(); r != nil {
+				done.err = fmt.Errorf("%w: %v", errPanic, r)
+			}
+			done.describe, done.problems = session.Describe(), session.Problems()
+			out.Send(done)
+		}()
+		done.email, done.err = local.AddAgent(ctx)
+		if done.err == nil {
+			session.Reload()
+			done.agents = session.Agents()
+		}
+	})
+}
+
+// onAgentAdded selects the new agent, and brings it up when the sandbox is
+// up. Otherwise it comes up with the next bring-up.
+func (m *model) onAgentAdded(msg agentAddedMsg) {
+	shared := m.shared
+	m.asking, m.stopAsking, m.askTitle = false, nil, ""
+	if m.cancelSetup != nil {
+		m.cancelSetup()
+	}
+	if m.overlay.kind == overlayQuestion {
+		m.overlay = overlay{}
+	}
+	m.setup.Drop()
+	shared.Describe, shared.Problems = msg.describe, msg.problems
+	switch {
+	case errors.Is(msg.err, sandbox.ErrInterrupted), errors.Is(msg.err, context.Canceled):
+		shared.Record("•", "Stopped adding an agent")
+		return
+	case msg.err != nil:
+		shared.Notify("Adding an agent failed: "+component.FirstLine(msg.err.Error()), true)
+		shared.Record("✕", "Adding an agent failed: "+component.FirstLine(msg.err.Error()))
+		return
+	}
+	shared.Agents = msg.agents
+	shared.Session.SelectAgent(msg.email)
+	m.syncAgents()
+	shared.Record("✓", "Gave "+msg.email+" an agent in this demo")
+	if !shared.SandboxUp() {
+		shared.Notify(msg.email+" has an agent in this demo now. It comes up with the sandbox: press u.", false)
+		return
+	}
+	session, email := shared.Session, msg.email
+	m.runAction(page.DeployTitle(email), func(ctx context.Context, out io.Writer) error {
+		return session.DeployAgent(ctx, email, out)
+	})
+}
+
+// removeAgent asks, then takes the selected agent away: out of the
+// settings, and out of the cluster and the zone's rules when it runs.
+func (m *model) removeAgent() {
+	shared := m.shared
+	agent, index := shared.SelectedAgent()
+	switch {
+	case index < 0:
+		return
+	case m.busy():
+		return
+	case agent.Default:
+		shared.Notify("Every demo has an agent for "+agent.Email+". To remove it, press e and pick someone else "+
+			"in Zone and user.", true)
+		return
+	}
+	body := "This deletes their sandbox and its pod, and turns off their access rules in the\n" +
+		"zone. The other agents keep running."
+	switch {
+	case agent.Pod == "":
+		body = "They come off the settings. Their agent never came up, so nothing else changes."
+	case !shared.Status.ClusterExists:
+		body = "They come off the settings. Nothing of theirs runs, and the next bring-up turns off\n" +
+			"their access rules in the zone."
+	}
+	email, session, bus := agent.Email, shared.Session, m.bus
+	m.confirm("Remove "+email+"'s agent?", body, func() tea.Cmd {
+		m.stopStream()
+		m.runAction("Removing "+email+"'s agent", func(ctx context.Context, out io.Writer) error {
+			err := session.RemoveAgent(ctx, email, out)
+			bus.Send(settingsMsg{describe: session.Describe(), problems: session.Problems()})
+			gone := !slices.ContainsFunc(session.Agents(), func(a sandbox.Agent) bool { return a.Email == email })
+			if err != nil && gone {
+				_, _ = fmt.Fprintln(out, "Their access rules stay on in the zone until the next bring-up turns "+
+					"them off: press u.")
+			}
+			return err //nolint:wrapcheck // RemoveAgent's errors say what failed, as the steps' do.
+		})
+		return nil
+	})
 }
 
 // openEvents opens the zone's event log in the console, where the zone

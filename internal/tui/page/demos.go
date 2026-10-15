@@ -131,9 +131,9 @@ func demoAbout(scenario *sandbox.Scenario) string {
 		}
 		return "You work with it in the terminal: a opens it."
 	case sandbox.ModeBackground:
-		return "It runs in the background and answers you where it listens. Run sandbox logs to follow its log."
+		return "It runs in the background and answers you where it listens. Its log is on the Agents tab."
 	}
-	return "It runs the checks, then stays idle. c runs them again."
+	return "It runs the checks, then stays idle. s sends a request from it."
 }
 
 // demoNeeds lists what setup asks for the demo: each credential, and each

@@ -7,12 +7,87 @@ import (
 	"strconv"
 	"strings"
 
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/component"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/proxylog"
 )
 
 // nameWidth and targetWidth are the columns of what Keycard did.
 const nameWidth, targetWidth = 12, 24
+
+// Traffic is the dashboard's tab for what the agent asks for: what Keycard
+// did for each endpoint, then every decision of the egress proxy as it
+// makes it.
+type Traffic struct {
+	shared *Shared
+}
+
+// NewTraffic returns the Traffic tab.
+func NewTraffic(shared *Shared) *Traffic { return &Traffic{shared: shared} }
+
+// View draws the summary over the feed.
+func (t *Traffic) View() string {
+	shared := t.shared
+	lines := t.top()
+	width, height := shared.Width-component.PageIndent, shared.BodyRows()-len(lines)
+	source := shared.Logs.Source()
+	return strings.Join(append(lines, shared.logPane(sourceTitle(source), nil, waitingText(source), width, height,
+		true)), "\n")
+}
+
+// Hints lists the tab's keys.
+func (t *Traffic) Hints() []component.Hint {
+	dns := "show DNS"
+	if t.shared.ShowDNS {
+		dns = "hide DNS"
+	}
+	return []component.Hint{
+		{Key: "d", Desc: dns},
+		{Key: "/", Desc: "filter"},
+		{Key: "f", Desc: "follow"},
+		{Key: "w", Desc: "wrap"},
+		{Key: "o", Desc: "zone events"},
+		{Key: "?", Desc: wordKeys},
+	}
+}
+
+// Show points the log pane at the feed.
+func (t *Traffic) Show() {
+	t.shared.Logs.Show(t.shared.TrafficSource())
+}
+
+// Keys turns the DNS lookups on and off, and scrolls and filters the feed.
+func (t *Traffic) Keys(msg tea.KeyPressMsg) tea.Cmd {
+	if key.Matches(msg, t.shared.Keys.DNS) {
+		t.shared.ShowDNS = !t.shared.ShowDNS
+		t.Show()
+		return nil
+	}
+	return t.shared.Logs.Keys(msg, t.shared.Keys)
+}
+
+// Layout sizes the log pane under the summary.
+func (t *Traffic) Layout() {
+	shared := t.shared
+	width := shared.Width - component.PageIndent - component.BorderCols
+	height := shared.BodyRows() - len(t.top())
+	shared.Logs.SetSize(max(width, 1), max(height-component.BorderRows-1, 1))
+}
+
+// top is the summary over the feed. It has a line per endpoint and a fixed
+// number more, so the feed's height stays put.
+func (t *Traffic) top() []string {
+	shared := t.shared
+	theme := shared.Styles
+	title := theme.SectionTitle.Render("WHAT KEYCARD DID")
+	lines := append(shared.agentBar(), title)
+	for _, line := range shared.keycardLines() {
+		lines = append(lines, "  "+line)
+	}
+	return append(lines, "")
+}
 
 // keycardLines says what the proxy did for each of the demo's endpoints,
 // which hosts it blocked, and how many names the agent looked up. There is

@@ -1,0 +1,22 @@
+ keycard sandbox    1 Home   2 Agents   3 Traffic   4 Health               ● up
+
+  ! Something needs a look
+  The check marked below says what to do.
+
+  ✓ The agent runs                    pi coding agent. Press a to open it
+  ! Its requests go through Keycard   3 requests, 1 credential added, 1 host …
+                                      → Keycard refused a credential once. The …
+  ✓ Keycard can verify the agent      The cluster's keys are on the internet,…
+  ✓ The checks pass                   10s. c runs them again
+
+  ┏━ Activity · log ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+  ┃ What happened in this session, newest last.                                ┃
+  ┃ ● following                                                                ┃
+  ┃ hh:mm:ss  ✓ Start the tunnel (3s)                                          ┃
+  ┃ hh:mm:ss  ✓ Install the charts (41s)                                       ┃
+  ┃ hh:mm:ss  ✓ Checks: 6 of 6 passed                                          ┃
+  ┃ hh:mm:ss  ✓ The sandbox is up                                              ┃
+  ┃ hh:mm:ss  ▸ The agent sent GET https://api.github.com/user                 ┃
+  ┃ hh:mm:ss  ✓ GET https://api.github.com/user: 200 OK                        ┃
+  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+  esc  back   f  follow   w  wrap   /  filter   G  end   ?  keys

@@ -1,0 +1,42 @@
+ keycard sandbox    1 Home   2 Agents   3 Traffic   4 Health                                                                                     ● up
+
+  WHAT KEYCARD DID
+    ✓ GitHub       api.github.com           1 request, credential added · hh:mm:ss
+    · GitHub git   github.com               not used yet
+    ✕ OpenRouter   openrouter.ai/api/v1     No credential: Keycard's policy does not allow it · hh:mm:ss
+    ✓ pypi.org                              1 request, no credential needed · hh:mm:ss
+    · files.pythonhosted.org                not used yet
+    ✕ Blocked      example.com · not on the sandbox's allow list
+    · DNS          3 lookups, 2 refused. The resolver tries cluster names first, so refusals are normal.
+
+  ┏━ Every request through the egress proxy ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+  ┃ ● following                                                                                                                                      ┃
+  ┃ hh:mm:ss  ✓ allow  GET      api.github.com/user                  200       api.github.com:443/                                                   ┃
+  ┃ hh:mm:ss  ✓ allow  GET      pypi.org/simple/                     200       pypi.org:443/                                                         ┃
+  ┃ hh:mm:ss  ✕ deny   GET      openrouter.ai/api/v1/key                       Keycard's policy does not allow it                                    ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┃                                                                                                                                                  ┃
+  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+  d  show DNS   /  filter   f  follow   w  wrap   o  zone events   ?  keys

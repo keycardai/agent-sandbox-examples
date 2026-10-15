@@ -1,0 +1,42 @@
+ keycard sandbox    1 Home   2 Agents   3 Traffic   4 Health                                                                                     ● up
+
+  ! Something needs a look
+  The check marked below says what to do.
+
+  ✓ The agent runs                    pi coding agent. Press a to open it
+  ! Its requests go through Keycard   3 requests, 1 credential added, 1 host blocked
+                                      → Keycard refused a credential once. The Traffic tab says why.
+  ✓ Keycard can verify the agent      The cluster's keys are on the internet, through a Cloudflare tunnel
+  ✓ The checks pass                   10s. c runs them again
+
+  ┌─ Container log · u7k2vjw9ab/egress-proxy ────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │ ● following                                                                                                                                      │
+  │ hh:mm:ss  INFO  listening  addr=:15001 mode=transparent                                                                                          │
+  │ hh:mm:ss  INFO  resolver ready  addr=127.0.0.1:53                                                                                                │
+  │ hh:mm:ss  ✓ allow  DNS A    api.github.com                       NOERROR   api.github.com:443/                                                   │
+  │ hh:mm:ss  ✕ deny   DNS A    api.github.com.default.svc.cluster.… NOERROR   not on the sandbox's allow list                                       │
+  │ hh:mm:ss  ✓ allow  GET      api.github.com/user                  200       api.github.com:443/                                                   │
+  │ hh:mm:ss  ✓ allow  GET      pypi.org/simple/                     200       pypi.org:443/                                                         │
+  │ hh:mm:ss  ✕ deny   GET      openrouter.ai/api/v1/key                       Keycard's policy does not allow it                                    │
+  │ hh:mm:ss  ✕ deny   DNS A    example.com                          NOERROR   not on the sandbox's allow list                                       │
+  │ hh:mm:ss  WARN  token exchange refused  resource=https://openrouter.ai/api/v1                                                                    │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  │                                                                                                                                                  │
+  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+  ↑↓  select   enter  log   l  every log   u  bring up   c  checks   ?  keys   q  quit

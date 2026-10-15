@@ -3,6 +3,7 @@ package page
 import (
 	"errors"
 	"io"
+	"os/exec"
 	"reflect"
 	"slices"
 	"strings"
@@ -23,6 +24,7 @@ const (
 	samplePi       = "pi coding agent"
 	sampleSmoke    = "Smoke checks"
 	inputSecret    = "secret"
+	checkAgain     = "again"
 )
 
 // testShared is what the pages share for a checkout with no settings, in a
@@ -71,7 +73,7 @@ func wizardSetup(t *testing.T, width, height int, quest *Question) *Setup {
 	setup := NewSetup(testShared(t, width, height))
 	setup.Rail = PlannedSteps()
 	setup.OnSection(SectionMsg{ID: sandbox.SectionAccount})
-	setup.Ask(quest)
+	setup.Ask(quest, true)
 	return setup
 }
 
@@ -212,7 +214,7 @@ func TestNotesOfTheStep(t *testing.T) {
 // form's commands make, as the TUI's loop does, until it is answered.
 func answerWith(setup *Setup, quest *Question, msgs ...tea.Msg) {
 	quest.reply = make(chan answer, 1)
-	msgs = append(settle(setup.Ask(quest)), msgs...)
+	msgs = append(settle(setup.Ask(quest, true)), msgs...)
 	for len(msgs) > 0 && setup.Asking() {
 		cmd, _ := setup.Answer(msgs[0])
 		msgs = append(msgs[1:], settle(cmd)...)
@@ -332,22 +334,55 @@ func TestLongOptions(t *testing.T) {
 	}
 }
 
-// TestLongAnswerScrolls pastes an answer wider than its field. The text
-// scrolls within one row, between the field's top and bottom borders.
+// TestQuestionInModal draws a choice asked outside the wizard whole, inside
+// the modal: every line the modal's width, and the field's border with both
+// corners on each of its edges.
+func TestQuestionInModal(t *testing.T) {
+	t.Parallel()
+	for _, width := range []int{150, component.MinWidth} {
+		setup := NewSetup(testShared(t, width, 42))
+		setup.Ask(&Question{
+			Kind: AskChoose, Title: sandbox.QuestionNewUser, Value: checkAgain,
+			Options: []sandbox.Option{{Label: "Not in the list? Check again", Value: checkAgain}},
+		}, false)
+		lines := strings.Split(ansi.Strip(setup.QuestionModal("New agent")), "\n")
+		for _, line := range lines {
+			if ansi.StringWidth(line) != component.ModalWidth(width) {
+				t.Fatalf("at %d columns, a line is %d wide, want %d:\n%s", width, ansi.StringWidth(line),
+					component.ModalWidth(width), strings.Join(lines, "\n"))
+			}
+			if strings.Contains(line, "╭") != strings.Contains(line, "╮") ||
+				strings.Contains(line, "╰") != strings.Contains(line, "╯") {
+				t.Fatalf("at %d columns, the field's border breaks:\n%s", width, strings.Join(lines, "\n"))
+			}
+		}
+	}
+}
+
+// TestLongAnswerScrolls pastes an answer wider than its field, in the
+// wizard and in a modal. The text scrolls within one row, between the
+// field's top and bottom borders.
 func TestLongAnswerScrolls(t *testing.T) {
 	t.Parallel()
 	for name, kind := range map[string]QuestionKind{"input": AskInput, "secret": AskSecret} {
-		setup := NewSetup(testShared(t, 150, 42))
-		setup.Rail = PlannedSteps()
-		setup.Ask(&Question{Kind: kind, Title: "OpenRouter API key"})
-		setup.Answer(tea.PasteMsg{Content: strings.Repeat("k", 200)})
-		lines := strings.Split(ansi.Strip(setup.WizardView()), "\n")
-		row := slices.IndexFunc(lines, func(line string) bool {
-			return strings.Contains(line, "kkkk") || strings.Contains(line, "****")
-		})
-		if row < 1 || row+1 >= len(lines) || !strings.Contains(lines[row-1], "╭") ||
-			!strings.Contains(lines[row+1], "╰") {
-			t.Fatalf("%s: the answer leaves its one row:\n%s", name, strings.Join(lines, "\n"))
+		for _, inWizard := range []bool{true, false} {
+			setup := NewSetup(testShared(t, 150, 42))
+			setup.Rail = PlannedSteps()
+			setup.Ask(&Question{Kind: kind, Title: "OpenRouter API key"}, inWizard)
+			setup.Answer(tea.PasteMsg{Content: strings.Repeat("k", 200)})
+			view := setup.WizardView()
+			if !inWizard {
+				view = setup.QuestionModal("New agent")
+			}
+			lines := strings.Split(ansi.Strip(view), "\n")
+			row := slices.IndexFunc(lines, func(line string) bool {
+				return strings.Contains(line, "kkkk") || strings.Contains(line, "****")
+			})
+			if row < 1 || row+1 >= len(lines) || !strings.Contains(lines[row-1], "╭") ||
+				!strings.Contains(lines[row+1], "╰") {
+				t.Fatalf("%s, in the wizard %t: the answer leaves its one row:\n%s",
+					name, inWizard, strings.Join(lines, "\n"))
+			}
 		}
 	}
 }
@@ -413,5 +448,66 @@ func TestAsker(t *testing.T) {
 	close(done)
 	if _, err := asker.Input(t.Context(), "Name", "", nil); !errors.Is(err, sandbox.ErrInterrupted) {
 		t.Errorf("Input after stop = %v, want sandbox.ErrInterrupted", err)
+	}
+}
+
+// TestTrialsFor offers a request per endpoint that says something alone,
+// and one the proxy refuses.
+func TestTrialsFor(t *testing.T) {
+	t.Parallel()
+	endpoints := []sandbox.ScenarioEndpoint{
+		{URL: "https://api.github.com", Credential: true, Name: "GitHub"},
+		{URL: "https://github.com", Credential: true, Name: "GitHub git"},
+		{URL: "https://openrouter.ai/api/v1", Credential: true, Name: "OpenRouter"},
+		{URL: "https://pypi.org"},
+		{URL: "https://files.pythonhosted.org"},
+		{URL: "https://api.example.dev/v2", Credential: true, Name: "Dev"},
+	}
+	trials := trialsFor(endpoints)
+	got := make([]string, 0, len(trials))
+	for _, item := range trials {
+		got = append(got, item.method+" "+item.url+" "+item.name)
+	}
+	want := []string{
+		"GET https://api.github.com/user GitHub",
+		"GET https://openrouter.ai/api/v1/key OpenRouter",
+		"GET https://pypi.org/pypi/requests/json ",
+		"GET https://api.example.dev/v2 Dev",
+		"GET https://example.com/ ",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("trials =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if !trials[len(trials)-1].blocked {
+		t.Error("the last trial is not the blocked one")
+	}
+}
+
+// TestCommandLines lays the agent's command out within the pane's width,
+// so that sh takes the lines pasted as the same command. A word wider
+// than the pane goes in pieces that sh joins back.
+func TestCommandLines(t *testing.T) {
+	t.Parallel()
+	args := sandbox.AgentCurl("POST", "https://api.linear.app/graphql", `{"query":"{ viewer { id } }"}`)
+	for _, width := range []int{400, 60, 30, 20} {
+		lines := commandLines(args, width)
+		for _, line := range lines {
+			if ansi.StringWidth(line) > width {
+				t.Errorf("at %d columns, %q is wider", width, line)
+			}
+		}
+		script := "curl() { printf '%s\\n' \"$@\"; }\n" + strings.Join(lines, "\n")
+		cmd := exec.CommandContext(t.Context(), "sh", "-c", script) //nolint:gosec // G204: the test lays the script out.
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("at %d columns, sh: %v\n%s", width, err, strings.Join(lines, "\n"))
+		}
+		if got := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n"); !slices.Equal(got, args[1:]) {
+			t.Errorf("at %d columns, sh reads the lines as %q, want %q:\n%s", width, got, args[1:],
+				strings.Join(lines, "\n"))
+		}
+	}
+	if lines := commandLines(args, 400); len(lines) != 1 {
+		t.Errorf("at 400 columns, the command takes %d lines, want 1", len(lines))
 	}
 }

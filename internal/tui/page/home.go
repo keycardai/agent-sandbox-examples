@@ -22,7 +22,7 @@ const (
 	failureRows = 4
 )
 
-// Home is the dashboard. It says what the sandbox does and
+// Home is the dashboard's first tab. It says what the sandbox does and
 // what to do next: the bring-up while it runs, where it stopped when it
 // failed, and once it is up, what Keycard did for the agent and what to
 // try.
@@ -30,7 +30,7 @@ type Home struct {
 	shared *Shared
 }
 
-// NewHome returns Home.
+// NewHome returns the Home tab.
 func NewHome(shared *Shared) *Home { return &Home{shared: shared} }
 
 // View draws Home for how the sandbox is.
@@ -57,12 +57,14 @@ func (h *Home) Hints() []component.Hint {
 	case shared.Running:
 		return []component.Hint{
 			{Key: "u", Desc: "stop"},
+			{Key: "4", Desc: "step logs"},
 			{Key: "?", Desc: wordKeys},
 			{Key: "q", Desc: wordQuit},
 		}
 	case shared.FailedStep() != nil:
 		return []component.Hint{
 			{Key: "u", Desc: "try again"},
+			{Key: "4", Desc: "step logs"},
 			{Key: "e", Desc: "settings"},
 			{Key: "?", Desc: wordKeys},
 			{Key: "q", Desc: wordQuit},
@@ -70,6 +72,7 @@ func (h *Home) Hints() []component.Hint {
 	case shared.SandboxUp():
 		return []component.Hint{
 			{Key: "a", Desc: shared.AgentActionName()},
+			{Key: "s", Desc: "send a request"},
 			{Key: "p", Desc: "switch demo"},
 			{Key: "o", Desc: "zone events"},
 			{Key: "x", Desc: "shell"},
@@ -131,6 +134,7 @@ func (h *Home) failed(row *StepRow) string {
 	}
 	lines = append(lines, "",
 		shared.actionLine("u", "Start again from: "+shared.Steps[shared.ResumeIndex()].Step.Title),
+		shared.actionLine("4", "Read the step's full log on the Health tab"),
 		shared.actionLine("e", "Change the settings"),
 		"")
 	for _, step := range shared.Steps {
@@ -167,7 +171,7 @@ func (h *Home) down() string {
 func (h *Home) up() string {
 	shared := h.shared
 	theme := shared.Styles
-	lines := h.agentHeadline()
+	lines := append(shared.agentBar(), h.agentHeadline()...)
 	lines = append(lines, "", theme.SectionTitle.Render("WHAT KEYCARD DID"))
 	for _, line := range shared.keycardLines() {
 		lines = append(lines, "  "+line)
@@ -229,7 +233,7 @@ func (h *Home) agentHeadline() []string {
 	case found && (agent.Container.State == StateTerminated || slices.Contains(crashReasons(), agent.Container.Reason)):
 		return []string{
 			theme.Failed.Bold(true).Render("✕ " + name + " is not running: " + containerDetail(agent.Container)),
-			shared.para(theme.Muted, "Press R to restart the pod."),
+			shared.para(theme.Muted, "Press 2 to read its log, or R to restart the pod."),
 		}
 	case !found && shared.PodsErr != nil:
 		return []string{
@@ -258,10 +262,13 @@ func (h *Home) actions() []string {
 	case scenario.Run.Mode == sandbox.ModeShell && len(scenario.Run.Command) > 0:
 		actions = append(actions, shared.actionLine("a", "Open "+scenario.Run.Command[0]+
 			" in the agent, and ask for something that needs your accounts"))
+	case scenario.Run.Mode == sandbox.ModeBackground:
+		actions = append(actions, shared.actionLine("2", "Message the agent where it listens, and read its log"))
 	default:
 		actions = append(actions, shared.actionLine("c", "Run the checks again"+h.checksScore()))
 	}
 	actions = append(actions,
+		shared.actionLine("s", "Send a request from the agent, and see what Keycard does with it"),
 		shared.actionLine("o", "Open the zone's events in the Keycard console"),
 		shared.actionLine("x", "Open a shell in the agent"),
 	)
@@ -358,8 +365,8 @@ func HintFor(err error) string {
 	}{
 		{sandbox.ErrDocker, "Start Docker (OrbStack or Docker Desktop), then press u."},
 		{sandbox.ErrImages, "Do what the error says, then press u to start again from this step."},
-		{sandbox.ErrBuild, "A build that cannot download anything usually means Docker's network is down: " +
-			"restart OrbStack or Docker Desktop, then press u."},
+		{sandbox.ErrBuild, "Its log is on the Health tab (4). A build that cannot download anything usually " +
+			"means Docker's network is down: restart OrbStack or Docker Desktop, then press u."},
 		{sandbox.ErrOtherIssuer, "The cluster belongs to an older tunnel URL. Press u and recreate it."},
 		{sandbox.ErrBrokenCluster, "Creating the cluster stopped partway. Press u and recreate it."},
 		{zonesetup.ErrPolicySetActive, "Press e, choose Zone and user, and allow replacing the active policy set."},
@@ -370,14 +377,14 @@ func HintFor(err error) string {
 		{zonesetup.ErrProviderNotFound, "The zone lacks a provider the demo names. Press e and choose Demo."},
 		{sandbox.ErrSettings, "Press e to set the sandbox up."},
 		{sandbox.ErrScenario, "Press e and choose Demo."},
-		{sandbox.ErrService, "Read the service's log: local/out/tunnel.log or local/out/mirror.log."},
+		{sandbox.ErrService, "Read the service's log on the Health tab: 4, then l lists every log."},
 		{
 			sandbox.ErrIssuer,
-			"Keycard cannot reach the cluster's issuer. Read local/out/tunnel.log and local/out/mirror.log.",
+			"Keycard cannot reach the cluster's issuer. Read the tunnel and mirror logs on the Health tab: 4, then l.",
 		},
-		{sandbox.ErrPod, "Run sandbox logs to follow the agent's log."},
+		{sandbox.ErrPod, "Read the agent's and the proxy's logs on the Health tab: 4, then l."},
 		{sandbox.ErrCheck, "The sandbox is up. Read the failed check, then press c to run the checks again."},
-		{sandbox.ErrAgent, "Run sandbox logs to follow the agent's log."},
+		{sandbox.ErrAgent, "Read the agent's log on the Agents tab (2)."},
 	}
 	for _, h := range hints {
 		if errors.Is(err, h.target) {

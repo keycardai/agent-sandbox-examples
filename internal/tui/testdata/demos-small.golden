@@ -1,4 +1,4 @@
- keycard sandbox   home                                                    ● up
+ keycard sandbox    1 Home   2 Agents   3 Traffic   4 Health               ● up
 
   ● ada@example.com's agent is running
   It╭──────────────────────────────────────────────────────────────────────╮ld
@@ -17,6 +17,6 @@
   TR│   ↑↓  choose    enter  switch    esc  cancel                         │
     │                                                                      │acc…
     ╰──────────────────────────────────────────────────────────────────────╯
+     o  Open the zone's events in the Keycard console
      x  Open a shell in the agent
-     p  Switch to another demo: pi or slack
-  a  open pi-session   p  switch demo   o  zone events   x  shell   ?  keys   …
+  a  open pi-session   s  send a request   p  switch demo   o  zone events   x…
