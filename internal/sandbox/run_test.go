@@ -17,7 +17,10 @@ const (
 	userID    = "user1abc"
 	namespace = "agents"
 	checkOK   = "every automated check passed"
-	oneFailed = "1 of 4"
+	oneFailed = "1 of 5"
+	// coreDNS is the address and liveness probe port of the CoreDNS pod the
+	// NetworkPolicy probe connects to.
+	coreDNS = "10.42.0.5:8080"
 	// The fake proxy log replaces @NOW@ with the current time.
 	deniedLine = `{"ts":"@NOW@","destination":{"host":"example.com","port":53},` +
 		`"decision":{"verdict":"deny","reason":"no_matching_endpoint"}}`
@@ -36,7 +39,19 @@ func stale(line string) string {
 	return strings.ReplaceAll(line, "@NOW@", "2020-01-01T00:00:00Z")
 }
 
-// fakeSandbox sets what the fake tools return for a running sandbox.
+// devTag is the tag of images built in the egress-proxy repository.
+const devTag = "local"
+
+// pinnedImages returns the images the charts pin.
+func pinnedImages() []string {
+	return []string{
+		"ghcr.io/keycardai/egress-netsetup:v0.2.1@sha256:cff8c7a98ebfadfb514ccc0840cfb7a67994711f7e7c405d309613e4611b5b33",
+		"ghcr.io/keycardai/egress-proxy:v0.2.1@sha256:79684cf9b059d8e2f1719b108a05251bb47ef3bebb39759fd1811ec36b9ff7d2",
+		"ghcr.io/keycardai/sandbox-base:v0.2.1@sha256:555ef77f07de9e186e594aa3b0aa4805cfe7149ace065ca97d40fbc0e02c1cce",
+	}
+}
+
+// fakeSandbox is what the fake tools answer for a running sandbox.
 type fakeSandbox struct {
 	allowed      string // the status pypi returns
 	githubStatus string
@@ -53,6 +68,11 @@ type fakeSandbox struct {
 	tlsFailOnce bool
 	// missingImage is an image docker image inspect does not find.
 	missingImage string
+	// coreDNS is what kubectl prints for the CoreDNS pod's IP and liveness
+	// probe port.
+	coreDNS string
+	// probeExit is curl's exit code in the NetworkPolicy probe pod.
+	probeExit int
 }
 
 // healthy returns a sandbox that passes every check.
@@ -60,7 +80,7 @@ func healthy() fakeSandbox {
 	return fakeSandbox{
 		allowed: "200", githubStatus: "200", githubBody: `{"login":"octocat"}`, deniedExit: 6,
 		openRouterStatus: "200", openRouterBody: `{"data":{"label":"sk-or-v1-abc...xyz"}}`,
-		logs: deniedLine, serviceAccount: userID,
+		logs: deniedLine, serviceAccount: userID, coreDNS: "10.42.0.5 8080", probeExit: 7,
 	}
 }
 
@@ -85,10 +105,14 @@ case "$FAKE_TOOL $*" in
 *"logs %[2]s -c egress-proxy"*) printf '%%s\n' '%[8]s' | sed "s/@NOW@/$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)/g" ;;
 *"get pod %[2]s -o jsonpath={.spec.serviceAccountName}") printf '%%s' '%[9]s' ;;
 *"get namespace %[12]s -o jsonpath="*) printf privileged ;;
+*"--namespace kube-system get pods --selector k8s-app=kube-dns "*) printf '%[13]s' ;;
+*"get pod %[2]s -o jsonpath={.spec.containers[?(@.name==\"agent\")].image}") printf sandbox-base ;;
+*"--namespace %[12]s run keycard-netpol-probe --image sandbox-base "*" probe %[15]s")
+	printf '__probe_exit__:%[14]d\n' ;;
 *" apply "*) echo "applied" ;;
 esac
 `, f.missingImage, userID, tlsFail, f.allowed, f.githubBody, f.githubStatus, f.deniedExit, f.logs, f.serviceAccount,
-		f.openRouterBody, f.openRouterStatus, namespace)
+		f.openRouterBody, f.openRouterStatus, namespace, f.coreDNS, f.probeExit, coreDNS)
 }
 
 // TestCheck runs the checks against a fake sandbox. A failing check prints
@@ -116,6 +140,8 @@ func TestCheck(t *testing.T) {
 				`  PASS  credentialed: https://api.github.com/user named the GitHub account "octocat"` + "\n",
 				"  PASS  denied: https://example.com/ was blocked: no_matching_endpoint\n",
 				"  PASS  the pod runs as the ServiceAccount " + userID + "\n",
+				"  PASS  NetworkPolicy: a pod in " + namespace + " could not connect to CoreDNS at " + coreDNS +
+					" (curl exit 7)\n",
 				"MANUAL  Open the zone's event log.",
 				checkOK,
 			},
@@ -139,7 +165,7 @@ func TestCheck(t *testing.T) {
 			}),
 			openRouter: true,
 			want:       []error{sandbox.ErrCheck},
-			wantText:   "1 of 5",
+			wantText:   "1 of 6",
 			wantOut: []string{
 				"  FAIL  credentialed: https://openrouter.ai/api/v1/key returned 502 (proxy: exchange_denied: access_denied)\n",
 			},
@@ -226,6 +252,36 @@ func TestCheck(t *testing.T) {
 			wantText: oneFailed,
 			wantOut:  []string{`  FAIL  the pod runs as the ServiceAccount "default", want "` + userID + `"` + "\n"},
 		},
+		{
+			name:    "policy engine drops the probe",
+			sandbox: with(func(f *fakeSandbox) { f.probeExit = 28 }),
+			wantOut: []string{"  PASS  NetworkPolicy: a pod in " + namespace + " could not connect to CoreDNS at " +
+				coreDNS + " (curl exit 28)\n", checkOK},
+		},
+		{
+			name:     "NetworkPolicy not enforced",
+			sandbox:  with(func(f *fakeSandbox) { f.probeExit = 0 }),
+			want:     []error{sandbox.ErrCheck},
+			wantText: oneFailed,
+			wantOut: []string{"  FAIL  NetworkPolicy: a pod in " + namespace + " connected to CoreDNS at " + coreDNS +
+				". The cluster does not enforce NetworkPolicy, so only netsetup and the proxy restrict " +
+				"the sandbox's egress\n"},
+		},
+		{
+			name:     "probe has no curl",
+			sandbox:  with(func(f *fakeSandbox) { f.probeExit = 127 }),
+			want:     []error{sandbox.ErrCheck},
+			wantText: oneFailed,
+			wantOut:  []string{"  FAIL  NetworkPolicy: the probe's curl to " + coreDNS + " exited 127, want 7 or 28\n"},
+		},
+		{
+			name:     "CoreDNS liveness probe port is named",
+			sandbox:  with(func(f *fakeSandbox) { f.coreDNS = "10.42.0.5 health" }),
+			want:     []error{sandbox.ErrCheck},
+			wantText: oneFailed,
+			wantOut: []string{"  FAIL  NetworkPolicy: want the IP and the numeric liveness probe " +
+				`port of a running CoreDNS pod in kube-system, got "10.42.0.5 health"` + "\n"},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -262,7 +318,7 @@ func TestRunSettings(t *testing.T) {
 	valid := func() sandbox.Settings {
 		return sandbox.Settings{
 			sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer,
-			sandbox.KeyZoneURL: "https://zone.example.com", sandbox.KeyUserEmail: email,
+			sandbox.KeyZoneURL: zoneURL, sandbox.KeyUserEmail: email,
 		}
 	}
 	tests := []struct {
@@ -287,6 +343,7 @@ func TestRunSettings(t *testing.T) {
 			"yes",
 			`KEYCARD_LOCAL_ZONE_ON_HOST must be true or empty (got "yes")`,
 		},
+		{"image tag latest", sandbox.KeyImageTag, "latest", "KEYCARD_LOCAL_IMAGE_TAG must not be latest"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -380,22 +437,26 @@ func TestCheckTargetFor(t *testing.T) {
 // TestRun runs the whole flow against fake tools and the zone-setup output
 // of an earlier run. The pinned helm renders the repository's sandbox chart.
 // A run that fails must make exactly the calls in wantCalls, so each row
-// shows the step Run stops at. A whole run must make each call in wantCalls.
+// shows the step Run stops at. A whole run must make each call in wantCalls
+// and none in notCalls. Without KEYCARD_LOCAL_IMAGE_TAG, the pod runs the
+// images the charts pin and Run does not import images. With it, Run imports
+// the images at that tag.
 func TestRun(t *testing.T) {
 	t.Parallel()
 	const (
-		images = "ghcr.io/keycardai/egress-netsetup:local ghcr.io/keycardai/egress-proxy:local" +
-			" ghcr.io/keycardai/sandbox-base:local"
 		dockerCall = "docker KUBERC= version --format {{.Server.Version}}\n"
 		inspects   = "docker KUBERC= image inspect ghcr.io/keycardai/egress-netsetup:local\n" +
 			"docker KUBERC= image inspect ghcr.io/keycardai/egress-proxy:local\n" +
 			"docker KUBERC= image inspect ghcr.io/keycardai/sandbox-base:local\n"
-		importCall = "k3d KUBERC= image import --cluster asp " + images + "\n"
-		kube       = "kubectl KUBERC=off --context k3d-asp --namespace agents "
-		imported   = dockerCall + listCall + discoveryCall + mintCalls + inspects + importCall
+		importCall = "k3d KUBERC= image import --cluster asp ghcr.io/keycardai/egress-netsetup:local" +
+			" ghcr.io/keycardai/egress-proxy:local ghcr.io/keycardai/sandbox-base:local\n"
+		kube         = "kubectl KUBERC=off --context k3d-asp --namespace agents "
+		bootstrapped = dockerCall + listCall + discoveryCall + mintCalls
+		imported     = bootstrapped + inspects + importCall
 	)
 	tests := []struct {
 		name    string
+		tag     string
 		sandbox fakeSandbox
 		// noDocker makes docker a path that does not exist.
 		noDocker  bool
@@ -403,6 +464,9 @@ func TestRun(t *testing.T) {
 		want      []error
 		wantText  string
 		wantCalls []string
+		notCalls  []string
+		// wantImages are the images the applied pod runs.
+		wantImages []string
 	}{
 		{
 			name:     "docker missing",
@@ -413,6 +477,7 @@ func TestRun(t *testing.T) {
 		},
 		{
 			name:      "image missing",
+			tag:       devTag,
 			sandbox:   with(func(f *fakeSandbox) { f.missingImage = "ghcr.io/keycardai/egress-proxy:local" }),
 			want:      []error{sandbox.ErrImages},
 			wantText:  "ghcr.io/keycardai/egress-proxy:local. Build them in the egress-proxy repository",
@@ -420,6 +485,7 @@ func TestRun(t *testing.T) {
 		},
 		{
 			name:      "no zone-setup output",
+			tag:       devTag,
 			sandbox:   healthy(),
 			want:      []error{sandbox.ErrZoneSetup},
 			wantText:  "zone-setup.yaml is missing or empty. Run without --skip-zone-setup",
@@ -431,7 +497,7 @@ func TestRun(t *testing.T) {
 			output:    strings.ReplaceAll(zoneSetupOutput, "  provider_id: provider-1\n", ""),
 			want:      []error{sandbox.ErrZoneSetup},
 			wantText:  "zone-setup.yaml has no k8s_sandbox.provider_id. Run without --skip-zone-setup",
-			wantCalls: []string{imported},
+			wantCalls: []string{bootstrapped},
 		},
 		{
 			name:      "zone-setup output without a client id",
@@ -439,19 +505,32 @@ func TestRun(t *testing.T) {
 			output:    strings.ReplaceAll(zoneSetupOutput, "  client_id: client-1\n", ""),
 			want:      []error{sandbox.ErrZoneSetup},
 			wantText:  "zone-setup.yaml has no sandbox_user_access[0].client_id. Run without --skip-zone-setup",
-			wantCalls: []string{imported},
+			wantCalls: []string{bootstrapped},
 		},
 		{
 			name:    "whole flow",
 			sandbox: healthy(),
 			output:  zoneSetupOutput,
 			wantCalls: []string{
-				imported,
+				bootstrapped,
 				"helm KUBERC=off upgrade --install keycard-sandbox ",
 				"kubectl KUBERC=off --context k3d-asp apply --namespace agents -f -\n" +
 					kube + "wait --for=create pod/" + userID + " --timeout=120s\n" +
 					kube + "wait --for=condition=Ready pod/" + userID + " --timeout=300s\n" +
 					kube + "exec " + userID + " -c agent -- curl",
+			},
+			notCalls:   []string{"docker KUBERC= image", "image import"},
+			wantImages: pinnedImages(),
+		},
+		{
+			name:      "images at a tag",
+			tag:       devTag,
+			sandbox:   healthy(),
+			output:    zoneSetupOutput,
+			wantCalls: []string{imported},
+			wantImages: []string{
+				"ghcr.io/keycardai/egress-netsetup:local", "ghcr.io/keycardai/egress-proxy:local",
+				"ghcr.io/keycardai/sandbox-base:local",
 			},
 		},
 	}
@@ -460,17 +539,10 @@ func TestRun(t *testing.T) {
 			t.Parallel()
 			local, calls := newLocal(t, sandbox.Settings{
 				sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer,
-				sandbox.KeyZoneURL: "https://zone.example.com", sandbox.KeyUserEmail: email,
+				sandbox.KeyZoneURL: zoneURL, sandbox.KeyUserEmail: email, sandbox.KeyImageTag: tc.tag,
 			}, tc.sandbox.script())
 			if tc.noDocker {
-				tool, missing := local.Tool, filepath.Join(t.TempDir(), "docker")
-				local.Tool = func(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
-					if name == "docker" {
-						//nolint:gosec // G204: the path is the test's own missing file.
-						return exec.CommandContext(ctx, missing, args...), nil
-					}
-					return tool(ctx, name, args...)
-				}
+				removeDocker(t, local)
 			}
 			out := &bytes.Buffer{}
 			local.Out = out
@@ -492,17 +564,50 @@ func TestRun(t *testing.T) {
 					t.Fatalf("calls lack %q\n%s", want, got)
 				}
 			}
+			for _, absent := range tc.notCalls {
+				if strings.Contains(got, absent) {
+					t.Errorf("calls have %q\n%s", absent, got)
+				}
+			}
 			checkRunWrote(t, local.Root, out.String())
+			checkImages(t, local.Root, tc.wantImages)
 		})
 	}
 }
 
-// checkRunWrote checks that the output reports what a whole run imported and
-// wrote, and that those files exist under root.
+// removeDocker makes local run docker from a path that does not exist.
+func removeDocker(t *testing.T, local *sandbox.Local) {
+	t.Helper()
+	tool, missing := local.Tool, filepath.Join(t.TempDir(), "docker")
+	local.Tool = func(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
+		if name == "docker" {
+			//nolint:gosec // G204: the path is the test's own missing file.
+			return exec.CommandContext(ctx, missing, args...), nil
+		}
+		return tool(ctx, name, args...)
+	}
+}
+
+// checkImages checks that the applied sandbox pod runs images.
+func checkImages(t *testing.T, root string, images []string) {
+	t.Helper()
+	path := filepath.Join(root, "local", "out", "sandbox.yaml")
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: the path is the test's own file.
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, image := range images {
+		if !strings.Contains(string(raw), "image: "+image+"\n") {
+			t.Errorf("local/out/sandbox.yaml lacks the image %q", image)
+		}
+	}
+}
+
+// checkRunWrote checks that the output reports what a whole run wrote, and
+// that those files exist under root.
 func checkRunWrote(t *testing.T, root, out string) {
 	t.Helper()
 	for _, line := range []string{
-		"Imported 3 images into the k3d cluster asp.\n",
 		"Wrote local/out/install.values.yaml and local/out/sandbox.values.yaml.\n",
 		"Wrote the applied manifests to local/out/sandbox.yaml.\n",
 	} {

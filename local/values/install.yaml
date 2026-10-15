@@ -1,18 +1,13 @@
-# Install chart values for the local k3d cluster. `sandbox run` passes this
-# file, then local/out/install.values.yaml. That file holds the values that
-# come from the running cluster and local.env: zoneURL, the Docker network
-# gateway in hostAliases and network.allowCIDRs, and zoneTrust when
-# KEYCARD_LOCAL_CA_FILE is set.
-
-# Imported into the k3d node with `k3d image import`. A tag other than latest
-# defaults imagePullPolicy to IfNotPresent, so nothing is pulled.
-images:
-  netsetup: ghcr.io/keycardai/egress-netsetup:local
-  proxy: ghcr.io/keycardai/egress-proxy:local
-  agent: ghcr.io/keycardai/sandbox-base:local
+# Install chart values for `sandbox run`. It passes this file, then
+# local/out/install.values.yaml. That file holds the values that come from
+# the running cluster and local.env: zoneURL, the images when
+# KEYCARD_LOCAL_IMAGE_TAG is set, the Docker network gateway in hostAliases
+# and network.allowCIDRs, zoneTrust when KEYCARD_LOCAL_CA_FILE is set, and
+# network.clusterCIDRs for an existing cluster.
 
 network:
   # The k3s default pod and service ranges (https://docs.k3s.io/cli/server).
+  # For an existing cluster, KEYCARD_LOCAL_CLUSTER_CIDRS replaces them.
   clusterCIDRs:
     - 10.42.0.0/16
     - 10.43.0.0/16

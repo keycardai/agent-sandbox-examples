@@ -1,15 +1,13 @@
-# Sandbox chart values for the local k3d cluster. `sandbox run` passes
+# Sandbox chart values for `sandbox run`. It passes
 # sandbox/values.example.yaml for the endpoints, then this file, then
-# local/out/sandbox.values.yaml with zoneURL, hostAliases, and zoneTrust when
-# KEYCARD_LOCAL_CA_FILE is set. Every pod key here must hold the value
-# local/values/install.yaml gives it.
-
-images:
-  netsetup: ghcr.io/keycardai/egress-netsetup:local
-  proxy: ghcr.io/keycardai/egress-proxy:local
-  agent: ghcr.io/keycardai/sandbox-base:local
+# local/out/sandbox.values.yaml with zoneURL, hostAliases, the images when
+# KEYCARD_LOCAL_IMAGE_TAG is set, zoneTrust when KEYCARD_LOCAL_CA_FILE is
+# set, and policy.clusterCIDRs for an existing cluster. Every pod key here
+# must hold the value local/values/install.yaml gives it.
 
 policy:
+  # The k3s default pod and service ranges. For an existing cluster,
+  # KEYCARD_LOCAL_CLUSTER_CIDRS replaces them.
   clusterCIDRs:
     - 10.42.0.0/16
     - 10.43.0.0/16

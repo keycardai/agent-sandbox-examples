@@ -19,6 +19,7 @@ import (
 	"github.com/keycardai/keycard-go"
 	yaml "go.yaml.in/yaml/v3"
 
+	"github.com/keycardai/agent-sandbox-examples/internal/pinned"
 	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
@@ -35,6 +36,7 @@ const (
 	// Choice values that cannot match a zone ID, user email, provider
 	// identifier or kubeconfig context.
 	newZone    = "\x00new"
+	newCluster = "\x00k3d"
 	checkAgain = "\x00again"
 	// gitHubToken is the GitHub choice for a personal access token.
 	gitHubToken = "\x00token"
@@ -201,6 +203,8 @@ func (w *wizard) clusterSummary() string {
 	settings := w.l.Settings
 	k3d := "a local k3d cluster, " + cmp.Or(settings[KeyCluster], defaultCluster) + ", with "
 	switch {
+	case settings[KeyKubeContext] != "":
+		return "the existing cluster in the kubeconfig context " + settings[KeyKubeContext]
 	case settings[KeyTunnel] != "":
 		return k3d + "the named tunnel " + settings[KeyTunnel] + " at " + settings[KeyIssuer]
 	case settings[KeyIssuer] != "":
@@ -222,7 +226,7 @@ func (w *wizard) runSections(ctx context.Context, change map[string]bool) error 
 	}{
 		{sectionZone, w.askZone, w.keepZone},
 		{sectionCredentials, w.chooseResources, nil},
-		{sectionCluster, w.chooseIssuer, w.keepCluster},
+		{sectionCluster, w.chooseCluster, w.keepCluster},
 	} {
 		run := section.keep
 		if change[section.name] {
@@ -312,7 +316,7 @@ func (w *wizard) keepZone(ctx context.Context) error {
 
 // keepCluster keeps the cluster and the issuer settings from local.env.
 func (w *wizard) keepCluster(context.Context) error {
-	for _, key := range []string{KeyIssuer, KeyTunnel} {
+	for _, key := range []string{KeyIssuer, KeyTunnel, KeyKubeContext, KeyImageTag, KeyClusterCIDRs} {
 		w.env[key] = w.l.Settings[key]
 	}
 	return nil
@@ -499,7 +503,7 @@ func (w *wizard) askOnHost(ctx context.Context) error {
 		}
 	}
 	if onHost {
-		w.env[KeyZoneOnHost] = "true"
+		w.env[KeyZoneOnHost] = settingTrue
 		_, _ = fmt.Fprintln(w.l.Out, "The sandbox connects to the zone through the Docker host.")
 	}
 	return nil
@@ -711,6 +715,69 @@ func (w *wizard) chooseOpenRouter(ctx context.Context) error {
 	}
 	w.out.Resources = append(w.out.Resources, resource)
 	return nil
+}
+
+// chooseCluster asks whether to create a local k3d cluster or use an
+// existing one from the kubeconfig. It keeps the saved image tag.
+func (w *wizard) chooseCluster(ctx context.Context) error {
+	contexts, err := w.l.kubeContexts(ctx)
+	if err != nil {
+		return err
+	}
+	options := []Option{{Label: "A new local k3d cluster", Value: newCluster}}
+	for _, name := range contexts {
+		options = append(options, Option{Label: "Existing cluster in kubeconfig context " + name, Value: name})
+	}
+	value := cmp.Or(w.l.Settings[KeyKubeContext], newCluster)
+	if !slices.Contains(contexts, value) {
+		value = newCluster
+	}
+	choice, err := w.choose(ctx, "Which cluster runs the sandbox?", options, value)
+	if err != nil {
+		return err
+	}
+	w.env[KeyImageTag] = w.l.Settings[KeyImageTag]
+	if choice == newCluster {
+		return w.chooseIssuer(ctx)
+	}
+	return w.existingCluster(ctx, choice)
+}
+
+// existingCluster reads the cluster's issuer and asks for the cluster's
+// ranges.
+func (w *wizard) existingCluster(ctx context.Context, kubeContext string) error {
+	existing := &Local{Root: w.l.Root, Settings: Settings{KeyKubeContext: kubeContext}, Tool: w.l.Tool}
+	issuerURL, err := existing.clusterIssuer(ctx, kubeContext, "")
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(w.l.Out, "The cluster's issuer is %s. The zone fetches the cluster's keys from it. "+
+		"It must be reachable from the internet.\n", issuerURL)
+	if w.env[KeyZoneOnHost] == settingTrue {
+		return fmt.Errorf("%w: the zone is on this machine or a private network, "+
+			"and an existing cluster cannot connect to it", ErrExisting)
+	}
+	ranges, err := w.input(ctx, "The cluster's pod and service ranges in CIDR form, comma-separated. "+
+		"For example: 10.0.0.0/16,172.20.0.0/16",
+		w.l.Settings[KeyClusterCIDRs], checkCIDRs)
+	if err != nil {
+		return err
+	}
+	w.env[KeyKubeContext], w.env[KeyClusterCIDRs] = kubeContext, ranges
+	return nil
+}
+
+// kubeContexts lists the contexts in the kubeconfig.
+func (l *Local) kubeContexts(ctx context.Context) ([]string, error) {
+	cmd, err := l.Tool(ctx, "kubectl", "config", "get-contexts", "--output=name")
+	if err != nil {
+		return nil, err
+	}
+	out, err := pinned.Run(cmd, nil)
+	if err != nil {
+		return nil, fmt.Errorf("listing the kubeconfig contexts: %w", err)
+	}
+	return strings.Fields(string(out)), nil
 }
 
 // chooseIssuer asks how to publish the cluster's issuer.
@@ -952,6 +1019,17 @@ func checkCAFile(answer string) error {
 func checkTunnelName(answer string) error {
 	if !tunnelName.MatchString(answer) {
 		return fmt.Errorf("%w: use only letters, digits, and . _ -", ErrAnswer)
+	}
+	return nil
+}
+
+func checkCIDRs(answer string) error {
+	ranges, bad := parseCIDRs(answer)
+	if bad != "" {
+		return fmt.Errorf("%w: %q is not an address range such as 10.0.0.0/16", ErrAnswer, bad)
+	}
+	if len(ranges) == 0 {
+		return fmt.Errorf("%w: required", ErrAnswer)
 	}
 	return nil
 }

@@ -51,6 +51,9 @@ var (
 // It deletes a file that is not locked. The issuer is fixed when the cluster
 // is created, so a new URL needs a new cluster.
 func (l *Local) Tunnel(ctx context.Context, listen string) error {
+	if err := l.requireK3d("tunnel"); err != nil {
+		return err
+	}
 	if err := l.checkTunnel(listen); err != nil {
 		return err
 	}
