@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	yaml "go.yaml.in/yaml/v3"
+
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 )
 
@@ -95,6 +97,22 @@ func TestInitAgents(t *testing.T) {
 	if !slices.ContainsFunc(ask.asked, func(q string) bool { return strings.HasPrefix(q, "Keep the saved GitHub") }) {
 		t.Errorf("back in %s, setup asked %q; want it to offer the saved GitHub token", sandbox.DefaultScenario, ask.asked)
 	}
+}
+
+// editConfig changes the config run saved, and loads it again.
+func editConfig(t *testing.T, run initRun, change func(config *sandbox.Config)) {
+	t.Helper()
+	config, err := sandbox.LoadConfig(run.local.Store.Path())
+	if err != nil || config == nil {
+		t.Fatalf("LoadConfig = %v, %v; want the saved settings", config, err)
+	}
+	change(config)
+	raw, err := yaml.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, run.local.Store.Path(), string(raw))
+	reload(t, run.local, run.keychain)
 }
 
 // checkAnswers requires the saved settings to hold the answer repo:

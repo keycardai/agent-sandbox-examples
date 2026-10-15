@@ -249,11 +249,18 @@ func (l *Local) upMirror(ctx context.Context, state *upRun) error {
 	})
 }
 
-// upCheckIssuer runs check-issuer until it passes or opts.IssuerWait runs
-// out. It retries only a failed discovery fetch, the error a tunnel gives
-// while it starts. It returns any other error at once.
+// upCheckIssuer runs check-issuer until it passes, opts.IssuerWait runs
+// out, or a background step stops.
 func (l *Local) upCheckIssuer(ctx context.Context, state *upRun) error {
-	deadline := time.Now().Add(state.opts.IssuerWait)
+	return l.checkIssuerUntil(ctx, state.opts.IssuerWait, state.services)
+}
+
+// checkIssuerUntil runs check-issuer until it passes or wait runs out. It
+// retries only a failed discovery fetch, the error a tunnel gives while it
+// starts. It returns any other error at once, and the first error from
+// stopped. A nil stopped never receives.
+func (l *Local) checkIssuerUntil(ctx context.Context, wait time.Duration, stopped <-chan error) error {
+	deadline := time.Now().Add(wait)
 	for {
 		err := l.CheckIssuer(ctx, "", "")
 		if err == nil || !errors.Is(err, issuer.ErrFetch) || time.Now().Add(issuerRetry).After(deadline) {
@@ -263,7 +270,7 @@ func (l *Local) upCheckIssuer(ctx context.Context, state *upRun) error {
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("waiting for the issuer: %w", ctx.Err())
-		case err = <-state.services:
+		case err = <-stopped:
 			return err
 		case <-time.After(issuerRetry):
 		}

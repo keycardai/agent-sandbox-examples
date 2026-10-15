@@ -304,7 +304,7 @@ func TestCheck(t *testing.T) {
 			local, _ := newLocal(t, sandbox.Settings{}, tc.sandbox.script())
 			if tc.openRouter {
 				local.Store = sandbox.NewStore(sandbox.NoConfig, &sandbox.Config{Demo: sandbox.ConfigDemo{
-					Credentials: []sandbox.ConfigCredential{{Identifier: "https://openrouter.ai/api/v1", Secret: "k"}},
+					Credentials: []sandbox.ConfigCredential{{Identifier: openRouterAPI, Secret: "k"}},
 				}}, nil)
 			}
 			out := &bytes.Buffer{}
@@ -503,7 +503,7 @@ func TestRun(t *testing.T) {
 			tag:       devTag,
 			sandbox:   healthy(),
 			want:      []error{sandbox.ErrZoneSetup},
-			wantText:  "zone-setup.yaml is missing or empty. Run without --skip-zone-setup",
+			wantText:  "zone-setup.yaml: no such file or directory. Run without --skip-zone-setup",
 			wantCalls: []string{imported},
 		},
 		{
@@ -963,7 +963,7 @@ func TestRunSecrets(t *testing.T) {
 				Zone:    sandbox.ConfigZone{ID: zoneID, URL: zoneURL},
 				Agents:  sandbox.ConfigAgents{Default: email},
 				Demo: sandbox.ConfigDemo{Name: sandbox.DefaultScenario, Credentials: []sandbox.ConfigCredential{
-					{Identifier: "https://openrouter.ai/api/v1", Name: "OpenRouter", Secret: openRouterSecret},
+					{Identifier: openRouterAPI, Name: openRouterName, Secret: openRouterSecret},
 				}},
 				Cluster: sandbox.ConfigCluster{Name: cluster, Issuer: testIssuer},
 			}, keychain)

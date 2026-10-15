@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
@@ -34,6 +35,10 @@ const (
 	usersQuestion        = "Who does the agent act as?"
 	// repoQuestion is the agent scenario's text question.
 	repoQuestion = "Repository"
+	// openRouterAPI and openRouterName are the OpenRouter resource the
+	// demos call.
+	openRouterAPI  = "https://openrouter.ai/api/v1"
+	openRouterName = "OpenRouter"
 	// The secrets setup keeps, by name, and what the tests type for them.
 	openRouterSecret = "openrouter-api-key" //nolint:gosec // G101: a secret's name, not a credential.
 	ghpToken         = "ghp-token"
@@ -441,6 +446,10 @@ func TestInitWithoutSaving(t *testing.T) {
 		t.Errorf("keychain = %v, want nothing saved", slices.Collect(maps.Keys(secrets)))
 	}
 	checkContains(t, "output", out.String(), []string{"Kept the settings for this session. Nothing was saved.\n"})
+	local.UseConfig()
+	if problems := local.NewSession("127.0.0.1:8480", time.Second).Problems(); len(problems) != 0 {
+		t.Errorf("problems = %v, want none: the session has the token", problems)
+	}
 }
 
 // TestInitWithoutAFile runs Init with --config -: it does not offer to save
@@ -799,6 +808,36 @@ func TestInitRerunRefusedSecret(t *testing.T) {
 		t.Errorf("asked %q, want %q once", ask.asked, keepQuestion)
 	}
 	checkKeychain(t, run.keychain, map[string]string{managementName: goodSecret})
+}
+
+// sectionAsker records the parts of the settings Init says it asks about.
+type sectionAsker struct {
+	*scriptedAsker
+
+	sections []string
+}
+
+func (a *sectionAsker) Section(id string) { a.sections = append(a.sections, id) }
+
+// TestInitSections asks only the section named, without asking what to
+// change, and tells a SectionAsker each part it asks about. Saved settings
+// stay saved without the question.
+func TestInitSections(t *testing.T) {
+	t.Parallel()
+	run := firstRun(t)
+	ask := &sectionAsker{scriptedAsker: &scriptedAsker{t: t}}
+	run.local.Ask = ask
+	if _, err := run.local.InitSections(t.Context(), sandbox.SectionScenario); err != nil {
+		t.Fatal(err)
+	}
+	checkNotAsked(t, ask.scriptedAsker, []string{changeQuestion, sandbox.QuestionSave})
+	want := []string{sandbox.SectionScenario, sandbox.SectionCredentials, sandbox.SectionPolicy}
+	if !slices.Equal(ask.sections, want) {
+		t.Errorf("sections = %q, want %q", ask.sections, want)
+	}
+	run.local.Ask = nil
+	_, err := run.local.InitSections(t.Context(), sandbox.SectionScenario)
+	checkErr(t, err, []error{sandbox.ErrNoTerminal}, "")
 }
 
 // TestInitWithoutATerminal refuses to ask without a terminal, and names the
