@@ -35,12 +35,10 @@ var (
 )
 
 var (
-	// k3dColor is a terminal color code. k3d colors its log lines even when
-	// its output is not a terminal.
-	k3dColor = regexp.MustCompile(`\x1b\[[0-9;]*m`)
-	// k3dFailure is a k3d log line at the error or fatal level, such as
-	// FATA[0000] followed by the message.
-	k3dFailure = regexp.MustCompile(`^(?:ERRO|FATA)\[\d+\]\s*(.+)$`)
+	// k3dFailure is a k3d logfmt line at the error or fatal level, such as
+	// time="…" level=fatal msg="Cluster creation FAILED". The message is
+	// quoted when it has a space or a quote.
+	k3dFailure = regexp.MustCompile(`\blevel=(?:error|fatal) msg=("(?:[^"\\]|\\.)*"|\S*)`)
 	// issuerHost matches https:// and a host of lowercase ASCII DNS labels.
 	issuerHost = regexp.MustCompile(`^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:|/|$)`)
 	// issuerShape also allows a port and a path of unreserved segments.
@@ -365,12 +363,14 @@ func tokenIssuer(token string) string {
 }
 
 // k3d runs k3d with its output on out. When k3d fails, the error names the
-// command and has the first error k3d logged.
+// command and has the first error k3d logged. k3d logs logfmt, without
+// colors.
 func (l *Local) k3d(ctx context.Context, out io.Writer, args ...string) error {
 	cmd, err := l.Tool(ctx, "k3d", args...)
 	if err != nil {
 		return err
 	}
+	cmd.Env = append(cmd.Environ(), "LOG_COLORS=false")
 	var logged bytes.Buffer
 	both := io.MultiWriter(out, &logged)
 	cmd.Stdout, cmd.Stderr = both, both
@@ -393,15 +393,20 @@ func k3dCommand(args []string) string {
 	return strings.Join(args[:end], " ")
 }
 
-// k3dError returns the first error or fatal line in k3d's output, without its
-// colors and level, or "" when there is none. The first one names the cause.
-// After a failed create, k3d rolls back and then logs a fatal line without
-// the cause.
+// k3dError returns the message of the first error or fatal line in k3d's
+// output, or "" when there is none. The first one names the cause. After a
+// failed create, k3d rolls back and then logs a fatal line without the
+// cause.
 func k3dError(logged string) string {
-	for line := range strings.Lines(k3dColor.ReplaceAllString(logged, "")) {
-		if match := k3dFailure.FindStringSubmatch(strings.TrimSpace(line)); match != nil {
-			return match[1]
+	for line := range strings.Lines(logged) {
+		match := k3dFailure.FindStringSubmatch(line)
+		if match == nil {
+			continue
 		}
+		if message, err := strconv.Unquote(match[1]); err == nil {
+			return strings.TrimSpace(message)
+		}
+		return match[1]
 	}
 	return ""
 }

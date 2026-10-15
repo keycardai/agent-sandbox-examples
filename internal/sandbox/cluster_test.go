@@ -32,11 +32,22 @@ const (
 	// removeQuestion is the question Bootstrap asks about leftover, and its
 	// default.
 	removeQuestion = "Remove k3d-asp-tools, left over from an earlier k3d cluster asp? [default false]"
-	// createFails is a k3d create that logs as k3d does, in color, and fails.
+	// createFails is a k3d create that fails. With LOG_COLORS=false it logs
+	// logfmt, as k3d does, and otherwise it logs nothing.
 	createFails = `[[ "$FAKE_TOOL $1 $2" == "k3d cluster create" ]] && {
-	printf '\e[36mINFO\e[0m[0000] Prep: Network\n'
-	printf '\e[31mERRO\e[0m[0001] Failed Cluster Start: port 6443 is in use\n'
-	printf '\e[31mFATA\e[0m[0002] Cluster creation FAILED, all changes have been rolled back!  \n'
+	if [[ ${LOG_COLORS:-} == false ]]; then
+		at='time="2026-10-15T11:56:37-04:00"'
+		printf '%s level=info msg="Prep: Network"\n' "$at"
+		printf '%s level=error msg="Failed Cluster Start: port \\"6443\\" is in use"\n' "$at"
+		printf '%s level=fatal msg="Cluster creation FAILED, all changes have been rolled back!"\n' "$at"
+	fi
+	exit 1
+}
+`
+	// createFailsBare is a k3d create that fails with a message logfmt does
+	// not quote.
+	createFailsBare = `[[ "$FAKE_TOOL $1 $2" == "k3d cluster create" ]] && {
+	printf 'time="2026-10-15T11:56:38-04:00" level=fatal msg=refused\n'
 	exit 1
 }
 `
@@ -167,9 +178,14 @@ func TestBootstrap(t *testing.T) {
 		},
 		{
 			name: "create fails", list: "[]", before: createFails,
-			wantText:  "k3d cluster create asp: Failed Cluster Start: port 6443 is in use: exit status 1",
+			wantText:  `k3d cluster create asp: Failed Cluster Start: port "6443" is in use: exit status 1`,
 			wantCalls: listCall + leftoversCall + createCall,
 			wantOut:   "Cluster creation FAILED",
+		},
+		{
+			name: "create fails with a bare message", list: "[]", before: createFailsBare,
+			wantText:  "k3d cluster create asp: refused: exit status 1",
+			wantCalls: listCall + leftoversCall + createCall,
 		},
 		{
 			name: "present with the issuer", list: present, discovered: testIssuer, minted: testIssuer,
