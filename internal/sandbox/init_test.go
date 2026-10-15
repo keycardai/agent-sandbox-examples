@@ -631,9 +631,10 @@ func TestInitRerunWithAccountEnv(t *testing.T) {
 	checkConfigKept(t, run)
 }
 
-// TestInitSaveFails stops when the keychain refuses a secret. It puts back
-// the secrets it saved before that one, and writes no settings file, so
-// the keychain and the file still agree.
+// TestInitSaveFails returns ErrNotSaved when the keychain refuses a secret.
+// It puts back the secrets it saved before that one, and writes no settings
+// file, so the keychain and the file still agree. The store keeps the
+// settings for the session.
 func TestInitSaveFails(t *testing.T) {
 	t.Parallel()
 	server, caFile := fakeManagement(t, "https://192.0.2.10", noGitHubProviders, "")
@@ -644,7 +645,11 @@ func TestInitSaveFails(t *testing.T) {
 	answers["GitHub personal access token"] = []string{ghpToken}
 	local.Ask = &scriptedAsker{t: t, answers: answers}
 	_, err := local.Init(t.Context())
-	checkErr(t, err, []error{sandbox.ErrKeychain, errRefused}, "")
+	checkErr(t, err, []error{sandbox.ErrNotSaved, sandbox.ErrKeychain, errRefused}, "")
+	if local.Store.Config() == nil || local.Store.Saved() {
+		t.Errorf("config = %v, saved = %t; want the settings for this session only",
+			local.Store.Config(), local.Store.Saved())
+	}
 	if len(keychain.secrets) != 0 {
 		t.Errorf(
 			"keychain = %v, want the secrets saved before the refusal put back",

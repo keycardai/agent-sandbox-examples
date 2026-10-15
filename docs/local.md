@@ -66,8 +66,8 @@ settings file you name with `--config` keeps its secrets apart, as
 `sandbox/<id>/<name>`. The config file never holds a secret. On Linux the keychain is the Secret
 Service of your desktop session. When no keychain answers, as on Linux
 without a Secret Service, setup says so and does not offer to save. When the keychain refuses, as it does when
-it is locked or you deny access, setup stops and says so, and writes
-nothing.
+it is locked or you deny access, setup says so and writes nothing. `init`
+then exits with the error, and `up` goes on with the settings for the run.
 
 Saying no keeps the settings until you quit. Setup writes nothing, and asks
 again next time. `sandbox.example.yaml` documents every key of the

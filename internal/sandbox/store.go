@@ -36,6 +36,9 @@ var (
 	// ErrKeychain means the keychain refused to read, save or delete a
 	// secret.
 	ErrKeychain = errors.New("the keychain refused")
+	// ErrNotSaved means saving the settings failed. The store keeps them
+	// for the session.
+	ErrNotSaved = errors.New("the settings are not saved")
 	// errKeychainTimeout means a keychain call did not return in time.
 	errKeychainTimeout = errors.New("the keychain did not answer")
 )

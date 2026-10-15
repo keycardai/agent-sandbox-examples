@@ -204,8 +204,13 @@ func upCommand() *cli.Command {
 					return fmt.Errorf("%w. Run %s in a terminal, and save the settings",
 						errNotInitialized, local.Command("init"))
 				}
+				// Saving is for later runs. When it fails, up goes on with the
+				// settings setup keeps for this one.
 				result, err := runInit(ctx, local)
-				if err != nil {
+				switch {
+				case errors.Is(err, sandbox.ErrNotSaved):
+					_, _ = fmt.Fprintf(cmd.Writer, "%v\nUp goes on with the settings for this run.\n", err)
+				case err != nil:
 					return err
 				}
 				local.UseConfig()

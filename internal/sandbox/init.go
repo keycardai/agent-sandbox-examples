@@ -177,10 +177,8 @@ func (w *wizard) run(ctx context.Context, change map[string]bool) (InitResult, e
 	if err != nil {
 		return InitResult{}, err
 	}
-	if err = w.write(save); err != nil {
-		return InitResult{}, err
-	}
-	return InitResult{ReplaceActive: replace, Saved: w.l.Store.Saved()}, nil
+	err = w.write(save)
+	return InitResult{ReplaceActive: replace, Saved: w.l.Store.Saved()}, err
 }
 
 // QuestionSave is the question Init asks to save the settings.
@@ -1209,7 +1207,8 @@ func (w *wizard) askReplaceActive(ctx context.Context) (bool, error) {
 }
 
 // write keeps what setup asked in the store as the config, and saves it
-// when save is set.
+// when save is set. When saving fails, it returns ErrNotSaved, and the
+// store keeps the config for the session.
 func (w *wizard) write(save bool) error {
 	agents := ConfigAgents{Default: w.env[KeyUserEmail], Demos: w.demos}
 	w.answers.keepUsers(agents.everyone())
@@ -1225,7 +1224,7 @@ func (w *wizard) write(save bool) error {
 		return nil
 	}
 	if err := store.save(); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrNotSaved, err)
 	}
 	_, _ = fmt.Fprintf(w.l.Out, "Saved the settings in %s, and the secrets in %s.\n", HomeRelative(store.Path()),
 		store.KeychainWhere())
