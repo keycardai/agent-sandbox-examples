@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"sigs.k8s.io/yaml"
 
@@ -608,16 +609,50 @@ func (l *Local) waitForPod(ctx context.Context, cluster, namespace, pod string) 
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrPod, err)
 	}
-	_, err = l.kubectl(ctx, cluster, nil, "--namespace", namespace,
-		"wait", "--for=condition=Ready", "pod/"+pod, "--timeout=300s")
-	if err == nil {
+	if err = l.waitReady(ctx, cluster, namespace, pod); err == nil {
 		return nil
 	}
 	for _, container := range []string{"egress-netsetup", "egress-proxy", "agent"} {
 		logs, _ := l.kubectl(ctx, cluster, nil, "--namespace", namespace, "logs", pod, "-c", container, "--tail=40")
 		_, _ = fmt.Fprintf(l.Out, "--- %s\n%s", container, logs)
 	}
-	return fmt.Errorf("%w: %s did not become ready: %w", ErrPod, pod, err)
+	return err
+}
+
+// podReadyRound is how long each kubectl wait lasts, and podReadyWait how
+// long waitReady waits in all.
+const (
+	podReadyRound = 5 * time.Second
+	podReadyWait  = 5 * time.Minute
+)
+
+// waitReady waits up to podReadyWait for pod to become ready. It returns
+// early when the pod has stopped, as when the agent exits at startup, and the
+// error then has the agent's last log line.
+func (l *Local) waitReady(ctx context.Context, cluster, namespace, pod string) error {
+	deadline := time.Now().Add(podReadyWait)
+	for {
+		_, err := l.kubectl(ctx, cluster, nil, "--namespace", namespace,
+			"wait", "--for=condition=Ready", "pod/"+pod, "--timeout="+podReadyRound.String())
+		if err == nil {
+			return nil
+		}
+		out, phaseErr := l.kubectl(ctx, cluster, nil, "--namespace", namespace,
+			"get", "pod", pod, "-o", "jsonpath={.status.phase}")
+		switch phase := strings.TrimSpace(string(out)); {
+		case phaseErr == nil && (phase == "Failed" || phase == "Succeeded"):
+			stopped := fmt.Sprintf("%s stopped (%s) before it was ready", pod, phase)
+			last, _ := l.kubectl(ctx, cluster, nil, "--namespace", namespace, "logs", pod, "-c", "agent", "--tail=1")
+			if line := strings.TrimSpace(string(last)); line != "" {
+				stopped += ". The agent's last log line: " + line
+			}
+			return fmt.Errorf("%w: %s", ErrPod, stopped)
+		case phaseErr != nil, ctx.Err() != nil:
+			return fmt.Errorf("%w: %s did not become ready: %w", ErrPod, pod, err)
+		case time.Now().After(deadline):
+			return fmt.Errorf("%w: %s did not become ready within %s", ErrPod, pod, podReadyWait)
+		}
+	}
 }
 
 func (l *Local) outDir() string {
