@@ -216,6 +216,8 @@ type Store struct {
 	// version counts the changes, so that a reader can tell when the
 	// records changed.
 	version int
+	// err is why the records stopped coming, or nil.
+	err error
 }
 
 // Add keeps a record. Once the store holds maxRecords, it replaces the
@@ -233,11 +235,31 @@ func (s *Store) Add(record Record) {
 }
 
 // Reset drops every record, and keeps the records of pod that come after.
+// Another pod drops the error too.
 func (s *Store) Reset(pod string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if pod != s.pod {
+		s.err = nil
+	}
 	s.records, s.start, s.pod = nil, 0, pod
 	s.version++
+}
+
+// SetErr keeps why the records stopped coming, or nil once they come
+// again.
+func (s *Store) SetErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = err
+	s.version++
+}
+
+// Err returns why the records stopped coming, or nil.
+func (s *Store) Err() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.err
 }
 
 // Snapshot returns the records, oldest first, and the pod they are for.

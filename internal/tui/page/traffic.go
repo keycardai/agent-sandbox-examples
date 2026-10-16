@@ -16,8 +16,15 @@ const nameWidth, targetWidth = 12, 24
 
 // keycardLines says what the proxy did for each of the demo's endpoints,
 // which hosts it blocked, and how many names the agent looked up. There is
-// one line per endpoint and two more, however much traffic there is.
+// one line per endpoint and two more, however much traffic there is. When
+// the proxy's log cannot be read, it says why instead.
 func (s *Shared) keycardLines() []string {
+	if err := s.Traffic.Err(); err != nil {
+		return []string{
+			s.Styles.Failed.Render("✕ Cannot read the proxy's log: " + component.FirstLine(err.Error())),
+			s.Styles.Dim.Render("  The TUI tries again every few seconds."),
+		}
+	}
 	records, _ := s.Traffic.Snapshot()
 	uses, blocked := proxylog.Summarize(records, s.endpoints())
 	lines := make([]string, 0, len(uses)+half)

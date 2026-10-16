@@ -2,6 +2,7 @@ package tui
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -534,25 +535,16 @@ func (m *model) startTraffic() {
 
 // followTraffic follows the proxy's log in pod until ctx ends, and keeps
 // each audit record in store. Other log lines are left out. When kubectl
-// stops, it follows the log again streamRetry later.
+// stops, or cannot start, it keeps why in store and follows the log again
+// streamRetry later.
 func followTraffic(ctx context.Context, session *sandbox.Session, pod string, store *proxylog.Store) {
 	for ctx.Err() == nil {
 		store.Reset(pod)
-		cmd, err := session.LogsCommand(ctx, pod, page.ProxyContainer, trafficTail, true)
-		if err != nil {
-			return
-		}
-		stdout, err := cmd.StdoutPipe()
-		if err == nil {
-			err = cmd.Start()
-		}
-		if err == nil {
-			readRecords(stdout, store)
-			_ = cmd.Wait()
-		}
+		err := streamRecords(ctx, session, pod, store)
 		if ctx.Err() != nil {
 			return
 		}
+		store.SetErr(err)
 		select {
 		case <-ctx.Done():
 			return
@@ -561,13 +553,50 @@ func followTraffic(ctx context.Context, session *sandbox.Session, pod string, st
 	}
 }
 
-// readRecords reads the proxy's audit records from stdout into store.
-func readRecords(stdout io.Reader, store *proxylog.Store) {
-	_ = component.ReadLines(stdout, func(line string) {
+// streamRecords runs kubectl logs once, and reads the proxy's audit
+// records into store. It returns why kubectl stopped, with the first line
+// it wrote to standard error.
+func streamRecords(ctx context.Context, session *sandbox.Session, pod string, store *proxylog.Store) error {
+	cmd, err := session.LogsCommand(ctx, pod, page.ProxyContainer, trafficTail, true)
+	if err != nil {
+		return fmt.Errorf("following the proxy's log: %w", err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err == nil {
+		err = cmd.Start()
+	}
+	if err != nil {
+		return fmt.Errorf("following the proxy's log: %w", err)
+	}
+	readErr := readRecords(stdout, store)
+	if err = cmd.Wait(); err != nil {
+		if text := strings.TrimSpace(stderr.String()); text != "" {
+			return fmt.Errorf("kubectl logs: %w: %s", err, component.FirstLine(text))
+		}
+		return fmt.Errorf("kubectl logs: %w", err)
+	}
+	return readErr
+}
+
+// readRecords reads the proxy's audit records from stdout into store. The
+// first line it reads clears the store's error.
+func readRecords(stdout io.Reader, store *proxylog.Store) error {
+	reading := false
+	err := component.ReadLines(stdout, func(line string) {
+		if !reading {
+			reading = true
+			store.SetErr(nil)
+		}
 		if record, ok := proxylog.Parse([]byte(line)); ok {
 			store.Add(record)
 		}
 	})
+	if err != nil {
+		return fmt.Errorf("reading the proxy's log: %w", err)
+	}
+	return nil
 }
 
 // openEvents opens the zone's event log in the console, where the zone

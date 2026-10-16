@@ -17,6 +17,7 @@ import (
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/page"
+	"github.com/keycardai/agent-sandbox-examples/internal/tui/proxylog"
 )
 
 // Sample data the tests share.
@@ -319,6 +320,28 @@ func TestPollSkipsPodsWhenDown(t *testing.T) {
 	}
 	if msg, ok := batch[1]().(podsMsg); !ok || msg.rows != nil || msg.err != nil {
 		t.Errorf("pods read = %+v, want no pods and no error", msg)
+	}
+}
+
+// TestTrafficSaysWhyItCannotRead keeps why the proxy's log cannot be
+// read, and Home says it instead of showing no traffic.
+func TestTrafficSaysWhyItCannotRead(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	store := &proxylog.Store{}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go followTraffic(ctx, root.shared.Session, samplePod, store)
+	for deadline := time.Now().Add(5 * time.Second); store.Err() == nil && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if store.Err() == nil {
+		t.Fatal("no error from following a pod with no zone step, want one")
+	}
+	root.shared.Traffic.SetErr(store.Err())
+	if view := ansi.Strip(root.View().Content); !strings.Contains(view, "Cannot read the proxy's log") ||
+		strings.Contains(view, "not used yet") {
+		t.Errorf("Home says nothing of the error:\n%s", view)
 	}
 }
 

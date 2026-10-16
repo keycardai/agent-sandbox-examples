@@ -1,6 +1,7 @@
 package proxylog
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -28,5 +29,23 @@ func TestStoreRing(t *testing.T) {
 	store.Reset("pod-2")
 	if records, pod := store.Snapshot(); len(records) != 0 || pod != "pod-2" {
 		t.Errorf("after Reset: %d records for %q, want none for pod-2", len(records), pod)
+	}
+}
+
+// errLogs is an error a follower keeps in a store.
+var errLogs = errors.New("kubectl logs: exit status 1")
+
+// TestStoreErr keeps the error across a Reset for the same pod, and drops
+// it for another pod.
+func TestStoreErr(t *testing.T) {
+	t.Parallel()
+	var store Store
+	store.Reset("pod-1")
+	store.SetErr(errLogs)
+	if store.Reset("pod-1"); store.Err() == nil {
+		t.Error("Reset for the same pod dropped the error, want it kept")
+	}
+	if store.Reset("pod-2"); store.Err() != nil {
+		t.Errorf("after Reset for another pod: %v, want no error", store.Err())
 	}
 }
