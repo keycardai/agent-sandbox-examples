@@ -301,11 +301,7 @@ func (m *model) toggleBringUp() {
 
 // runChecks runs the checks step again, against the running sandbox.
 func (m *model) runChecks() {
-	if m.busy() {
-		return
-	}
-	if m.shared.Read && !m.shared.SandboxUp() {
-		m.shared.Notify("The sandbox is down. Press u to bring it up.", true)
+	if m.busy() || m.isDown() {
 		return
 	}
 	for i, row := range m.shared.Steps {
@@ -332,7 +328,7 @@ func (m *model) agent() tea.Cmd {
 }
 
 func (m *model) restartAgent() {
-	if m.busy() {
+	if m.busy() || m.isDown() {
 		return
 	}
 	name, session := m.shared.AgentName(), m.shared.Session
@@ -649,7 +645,7 @@ func openBrowser(ctx context.Context, address string) error {
 // back when it exits.
 func (m *model) openAgent(plain bool) tea.Cmd {
 	shared := m.shared
-	if m.busy() {
+	if m.busy() || m.isDown() {
 		return nil
 	}
 	cmd, err := shared.Session.ShellCommand(m.ctx, plain)

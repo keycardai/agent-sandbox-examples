@@ -244,6 +244,16 @@ func (m *model) agentActionKeys(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
+// isDown reports whether the last read found the sandbox down, and then
+// says so in the footer. Work on the agent needs the sandbox up.
+func (m *model) isDown() bool {
+	if !m.shared.Read || m.shared.SandboxUp() {
+		return false
+	}
+	m.shared.Notify("The sandbox is down. Press u to bring it up.", true)
+	return true
+}
+
 // busy reports whether a bring-up or an action runs, and says which in the
 // footer. Work that changes the sandbox waits for it.
 func (m *model) busy() bool {

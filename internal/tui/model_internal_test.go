@@ -350,6 +350,22 @@ func TestTrafficSaysWhyItCannotRead(t *testing.T) {
 	}
 }
 
+// TestAgentKeysWhileDown says the sandbox is down for the keys that work
+// with the agent, instead of trying them.
+func TestAgentKeysWhileDown(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{"x", "R", "c"} {
+		root := quietModel(t)
+		root.shared.Read, root.shared.Status = true, sandbox.Status{}
+		_, cmd := root.Update(press(key))
+		if cmd != nil || root.overlay.kind != overlayNone || root.shared.Running ||
+			!strings.Contains(root.shared.Toast.Text, "The sandbox is down") {
+			t.Errorf("%s while down: command %v, overlay %v, notice %q; want only a notice that it is down",
+				key, cmd != nil, root.overlay.kind, root.shared.Toast.Text)
+		}
+	}
+}
+
 // TestNothingToStopOnAnExistingCluster says that D has nothing to stop on
 // an existing cluster, and does not ask to delete a k3d cluster.
 func TestNothingToStopOnAnExistingCluster(t *testing.T) {
