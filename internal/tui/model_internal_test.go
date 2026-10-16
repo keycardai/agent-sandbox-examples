@@ -303,12 +303,27 @@ func TestOneJobAtATime(t *testing.T) {
 	}
 }
 
+// localQuietModel is a sandbox that is up, on a local k3d cluster that
+// does not exist, where every tool fails: a stop it starts deletes nothing.
+func localQuietModel(t *testing.T) *model {
+	t.Helper()
+	root := quietModel(t)
+	settings := root.session.Local().Settings
+	delete(settings, sandbox.KeyKubeContext)
+	settings[sandbox.KeyCluster] = "keycard-test-none"
+	root.session.Local().Tool = func(ctx context.Context, _ string, _ ...string) (*exec.Cmd, error) {
+		return exec.CommandContext(ctx, "false"), nil
+	}
+	root.state.ResetSteps()
+	return root
+}
+
 // TestDownWaitsForTheBringUp asks before D in the quit dialog stops
 // everything, stops a running bring-up first, and stops everything once it
 // has.
 func TestDownWaitsForTheBringUp(t *testing.T) {
 	t.Parallel()
-	root := quietModel(t)
+	root := localQuietModel(t)
 	root.state.Job = state.Job{Kind: state.JobBringUp}
 	root.Update(press("q"))
 	root.Update(press("D"))
@@ -514,6 +529,18 @@ func TestNothingToStopOnAnExistingCluster(t *testing.T) {
 	}
 	if root.Update(press("q")); root.overlay.keepsRunning {
 		t.Error("the quit dialog offers to stop the existing cluster")
+	}
+	// While a bring-up runs, quitting stops it, and D still has nothing to
+	// stop.
+	root.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	root.state.Job = state.Job{Kind: state.JobBringUp}
+	root.Update(press("q"))
+	if view := ansi.Strip(root.View().Content); !strings.Contains(view, "A bring-up is running") ||
+		strings.Contains(view, "stop everything") {
+		t.Errorf("the quit dialog during a bring-up; want it to say the bring-up stops, without D:\n%s", view)
+	}
+	if root.Update(press("D")); root.overlay.kind != overlayNone {
+		t.Errorf("D in the quit dialog opened %v, want only a notice", root.overlay.kind)
 	}
 }
 

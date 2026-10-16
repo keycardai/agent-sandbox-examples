@@ -384,22 +384,22 @@ func (m *model) restartPod() {
 }
 
 // stopAll asks, then stops everything. A running bring-up or checks run
-// stops first. On an existing cluster, the TUI did not start anything that
-// D stops.
+// stops first.
 func (m *model) stopAll() {
 	if !m.state.Job.RunsSteps() && m.busy() {
-		return
-	}
-	if m.session.Local().Existing() {
-		m.ui.Notify("On an existing cluster, there is nothing for D to stop.", false)
 		return
 	}
 	m.askStopAll(false)
 }
 
 // askStopAll asks whether to stop everything, and with quit, to quit
-// after.
+// after. On an existing cluster, the TUI did not start anything that D
+// stops, so it says so instead.
 func (m *model) askStopAll(quit bool) {
+	if m.session.Local().Existing() {
+		m.ui.Notify("On an existing cluster, there is nothing for D to stop.", false)
+		return
+	}
 	title := "Stop everything?"
 	if quit {
 		title = "Stop everything and quit?"

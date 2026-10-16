@@ -185,7 +185,8 @@ func (m *model) confirmModal() string {
 		theme.ModalTitle.Render(m.overlay.title), "", theme.Muted.Render(m.overlay.body), "", choice))
 }
 
-// quitModal asks how to leave. With nothing running, it only asks.
+// quitModal asks how to leave. With nothing running, it only asks. D is
+// offered only where it stops something: not on an existing cluster.
 func (m *model) quitModal() string {
 	theme := m.ui.Styles
 	if !m.overlay.keepsRunning {
@@ -193,8 +194,12 @@ func (m *model) quitModal() string {
 			component.Chips(theme, component.Hint{Key: component.KeyEnter, Desc: "quit"},
 				component.Hint{Key: component.KeyEsc, Desc: "stay"})))
 	}
+	chips := []component.Hint{{Key: component.KeyEnter, Desc: "quit, leave it running"}}
+	if !m.session.Local().Existing() {
+		chips = append(chips, component.Hint{Key: "D", Desc: "stop everything and quit"})
+	}
+	chips = append(chips, component.Hint{Key: component.KeyEsc, Desc: "stay"})
 	return theme.Modal.Width(component.ModalWidth(m.ui.Width)).Render(lipgloss.JoinVertical(lipgloss.Left,
 		theme.ModalTitle.Render(m.overlay.title), "", theme.Muted.Render(m.overlay.body), "",
-		component.Chips(theme, component.Hint{Key: component.KeyEnter, Desc: "quit, leave it running"},
-			component.Hint{Key: "D", Desc: "stop everything and quit"}, component.Hint{Key: component.KeyEsc, Desc: "stay"})))
+		component.Chips(theme, chips...)))
 }
