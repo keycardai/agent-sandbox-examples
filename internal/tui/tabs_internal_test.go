@@ -143,7 +143,7 @@ func TestHomeStates(t *testing.T) {
 	t.Parallel()
 	down := testModel(t)
 	bringingUp := upModel(t)
-	bringingUp.shared.Running = true
+	bringingUp.shared.Job = page.Job{Kind: page.JobBringUp}
 	bringingUp.shared.Steps[2].State = page.StepRunning
 	bringingUp.shared.StepCursor = 2
 	failed := testModel(t)

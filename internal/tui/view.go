@@ -68,13 +68,13 @@ func (m *model) band() string {
 func (m *model) statusBadge() string {
 	shared := m.shared
 	theme := shared.Styles
-	if shared.Running {
+	if shared.Job.Is(page.JobBringUp) {
 		done := m.stepsDone()
 		return theme.BandBusy.Render(component.Spinner(shared.Frame)+" bringing up ") +
 			m.progressBar(done, len(shared.Steps)) + theme.BandLabel.Render(" "+strconv.Itoa(done)+"/"+
 			strconv.Itoa(len(shared.Steps)))
 	}
-	if shared.Stopping {
+	if shared.Job.Is(page.JobStop) {
 		return theme.BandBusy.Render(component.Spinner(shared.Frame) + " stopping")
 	}
 	if row := shared.FailedStep(); row != nil {
@@ -94,8 +94,8 @@ func (m *model) statusBadge() string {
 func (m *model) shortBadge() string {
 	shared := m.shared
 	theme := shared.Styles
-	if !shared.Running {
-		if row := shared.FailedStep(); !shared.Stopping && row != nil {
+	if !shared.Job.Is(page.JobBringUp) {
+		if row := shared.FailedStep(); !shared.Job.Is(page.JobStop) && row != nil {
 			if row.Stopped() {
 				return theme.BandDown.Render("○ stopped")
 			}
@@ -147,7 +147,7 @@ func (m *model) progress() *tea.ProgressBar {
 	switch {
 	case failed:
 		return tea.NewProgressBar(tea.ProgressBarError, done*percent/len(steps))
-	case m.shared.Running:
+	case m.shared.Job.Is(page.JobBringUp):
 		return tea.NewProgressBar(tea.ProgressBarDefault, done*percent/len(steps))
 	}
 	return nil

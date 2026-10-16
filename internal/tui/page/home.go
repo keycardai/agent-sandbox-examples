@@ -38,9 +38,9 @@ func (h *Home) View() string {
 	shared := h.shared
 	failed := shared.FailedStep()
 	switch {
-	case shared.Running:
+	case shared.Job.Is(JobBringUp):
 		return h.bringUp()
-	case shared.Stopping:
+	case shared.Job.Is(JobStop):
 		return shared.Styles.Muted.Render(shared.spinner() + " Stopping everything…")
 	case failed != nil:
 		return h.failed(failed)
@@ -56,13 +56,13 @@ func (h *Home) View() string {
 func (h *Home) Hints() []component.Hint {
 	shared := h.shared
 	switch {
-	case shared.Running:
+	case shared.Job.Is(JobBringUp):
 		return []component.Hint{
 			{Key: "u", Desc: "stop"},
 			{Key: "?", Desc: wordKeys},
 			{Key: "q", Desc: wordQuit},
 		}
-	case shared.Stopping:
+	case shared.Job.Is(JobStop):
 		return []component.Hint{{Key: "?", Desc: wordKeys}, {Key: "q", Desc: wordQuit}}
 	case shared.FailedStep() != nil:
 		again := "try again"
@@ -99,11 +99,11 @@ func (h *Home) bringUp() string {
 	title := "Bringing up your sandbox"
 	note := "The first time takes a few minutes. Quitting stops the step that runs. What is done stays, " +
 		"and u runs the steps again."
-	if shared.RunFrom > 0 {
-		title += " from: " + shared.Steps[shared.RunFrom].Step.Title
+	if from := shared.Job.From; from > 0 {
+		title += " from: " + shared.Steps[from].Step.Title
 	}
 	lines := []string{}
-	if current.Step.ID == sandbox.StepChecks && shared.RunFrom == shared.StepCursor {
+	if current.Step.ID == sandbox.StepChecks && shared.Job.From == shared.StepCursor {
 		title, note = "Running the checks", "Each check sends a request from the agent and reads what came back."
 	} else {
 		lines = append(lines, "")

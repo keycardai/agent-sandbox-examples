@@ -53,13 +53,8 @@ type (
 		agents []sandbox.Agent
 		err    error
 	}
-	actionDoneMsg struct {
-		what string
-		err  error
-		// then runs when the action succeeded.
-		then func()
-	}
-	execDoneMsg struct {
+	actionDoneMsg struct{ err error }
+	execDoneMsg   struct {
 		plain bool
 		err   error
 	}
@@ -87,11 +82,14 @@ func pollTick() tea.Cmd {
 // sandbox is up even when a check fails.
 func (m *model) startBringUp(from int, recreate bool) {
 	shared := m.shared
-	if shared.Running || m.acting != "" || from >= len(shared.Steps) {
+	if from >= len(shared.Steps) {
 		return
 	}
 	ctx, cancel := context.WithCancel(m.ctx)
-	shared.Running, m.cancel, shared.RunFrom = true, cancel, from
+	if !shared.StartJob(page.Job{Kind: page.JobBringUp, From: from}, cancel) {
+		cancel()
+		return
+	}
 	if from == 0 {
 		shared.Record("▸", "Bring-up started")
 	} else {
@@ -253,7 +251,7 @@ func countChecks(log *component.Log) (int, int) {
 // nothing up, so it says nothing more than the checks did.
 func (m *model) onBringUpDone(msg bringUpDoneMsg) tea.Cmd {
 	shared := m.shared
-	shared.Running, m.cancel = false, nil
+	ended := shared.EndJob()
 	switch {
 	case errors.Is(msg.err, context.Canceled):
 		// The step that ran says where the operator stopped the bring-up.
@@ -262,14 +260,13 @@ func (m *model) onBringUpDone(msg bringUpDoneMsg) tea.Cmd {
 			shared.Notify("The bring-up stopped: "+component.FirstLine(msg.err.Error()), true)
 		}
 		shared.Record("✕", "Bring-up stopped")
-	case shared.Steps[shared.RunFrom].Step.ID == sandbox.StepChecks:
+	case shared.Steps[ended.From].Step.ID == sandbox.StepChecks:
 	default:
 		shared.Record("✓", "The sandbox is up")
 		m.notifyUp()
 	}
-	if m.downAfterBringUp {
-		m.downAfterBringUp = false
-		m.down()
+	if ended.StopAfter {
+		m.stopEverything(ended.QuitAfter)
 		return nil
 	}
 	return m.poll()
@@ -290,16 +287,9 @@ func (m *model) notifyUp() {
 	}
 }
 
-// stop cancels a running bring-up.
-func (m *model) stop() {
-	if m.cancel != nil {
-		m.cancel()
-	}
-}
-
 func (m *model) toggleBringUp() {
-	if !m.shared.Running {
-		if m.busy() {
+	if !m.shared.Job.Is(page.JobBringUp) {
+		if m.shared.Busy() {
 			return
 		}
 		from := m.shared.ResumeIndex()
@@ -311,14 +301,14 @@ func (m *model) toggleBringUp() {
 	}
 	m.confirm("Stop the bring-up?", "The step that runs now is canceled.\n"+
 		"Press u again later to start again from that step.", func() tea.Cmd {
-		m.stop()
+		m.shared.CancelJob()
 		return nil
 	})
 }
 
 // runChecks runs the checks step again, against the running sandbox.
 func (m *model) runChecks() {
-	if m.busy() || m.isDown() {
+	if m.shared.Busy() || m.isDown() {
 		return
 	}
 	for i, row := range m.shared.Steps {
@@ -345,14 +335,14 @@ func (m *model) agent() tea.Cmd {
 }
 
 func (m *model) restartAgent() {
-	if m.busy() || m.isDown() {
+	if m.shared.Busy() || m.isDown() {
 		return
 	}
 	name, session := m.shared.AgentName(), m.shared.Session
 	m.confirm("Restart "+name+"'s pod?", "This deletes the pod, and the controller creates it again\n"+
 		"with the current images and settings. The agent loses what it kept in the pod.",
 		func() tea.Cmd {
-			m.runAction("Restarting "+name+"'s pod", session.RestartAgent)
+			m.runAction(page.Job{Kind: page.JobAction, Name: "Restarting " + name + "'s pod"}, session.RestartAgent)
 			return nil
 		})
 }
@@ -360,7 +350,7 @@ func (m *model) restartAgent() {
 // stopAll asks, then stops everything. A running bring-up stops first.
 // On an existing cluster, the TUI did not start anything that D stops.
 func (m *model) stopAll() {
-	if !m.shared.Running && m.busy() {
+	if !m.shared.Job.Is(page.JobBringUp) && m.shared.Busy() {
 		return
 	}
 	if m.shared.Session.Local().Existing() {
@@ -369,70 +359,66 @@ func (m *model) stopAll() {
 	}
 	m.confirm("Stop everything?", "This stops the tunnel and the mirror and deletes the k3d cluster.\n"+
 		"What the sandbox created in your Keycard zone stays.", func() tea.Cmd {
-		m.down()
+		m.stopEverything(false)
 		return nil
 	})
 }
 
-// down stops the tunnel and the mirror and deletes the cluster. A running
-// bring-up stops first, and onBringUpDone calls down again once it has.
-func (m *model) down() {
-	if m.shared.Running {
-		m.stop()
-		m.downAfterBringUp = true
-		m.shared.Notify("Stopping the bring-up first…", false)
+// stopEverything stops the tunnel and the mirror and deletes the cluster,
+// then quits with quit. A running bring-up stops first, and
+// onBringUpDone stops everything once it has.
+func (m *model) stopEverything(quit bool) {
+	shared := m.shared
+	// A question about the cluster's issuer is gone with the cluster.
+	m.waiting = nil
+	if shared.Job.Is(page.JobBringUp) {
+		shared.Job.StopAfter, shared.Job.QuitAfter = true, quit
+		shared.CancelJob()
+		shared.Notify("Stopping the bring-up first…", false)
 		return
 	}
-	// The bring-up that stopped or failed before is gone with the sandbox,
-	// and so is a question about its cluster.
-	m.waiting = nil
-	m.shared.Stopping = true
-	m.runActionThen("Stopping everything", m.shared.Session.Down, m.shared.ResetSteps)
+	m.runAction(page.Job{Kind: page.JobStop, Name: "Stopping everything", QuitAfter: quit}, shared.Session.Down)
 }
 
-// runAction runs work in the background, and reports when it is done. It
-// is the one action that runs until then.
-func (m *model) runAction(what string, work func(ctx context.Context, out io.Writer) error) {
-	m.runActionThen(what, work, nil)
-}
-
-// runActionThen is runAction, and runs then on the TUI's goroutine once the
-// work succeeded.
-func (m *model) runActionThen(what string, work func(ctx context.Context, out io.Writer) error, then func()) {
+// runAction runs job's work in the background, and reports when it is
+// done. While another job runs, it refuses and says so.
+func (m *model) runAction(job page.Job, work func(ctx context.Context, out io.Writer) error) {
 	shared := m.shared
-	shared.Record("▸", what)
-	shared.Notify(what+"…", false)
-	m.acting = what
+	if !shared.StartJob(job, nil) {
+		return
+	}
+	shared.Record("▸", job.Name)
+	shared.Notify(job.Name+"…", false)
 	ctx, out := m.ctx, m.bus
 	m.jobs.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {
-				out.Send(actionDoneMsg{what: what, err: fmt.Errorf("%w: %v", errPanic, r)})
+				out.Send(actionDoneMsg{err: fmt.Errorf("%w: %v", errPanic, r)})
 			}
 		}()
-		out.Send(actionDoneMsg{what: what, err: work(ctx, io.Discard), then: then})
+		out.Send(actionDoneMsg{err: work(ctx, io.Discard)})
 	})
 }
 
+// onActionDone ends the job, and says how it went. Once everything
+// stopped, the bring-up that stopped or failed before is gone with the
+// sandbox, so its steps start over.
 func (m *model) onActionDone(msg actionDoneMsg) tea.Cmd {
 	shared := m.shared
-	m.acting, shared.Stopping = "", false
+	ended := shared.EndJob()
 	if msg.err != nil {
-		shared.Notify(msg.what+" failed: "+component.FirstLine(msg.err.Error()), true)
-		shared.Record("✕", msg.what+" failed: "+component.FirstLine(msg.err.Error()))
+		shared.Notify(ended.Name+" failed: "+component.FirstLine(msg.err.Error()), true)
+		shared.Record("✕", ended.Name+" failed: "+component.FirstLine(msg.err.Error()))
 	} else {
-		shared.Notify(msg.what+": done", false)
-		shared.Record("✓", msg.what+": done")
-		if msg.then != nil {
-			msg.then()
+		shared.Notify(ended.Name+": done", false)
+		shared.Record("✓", ended.Name+": done")
+		if ended.Is(page.JobStop) {
+			shared.ResetSteps()
 		}
 	}
-	// A quit that waited for the action does not hide its failure.
-	if m.quitAfterAction {
-		m.quitAfterAction = false
-		if msg.err == nil {
-			return tea.Quit
-		}
+	// A quit that waited for the job does not hide its failure.
+	if ended.QuitAfter && msg.err == nil {
+		return tea.Quit
 	}
 	return m.poll()
 }
@@ -662,7 +648,7 @@ func openBrowser(ctx context.Context, address string) error {
 // back when it exits.
 func (m *model) openAgent(plain bool) tea.Cmd {
 	shared := m.shared
-	if m.busy() || m.isDown() {
+	if shared.Busy() || m.isDown() {
 		return nil
 	}
 	cmd, err := shared.Session.ShellCommand(m.ctx, plain)

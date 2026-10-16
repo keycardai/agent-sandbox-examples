@@ -41,3 +41,29 @@ func TestSandboxUp(t *testing.T) {
 		})
 	}
 }
+
+// TestOneJob starts one job at a time: a second one is refused with a
+// notice that names the first. Ending the job returns it, and cancelling
+// stops only a job that can stop.
+func TestOneJob(t *testing.T) {
+	t.Parallel()
+	local := &sandbox.Local{Root: t.TempDir(), Settings: sandbox.Settings{}, Out: io.Discard}
+	shared := NewShared(local.NewSession("127.0.0.1:8480", time.Second))
+	cancelled := false
+	if !shared.StartJob(Job{Kind: JobAction, Name: "Restarting ada's pod"}, func() { cancelled = true }) {
+		t.Fatal("the first job was refused")
+	}
+	if shared.StartJob(Job{Kind: JobBringUp}, nil) || !shared.Job.Is(JobAction) ||
+		shared.Toast.Text != "Restarting ada's pod is running. Wait for it to finish." {
+		t.Errorf("a second job: job %+v, notice %q; want it refused with the first one's name",
+			shared.Job, shared.Toast.Text)
+	}
+	shared.CancelJob()
+	if ended := shared.EndJob(); !cancelled || ended.Name != "Restarting ada's pod" || shared.Job.Busy() {
+		t.Errorf("cancelled %v, ended %+v, busy %v; want the first job cancelled, ended and gone",
+			cancelled, ended, shared.Job.Busy())
+	}
+	if shared.Busy() {
+		t.Error("Busy with no job, want false")
+	}
+}

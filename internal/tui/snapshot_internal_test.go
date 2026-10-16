@@ -141,7 +141,7 @@ func snapshotUp(t *testing.T) *model {
 func snapshotBringUp(t *testing.T) *model {
 	t.Helper()
 	root := snapshotUp(t)
-	root.shared.Running = true
+	root.shared.Job = page.Job{Kind: page.JobBringUp}
 	now := time.Now()
 	for i, row := range root.shared.Steps {
 		switch {

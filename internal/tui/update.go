@@ -6,6 +6,7 @@ import (
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/component"
+	"github.com/keycardai/agent-sandbox-examples/internal/tui/page"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/style"
 )
 
@@ -137,11 +138,12 @@ func (m *model) quit() tea.Cmd {
 	if m.shared.Session.Local().Existing() {
 		m.overlay.body = "The sandbox keeps running in the cluster, and shows here again next time."
 	}
-	switch {
-	case m.shared.Running:
+	switch job := m.shared.Job; job.Kind {
+	case page.JobBringUp:
 		m.overlay.body = "A bring-up is running, and quitting stops it where it is.\n" + m.overlay.body
-	case m.acting != "":
-		m.overlay.body = m.acting + " is running, and quitting stops it where it is.\n" + m.overlay.body
+	case page.JobAction, page.JobStop:
+		m.overlay.body = job.Name + " is running, and quitting stops it where it is.\n" + m.overlay.body
+	case page.JobNone:
 	}
 	return nil
 }
@@ -152,7 +154,7 @@ func (m *model) quit() tea.Cmd {
 func (m *model) anythingRunning() bool {
 	status := m.shared.Status
 	local := status.ClusterExists && !m.shared.Session.Local().Existing()
-	return m.shared.Running || m.acting != "" || status.Tunnel.Running || status.Mirror.Running || local
+	return m.shared.Job.Busy() || status.Tunnel.Running || status.Mirror.Running || local
 }
 
 func (m *model) quitKeys(msg tea.KeyPressMsg) tea.Cmd {
@@ -160,18 +162,13 @@ func (m *model) quitKeys(msg tea.KeyPressMsg) tea.Cmd {
 	m.overlay = overlay{}
 	switch msg.String() {
 	case component.KeyEnter, "q", "y", component.KeyCtrlC:
-		m.stop()
+		m.shared.CancelJob()
 		return tea.Quit
 	case "D":
-		if !keepsRunning {
+		if !keepsRunning || !m.shared.Job.Is(page.JobBringUp) && m.shared.Busy() {
 			return nil
 		}
-		if m.acting != "" {
-			m.busy()
-			return nil
-		}
-		m.quitAfterAction = true
-		m.down()
+		m.stopEverything(true)
 	}
 	return nil
 }
@@ -251,19 +248,5 @@ func (m *model) isDown() bool {
 		return false
 	}
 	m.shared.Notify("The sandbox is down. Press u to bring it up.", true)
-	return true
-}
-
-// busy reports whether a bring-up or an action runs, and says which in the
-// footer. Work that changes the sandbox waits for it.
-func (m *model) busy() bool {
-	switch {
-	case m.shared.Running:
-		m.shared.Notify("A bring-up is running. Wait for it to finish, or press u to stop it.", true)
-	case m.acting != "":
-		m.shared.Notify(m.acting+" is running. Wait for it to finish.", true)
-	default:
-		return false
-	}
 	return true
 }

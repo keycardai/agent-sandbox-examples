@@ -63,13 +63,6 @@ type model struct {
 
 	home *page.Home
 
-	// cancel stops a running bring-up, and downAfterBringUp stops
-	// everything once the bring-up has stopped.
-	cancel           context.CancelFunc
-	downAfterBringUp bool
-	// acting names the action that runs, or is "". One action runs at a
-	// time, and never with a bring-up.
-	acting string
 	// polling counts the reads of the sandbox on their way. The next poll
 	// starts pollEvery after the last read comes back, and tickPlanned is
 	// set while it waits, so that one poll is planned at a time.
@@ -79,9 +72,6 @@ type model struct {
 	trafficStop context.CancelFunc
 	// shownPod is the selected agent's pod, which Home shows.
 	shownPod string
-
-	// quitAfterAction quits once the running action is done.
-	quitAfterAction bool
 }
 
 // overlay is what covers the screen: nothing, the help, a confirmation or

@@ -124,8 +124,8 @@ func TestQuitLeavesTheSandboxRunning(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("Enter in the quit dialog returned no command, want tea.Quit")
 	}
-	if _, ok := cmd().(tea.QuitMsg); !ok || root.quitAfterAction {
-		t.Errorf("Enter: quit %v, stop everything %v; want a plain quit", ok, root.quitAfterAction)
+	if _, ok := cmd().(tea.QuitMsg); !ok || root.shared.Job.Busy() {
+		t.Errorf("Enter: quit %v, job %+v; want a plain quit", ok, root.shared.Job)
 	}
 }
 
@@ -173,12 +173,12 @@ func TestChecksScore(t *testing.T) {
 func TestChecksThatDidNotRun(t *testing.T) {
 	t.Parallel()
 	root := testModel(t)
-	if root.Update(press("c")); root.shared.Running || !strings.Contains(root.shared.Toast.Text, "sandbox is down") {
-		t.Errorf("c on a sandbox that is down: running %v, notice %q; want a notice that it is down",
-			root.shared.Running, root.shared.Toast.Text)
+	if root.Update(press("c")); root.shared.Job.Busy() || !strings.Contains(root.shared.Toast.Text, "sandbox is down") {
+		t.Errorf("c on a sandbox that is down: job %+v, notice %q; want a notice that it is down",
+			root.shared.Job, root.shared.Toast.Text)
 	}
 	last := len(root.shared.Steps) - 1
-	root.shared.RunFrom = last
+	root.shared.Job = page.Job{Kind: page.JobBringUp, From: last}
 	root.Update(stepStartMsg{index: last})
 	root.Update(stepDoneMsg{index: last, err: sandbox.ErrPod})
 	root.Update(bringUpDoneMsg{})
@@ -208,22 +208,22 @@ func TestOneJobAtATime(t *testing.T) {
 			root.Update(press("y"))
 		}, busyKeys()},
 		{
-			"a bring-up", "bring-up is running", func(root *model) { root.shared.Running = true },
+			"a bring-up", "bring-up is running", func(root *model) { root.shared.Job = page.Job{Kind: page.JobBringUp} },
 			slices.DeleteFunc(busyKeys(), func(key string) bool { return key == "u" || key == "D" }),
 		},
 	} {
 		for _, key := range tc.keys {
 			root := quietModel(t)
 			tc.start(root)
-			running := root.shared.Running
+			running := root.shared.Job
 			_, cmd := root.Update(press(key))
-			if root.overlay.kind != overlayNone || root.shared.Running != running || cmd != nil ||
+			if root.overlay.kind != overlayNone || root.shared.Job.Kind != running.Kind || cmd != nil ||
 				!strings.Contains(root.shared.Toast.Text, tc.notice) {
-				t.Errorf("%s while %s runs: overlay %v, running %v, command %v, notice %q; want only a notice "+
-					"that says %q", key, tc.name, root.overlay.kind, root.shared.Running, cmd != nil,
+				t.Errorf("%s while %s runs: overlay %v, job %+v, command %v, notice %q; want only a notice "+
+					"that says %q", key, tc.name, root.overlay.kind, root.shared.Job, cmd != nil,
 					root.shared.Toast.Text, tc.notice)
 			}
-			root.stop()
+			root.shared.CancelJob()
 		}
 	}
 }
@@ -233,15 +233,15 @@ func TestOneJobAtATime(t *testing.T) {
 func TestDownWaitsForTheBringUp(t *testing.T) {
 	t.Parallel()
 	root := quietModel(t)
-	root.shared.Running = true
+	root.shared.Job = page.Job{Kind: page.JobBringUp}
 	root.Update(press("q"))
 	root.Update(press("D"))
-	if root.acting != "" {
-		t.Errorf("%q runs while the bring-up runs, want it to wait", root.acting)
+	if job := root.shared.Job; !job.Is(page.JobBringUp) || !job.StopAfter || !job.QuitAfter {
+		t.Errorf("job = %+v while the bring-up runs, want the bring-up, then a stop and a quit", job)
 	}
 	root.Update(bringUpDoneMsg{err: context.Canceled})
-	if root.acting != "Stopping everything" {
-		t.Errorf("after the bring-up stopped, %q runs, want everything to stop", root.acting)
+	if job := root.shared.Job; !job.Is(page.JobStop) || !job.QuitAfter {
+		t.Errorf("after the bring-up stopped, job = %+v, want everything to stop, then a quit", job)
 	}
 }
 
@@ -311,7 +311,7 @@ func TestDownForgetsTheFailedStep(t *testing.T) {
 	t.Parallel()
 	root := quietModel(t)
 	root.Update(stepDoneMsg{index: 0, err: sandbox.ErrDocker})
-	root.down()
+	root.stopEverything(false)
 	if view := ansi.Strip(root.View().Content); !strings.Contains(view, "Stopping everything…") ||
 		!strings.Contains(view, "stopping") {
 		t.Errorf("while it stops, Home and the band do not say so:\n%s", view)
@@ -390,7 +390,7 @@ func TestAgentKeysWhileDown(t *testing.T) {
 		root := quietModel(t)
 		root.shared.Read, root.shared.Status = true, sandbox.Status{}
 		_, cmd := root.Update(press(key))
-		if cmd != nil || root.overlay.kind != overlayNone || root.shared.Running ||
+		if cmd != nil || root.overlay.kind != overlayNone || root.shared.Job.Busy() ||
 			!strings.Contains(root.shared.Toast.Text, "The sandbox is down") {
 			t.Errorf("%s while down: command %v, overlay %v, notice %q; want only a notice that it is down",
 				key, cmd != nil, root.overlay.kind, root.shared.Toast.Text)
@@ -442,8 +442,8 @@ func TestNothingToStopOnAnExistingCluster(t *testing.T) {
 func TestQuitAfterAFailedStop(t *testing.T) {
 	t.Parallel()
 	root := quietModel(t)
-	root.quitAfterAction, root.acting = true, "Stopping everything"
-	if _, cmd := root.Update(actionDoneMsg{what: root.acting, err: sandbox.ErrDocker}); cmd != nil {
+	root.shared.Job = page.Job{Kind: page.JobStop, Name: "Stopping everything", QuitAfter: true}
+	if _, cmd := root.Update(actionDoneMsg{err: sandbox.ErrDocker}); cmd != nil {
 		if _, quit := cmd().(tea.QuitMsg); quit {
 			t.Error("the TUI quit after stopping everything failed")
 		}
@@ -481,7 +481,8 @@ func TestPollsDoNotOverlap(t *testing.T) {
 	}
 	// An action that ends reads the sandbox at once, and the poll planned
 	// above stays the only one.
-	if _, read := root.Update(actionDoneMsg{what: "Waiting"}); read == nil {
+	root.shared.Job = page.Job{Kind: page.JobAction, Name: "Waiting"}
+	if _, read := root.Update(actionDoneMsg{}); read == nil {
 		t.Fatal("an action ended, and the sandbox was not read again")
 	}
 	root.Update(statusMsg{status: root.shared.Status})
@@ -511,7 +512,7 @@ func TestShutdownStopsTheWork(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	root := newModel(ctx, testSession(t))
 	var ended atomic.Bool
-	root.runAction("Waiting", func(ctx context.Context, _ io.Writer) error {
+	root.runAction(page.Job{Kind: page.JobAction, Name: "Waiting"}, func(ctx context.Context, _ io.Writer) error {
 		<-ctx.Done()
 		ended.Store(true)
 		return ctx.Err()

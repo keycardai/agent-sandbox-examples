@@ -99,14 +99,11 @@ type Shared struct {
 	Toast component.Toast
 
 	// Steps are the bring-up's steps, and StepCursor the one it is on.
-	// Running is set while a bring-up runs, and RunFrom is the step it
-	// started at.
 	Steps      []*StepRow
 	StepCursor int
-	Running    bool
-	RunFrom    int
-	// Stopping is set while D stops the services and deletes the cluster.
-	Stopping bool
+	// Job is the work that changes the sandbox, such as a bring-up, or the
+	// zero Job.
+	Job Job
 
 	// Status is the sandbox as the TUI last read it. Read is set once the
 	// first read came back.
