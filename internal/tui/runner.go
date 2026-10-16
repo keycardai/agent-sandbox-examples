@@ -159,7 +159,8 @@ func (m *model) onStepStart(msg stepStartMsg) {
 }
 
 // onStepDone marks the step, and offers to recreate a cluster that was made
-// for another tunnel URL.
+// for another tunnel URL. A step the operator stopped says so, and not why
+// it ended.
 func (m *model) onStepDone(msg stepDoneMsg) {
 	shared := m.shared
 	row := shared.Steps[msg.index]
@@ -173,10 +174,14 @@ func (m *model) onStepDone(msg stepDoneMsg) {
 	if msg.err == nil {
 		return
 	}
+	row.State = page.StepFailed
+	if row.Stopped() {
+		m.recordStop(row)
+		return
+	}
 	if row.Step.ID != sandbox.StepChecks {
 		shared.Record("✕", row.Step.Title+": "+component.FirstLine(msg.err.Error()))
 	}
-	row.State = page.StepFailed
 	row.Log.Add("", "✕ "+msg.err.Error())
 	if hint := page.StepHint(row, msg.err); hint != "" {
 		row.Log.Add("→ " + hint)
@@ -190,11 +195,22 @@ func (m *model) onStepDone(msg stepDoneMsg) {
 	}
 }
 
+// recordStop says in the activity log and in the step's log that the
+// operator stopped the bring-up at row. recordChecks says it for the checks.
+func (m *model) recordStop(row *page.StepRow) {
+	row.Log.Add("", "○ You stopped the bring-up here.")
+	if row.Step.ID != sandbox.StepChecks {
+		m.shared.Record("•", "Stopped the bring-up at: "+row.Step.Title)
+	}
+}
+
 // recordChecks counts the checks that passed, and records how they went,
-// or that they did not run.
+// that they were stopped, or that they did not run.
 func (m *model) recordChecks(row *page.StepRow, err error) {
 	row.Passed, row.Total = countChecks(row.Log)
 	switch {
+	case errors.Is(err, context.Canceled):
+		m.shared.Record("•", "Stopped the checks")
 	case err != nil && row.Total == 0:
 		m.shared.Record("✕", "The checks did not run: "+component.FirstLine(err.Error()))
 	case err != nil:
@@ -239,9 +255,10 @@ func (m *model) onBringUpDone(msg bringUpDoneMsg) tea.Cmd {
 	shared := m.shared
 	shared.Running, m.cancel = false, nil
 	switch {
+	case errors.Is(msg.err, context.Canceled):
+		// The step that ran says where the operator stopped the bring-up.
 	case msg.err != nil:
-		if !errors.Is(msg.err, sandbox.ErrOtherIssuer) && !errors.Is(msg.err, sandbox.ErrBrokenCluster) &&
-			!errors.Is(msg.err, context.Canceled) {
+		if !errors.Is(msg.err, sandbox.ErrOtherIssuer) && !errors.Is(msg.err, sandbox.ErrBrokenCluster) {
 			shared.Notify("The bring-up stopped: "+component.FirstLine(msg.err.Error()), true)
 		}
 		shared.Record("✕", "Bring-up stopped")

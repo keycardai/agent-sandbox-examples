@@ -7,6 +7,8 @@ package page
 
 import (
 	"cmp"
+	"context"
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -66,6 +68,12 @@ type StepRow struct {
 	Log            *component.Log
 	// Passed and Total count the checks, for the checks step.
 	Passed, Total int
+}
+
+// Stopped reports whether the bring-up ended at the step because the
+// operator stopped it, not because the step failed.
+func (r *StepRow) Stopped() bool {
+	return r.State == StepFailed && errors.Is(r.Err, context.Canceled)
 }
 
 // ContainerRow is one container of a pod.
@@ -288,6 +296,9 @@ func (s *Shared) stepLine(row *StepRow, width int) string {
 		lineStyle = theme.Text.Bold(true)
 	case StepFailed:
 		lineStyle = theme.Failed
+		if row.Stopped() {
+			lineStyle = theme.Text
+		}
 	case StepDone:
 		lineStyle = theme.Text
 	case StepPending:
@@ -304,6 +315,9 @@ func (s *Shared) stepIcon(row *StepRow) string {
 	case StepDone:
 		return theme.OK.Render("✓")
 	case StepFailed:
+		if row.Stopped() {
+			return theme.Text.Render("○")
+		}
 		return theme.Failed.Render("✕")
 	case StepPending:
 	}

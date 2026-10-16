@@ -78,6 +78,9 @@ func (m *model) statusBadge() string {
 		return theme.BandBusy.Render(component.Spinner(shared.Frame) + " stopping")
 	}
 	if row := shared.FailedStep(); row != nil {
+		if row.Stopped() {
+			return theme.BandDown.Render("○ stopped at " + row.Step.Title)
+		}
 		return theme.BandFail.Render("✕ stopped at " + row.Step.Title)
 	}
 	if shared.SandboxUp() {
@@ -92,7 +95,10 @@ func (m *model) shortBadge() string {
 	shared := m.shared
 	theme := shared.Styles
 	if !shared.Running {
-		if !shared.Stopping && shared.FailedStep() != nil {
+		if row := shared.FailedStep(); !shared.Stopping && row != nil {
+			if row.Stopped() {
+				return theme.BandDown.Render("○ stopped")
+			}
 			return theme.BandFail.Render("✕ stopped")
 		}
 		return m.statusBadge()
@@ -136,7 +142,7 @@ func (m *model) progress() *tea.ProgressBar {
 		if row.State == page.StepDone {
 			done++
 		}
-		failed = failed || (row.State == page.StepFailed && row.Step.ID != sandbox.StepChecks)
+		failed = failed || (row.State == page.StepFailed && row.Step.ID != sandbox.StepChecks && !row.Stopped())
 	}
 	switch {
 	case failed:

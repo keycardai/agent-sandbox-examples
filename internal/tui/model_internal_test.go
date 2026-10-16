@@ -272,6 +272,38 @@ func TestStopWhileAToolRuns(t *testing.T) {
 	}
 }
 
+// TestStoppedBringUp says where the operator stopped the bring-up, apart
+// from a failure: no error, no ✕, and no failed progress.
+func TestStoppedBringUp(t *testing.T) {
+	t.Parallel()
+	root := testModel(t)
+	root.shared.Status.Tunnel.Running = true
+	root.Update(stepDoneMsg{index: 1, err: context.Canceled})
+	root.Update(bringUpDoneMsg{err: context.Canceled})
+	view := ansi.Strip(root.View().Content)
+	for _, want := range []string{
+		"○ You stopped the bring-up at: Create or check the cluster", "○ stopped at Create or check the cluster",
+		"Start again from: Create or check the cluster",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("Home lacks %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "✕") || strings.Contains(view, "context canceled") {
+		t.Errorf("Home shows the stop as a failure:\n%s", view)
+	}
+	activity, _ := root.shared.Logs.Log(page.SourceActivity).Snapshot()
+	stopped := slices.ContainsFunc(activity, func(line string) bool {
+		return strings.HasSuffix(line, "• Stopped the bring-up at: Create or check the cluster")
+	})
+	if !stopped || slices.ContainsFunc(activity, func(line string) bool { return strings.Contains(line, "✕") }) {
+		t.Errorf("activity = %q, want only the stop", activity)
+	}
+	if progress := root.progress(); progress != nil {
+		t.Errorf("progress = %+v, want none once the bring-up stopped", progress)
+	}
+}
+
 // TestDownForgetsTheFailedStep says that everything stops while it does,
 // and then forgets the bring-up that failed, so Home no longer says where
 // it stopped.

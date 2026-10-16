@@ -65,8 +65,12 @@ func (h *Home) Hints() []component.Hint {
 	case shared.Stopping:
 		return []component.Hint{{Key: "?", Desc: wordKeys}, {Key: "q", Desc: wordQuit}}
 	case shared.FailedStep() != nil:
+		again := "try again"
+		if shared.FailedStep().Stopped() {
+			again = "start again"
+		}
 		return []component.Hint{
-			{Key: "u", Desc: "try again"},
+			{Key: "u", Desc: again},
 			{Key: "?", Desc: wordKeys},
 			{Key: "q", Desc: wordQuit},
 		}
@@ -118,12 +122,16 @@ func (h *Home) bringUp() string {
 	return strings.Join(lines, "\n")
 }
 
-// failed says where the bring-up stopped, why, and what to do.
+// failed says where the bring-up stopped, why when a step failed, and what
+// to do.
 func (h *Home) failed(row *StepRow) string {
 	shared := h.shared
 	theme := shared.Styles
 	lines := []string{theme.Failed.Bold(true).Render("✕ The bring-up stopped at: " + row.Step.Title)}
-	if row.Err != nil {
+	switch {
+	case row.Stopped():
+		lines[0] = theme.Text.Bold(true).Render("○ You stopped the bring-up at: " + row.Step.Title)
+	case row.Err != nil:
 		message := strings.Split(strings.TrimSpace(row.Err.Error()), "\n")
 		lines = append(lines, shared.para(theme.Text, strings.Join(message[:min(len(message), failureRows)], "\n")))
 		if hint := StepHint(row, row.Err); hint != "" {
