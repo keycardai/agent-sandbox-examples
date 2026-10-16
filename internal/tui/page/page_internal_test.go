@@ -256,6 +256,8 @@ func TestYesNoIsAChoice(t *testing.T) {
 		{"down then enter", true, []tea.Msg{down, enter}, false},
 		{"enter keeps no", false, []tea.Msg{enter}, false},
 		{"n", true, []tea.Msg{tea.KeyPressMsg{Code: 'n', Text: "n"}}, false},
+		{"N", true, []tea.Msg{tea.KeyPressMsg{Code: 'n', Mod: tea.ModShift, Text: "N"}}, false},
+		{"Y", false, []tea.Msg{tea.KeyPressMsg{Code: 'y', Mod: tea.ModShift, Text: "Y"}}, true},
 	} {
 		setup := NewSetup(testView(t, 150, 42))
 		quest := &Question{Kind: AskConfirm, Title: "Keep the saved client secret?", Yes: tc.start}

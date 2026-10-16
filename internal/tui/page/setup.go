@@ -226,11 +226,14 @@ func (s *Setup) Resize() tea.Cmd {
 }
 
 // Answer passes msg to the question's form, and answers the wizard when
-// the form is done. Esc stops the setup, and y or n answers a yes-or-no
-// question.
+// the form is done. Esc stops the setup, and y or n, in either case,
+// answers a yes-or-no question.
 func (s *Setup) Answer(msg tea.Msg) (tea.Cmd, QuestionState) {
 	if key, ok := msg.(tea.KeyPressMsg); ok {
-		switch answer, yesNo := map[string]string{"y": component.AnswerYes, "n": component.AnswerNo}[key.String()]; {
+		answers := map[string]string{
+			"y": component.AnswerYes, "Y": component.AnswerYes, "n": component.AnswerNo, "N": component.AnswerNo,
+		}
+		switch answer, yesNo := answers[key.String()]; {
 		case key.String() == component.KeyEsc:
 			s.ask = nil
 			return nil, Stopped
