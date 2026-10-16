@@ -163,6 +163,24 @@ func TestTailFile(t *testing.T) {
 	waitFor("new")
 }
 
+// TestTailFileUnreadable says once that the log cannot be read, instead of
+// showing an empty log. A directory stands in for the file, since even root
+// cannot read one as a file.
+func TestTailFileUnreadable(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "tunnel.log")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	log := &Log{}
+	go TailFile(t.Context(), path, log)
+	time.Sleep(3 * tailEvery)
+	lines, _ := log.Snapshot()
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "Cannot read the log: ") {
+		t.Errorf("lines = %q, want one that says the log cannot be read", lines)
+	}
+}
+
 // TestLogViewPaintsNewLines colors only the lines a refresh has not
 // colored before, and colors every line again for another log.
 func TestLogViewPaintsNewLines(t *testing.T) {

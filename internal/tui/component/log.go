@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"strings"
 	"sync"
@@ -151,21 +152,24 @@ func shown(line string) string {
 // TailFile copies the lines of the file at path into log until ctx ends.
 // It starts at the beginning, picks up lines as the file grows, and starts
 // over when the file is truncated or replaced, as a service's log is when
-// the service starts again.
+// the service starts again. When the file is there but cannot be read, it
+// adds the error to log once.
 func TailFile(ctx context.Context, path string, log *Log) {
 	var offset int64
 	var ident os.FileInfo
+	failed := ""
 	for {
 		info, err := os.Stat(path)
 		switch {
 		case err != nil:
 		case ident == nil || !os.SameFile(ident, info) || info.Size() < offset:
 			log.Reset()
-			ident = info
-			offset = readFrom(path, 0, log)
+			ident, failed = info, ""
+			offset, err = readFrom(path, 0, log)
 		case info.Size() > offset:
-			offset = readFrom(path, offset, log)
+			offset, err = readFrom(path, offset, log)
 		}
+		failed = noteFailure(log, err, failed)
 		select {
 		case <-ctx.Done():
 			return
@@ -212,17 +216,27 @@ func lineText(line []byte, cut bool) string {
 	return text
 }
 
+// noteFailure adds err to log, unless it is nil, a missing file, or the
+// same as last, and returns the failure log shows last.
+func noteFailure(log *Log, err error, last string) string {
+	if err == nil || errors.Is(err, fs.ErrNotExist) || err.Error() == last {
+		return last
+	}
+	log.Add("Cannot read the log: " + err.Error())
+	return err.Error()
+}
+
 // readFrom copies the file from offset to its end into log, and returns the
 // new offset.
-func readFrom(path string, offset int64, log *Log) int64 {
+func readFrom(path string, offset int64, log *Log) (int64, error) {
 	file, err := os.Open(path) //nolint:gosec // G304: the path is a service log under local/out.
 	if err != nil {
-		return offset
+		return offset, err //nolint:wrapcheck // The error names the path.
 	}
 	defer func() { _ = file.Close() }()
 	if _, err = file.Seek(offset, io.SeekStart); err != nil {
-		return offset
+		return offset, err //nolint:wrapcheck // The error names the path.
 	}
-	n, _ := io.Copy(log, file)
-	return offset + n
+	n, err := io.Copy(log, file)
+	return offset + n, err //nolint:wrapcheck // The error names the path.
 }
