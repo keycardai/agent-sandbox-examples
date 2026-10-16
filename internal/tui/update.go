@@ -145,7 +145,7 @@ func (m *model) updateRequests(msg tea.Msg) (tea.Cmd, bool) {
 	case page.SendRequestMsg:
 		return m.sendRequest(msg), true
 	case page.RequestDoneMsg:
-		m.agents.OnRequestDone(msg)
+		m.onRequestDone(msg)
 	default:
 		return nil, false
 	}
@@ -187,7 +187,7 @@ func (m *model) updateOnboarding(msg tea.Msg) (tea.Cmd, bool) {
 	case forgetDoneMsg:
 		m.onForgetDone(msg)
 	case settingsMsg:
-		m.state.Setup.Describe, m.state.Setup.Problems = msg.describe, msg.problems
+		m.state.Setup.SetSettings(msg.describe, msg.problems)
 	case page.PresetMsg:
 		m.setup.OnPreset(msg)
 	default:

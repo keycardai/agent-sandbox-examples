@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os/exec"
 	"runtime"
 	"slices"
@@ -962,7 +963,7 @@ func (m *model) onAgentAdded(msg agentAddedMsg) {
 		m.overlay = overlay{}
 	}
 	m.endQuestions()
-	m.state.Setup.Describe, m.state.Setup.Problems = msg.describe, msg.problems
+	m.state.Setup.SetSettings(msg.describe, msg.problems)
 	if ended.StopAfter {
 		m.stopEverything(ended.QuitAfter)
 		return
@@ -976,7 +977,7 @@ func (m *model) onAgentAdded(msg agentAddedMsg) {
 		m.state.Record("✕", "Adding an agent failed: "+component.FirstLine(msg.err.Error()))
 		return
 	}
-	m.state.Agents.List = msg.agents
+	m.state.SetAgents(msg.agents)
 	m.session.SelectAgent(msg.email)
 	m.syncAgents()
 	m.state.Record("✓", "Gave "+msg.email+" an agent in this demo")
@@ -1045,6 +1046,7 @@ func (m *model) removeAgentNow(email string) {
 // sendRequest sends the request the Agents tab asked for from the agent's
 // container, and reports what came back.
 func (m *model) sendRequest(msg page.SendRequestMsg) tea.Cmd {
+	m.state.Record("▸", msg.Agent+"'s agent sent "+msg.Method+" "+msg.URL)
 	session, base := m.session, m.ctx
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(base, requestTimeout)
@@ -1054,6 +1056,25 @@ func (m *model) sendRequest(msg page.SendRequestMsg) tea.Cmd {
 			Agent: msg.Agent, Seq: msg.Seq, Method: msg.Method, URL: msg.URL, Response: response, Err: err,
 		}
 	}
+}
+
+// onRequestDone records what came back from a request the Agents tab
+// asked for, and shows it there.
+func (m *model) onRequestDone(msg page.RequestDoneMsg) {
+	sent := msg.Agent + "'s agent: " + msg.Method + " " + msg.URL
+	switch {
+	case msg.Err != nil:
+		m.state.Record("✕", sent+": "+component.FirstLine(msg.Err.Error()))
+	case msg.Response.Failure != "":
+		m.state.Record("✕", sent+": "+msg.Response.Failure)
+	default:
+		mark := "✓"
+		if msg.Response.Status >= http.StatusBadRequest {
+			mark = "✕"
+		}
+		m.state.Record(mark, sent+": "+strconv.Itoa(msg.Response.Status)+" "+http.StatusText(msg.Response.Status))
+	}
+	m.agents.OnRequestDone(msg)
 }
 
 // openEvents opens the zone's event log in the console, where the zone

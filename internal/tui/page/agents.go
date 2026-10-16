@@ -278,13 +278,12 @@ func (a *Agents) Send() tea.Cmd {
 	}
 	a.ui.Logs.Log(state.SourceResponse).Reset()
 	focus := follow(a.FocusPane(AgentPaneRequests))
-	a.state.Record("▸", agent+"'s agent sent "+item.method+" "+item.url)
 	request := SendRequestMsg{Agent: agent, Seq: a.sent, Method: item.method, URL: item.url, Body: item.body}
 	return tea.Batch(focus, func() tea.Msg { return request })
 }
 
-// OnRequestDone records what came back. It shows it while it answers the
-// request the tab shows.
+// OnRequestDone shows what came back, while it answers the request the tab
+// shows.
 func (a *Agents) OnRequestDone(msg RequestDoneMsg) {
 	if a.request.running && a.request.seq == msg.Seq {
 		request := &a.request
@@ -296,19 +295,6 @@ func (a *Agents) OnRequestDone(msg RequestDoneMsg) {
 			body.Add(msg.Response.Failure)
 		}
 		a.ui.Logs.Refresh(true)
-	}
-	sent := msg.Agent + "'s agent: " + msg.Method + " " + msg.URL
-	switch {
-	case msg.Err != nil:
-		a.state.Record("✕", sent+": "+component.FirstLine(msg.Err.Error()))
-	case msg.Response.Failure != "":
-		a.state.Record("✕", sent+": "+msg.Response.Failure)
-	default:
-		mark := "✓"
-		if msg.Response.Status >= http.StatusBadRequest {
-			mark = "✕"
-		}
-		a.state.Record(mark, sent+": "+strconv.Itoa(msg.Response.Status)+" "+http.StatusText(msg.Response.Status))
 	}
 }
 

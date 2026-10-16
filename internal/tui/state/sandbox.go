@@ -196,6 +196,9 @@ func (s *Sandbox) SetPods(pods []ContainerRow, agents []sandbox.Agent, err error
 	}
 }
 
+// SetAgents keeps the agents the settings now give, as after adding one.
+func (s *Sandbox) SetAgents(agents []sandbox.Agent) { s.Agents.List = agents }
+
 // Selected returns the selected agent and its index, or -1 when unlisted.
 func (s *Sandbox) Selected() (sandbox.Agent, int) {
 	email := s.session.Selected()
