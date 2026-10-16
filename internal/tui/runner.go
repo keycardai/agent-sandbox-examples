@@ -55,6 +55,8 @@ type (
 	actionDoneMsg struct {
 		what string
 		err  error
+		// then runs when the action succeeded.
+		then func()
 	}
 	execDoneMsg struct {
 		plain bool
@@ -367,12 +369,19 @@ func (m *model) down() {
 		m.shared.Notify("Stopping the bring-up first…", false)
 		return
 	}
-	m.runAction("Stopping everything", m.shared.Session.Down)
+	// The bring-up that stopped or failed before is gone with the sandbox.
+	m.runActionThen("Stopping everything", m.shared.Session.Down, m.shared.ResetSteps)
 }
 
 // runAction runs work in the background, and reports when it is done. It
 // is the one action that runs until then.
 func (m *model) runAction(what string, work func(ctx context.Context, out io.Writer) error) {
+	m.runActionThen(what, work, nil)
+}
+
+// runActionThen is runAction, and runs then on the TUI's goroutine once the
+// work succeeded.
+func (m *model) runActionThen(what string, work func(ctx context.Context, out io.Writer) error, then func()) {
 	shared := m.shared
 	shared.Record("▸", what)
 	shared.Notify(what+"…", false)
@@ -384,7 +393,7 @@ func (m *model) runAction(what string, work func(ctx context.Context, out io.Wri
 				out.Send(actionDoneMsg{what: what, err: fmt.Errorf("%w: %v", errPanic, r)})
 			}
 		}()
-		out.Send(actionDoneMsg{what: what, err: work(ctx, io.Discard)})
+		out.Send(actionDoneMsg{what: what, err: work(ctx, io.Discard), then: then})
 	})
 }
 
@@ -397,6 +406,9 @@ func (m *model) onActionDone(msg actionDoneMsg) tea.Cmd {
 	} else {
 		shared.Notify(msg.what+": done", false)
 		shared.Record("✓", msg.what+": done")
+		if msg.then != nil {
+			msg.then()
+		}
 	}
 	// A quit that waited for the action does not hide its failure.
 	if m.quitAfterAction {

@@ -271,6 +271,21 @@ func TestStopWhileAToolRuns(t *testing.T) {
 	}
 }
 
+// TestDownForgetsTheFailedStep forgets the bring-up that failed once
+// everything stopped, so Home no longer says where it stopped.
+func TestDownForgetsTheFailedStep(t *testing.T) {
+	t.Parallel()
+	root := quietModel(t)
+	root.Update(stepDoneMsg{index: 0, err: sandbox.ErrDocker})
+	root.down()
+	root.Update(<-root.bus.ch)
+	for _, row := range root.shared.Steps {
+		if row.State != page.StepPending {
+			t.Errorf("after the stop, %q is %v, want it pending", row.Step.Title, row.State)
+		}
+	}
+}
+
 // TestNothingToStopOnAnExistingCluster says that D has nothing to stop on
 // an existing cluster, and does not ask to delete a k3d cluster.
 func TestNothingToStopOnAnExistingCluster(t *testing.T) {
