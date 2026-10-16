@@ -189,7 +189,7 @@ func (m *model) confirmModal() string {
 // offered only where it stops something: not on an existing cluster.
 func (m *model) quitModal() string {
 	theme := m.ui.Styles
-	if !m.overlay.keepsRunning {
+	if !m.anythingRunning() {
 		return theme.Modal.Render(lipgloss.JoinVertical(lipgloss.Left, theme.ModalTitle.Render(m.overlay.title), "",
 			component.Chips(theme, component.Hint{Key: component.KeyEnter, Desc: "quit"},
 				component.Hint{Key: component.KeyEsc, Desc: "stay"})))
@@ -200,6 +200,6 @@ func (m *model) quitModal() string {
 	}
 	chips = append(chips, component.Hint{Key: component.KeyEsc, Desc: "stay"})
 	return theme.Modal.Width(component.ModalWidth(m.ui.Width)).Render(lipgloss.JoinVertical(lipgloss.Left,
-		theme.ModalTitle.Render(m.overlay.title), "", theme.Muted.Render(m.overlay.body), "",
+		theme.ModalTitle.Render(m.overlay.title), "", theme.Muted.Render(m.quitBody()), "",
 		component.Chips(theme, chips...)))
 }

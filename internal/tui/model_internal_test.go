@@ -160,6 +160,23 @@ func TestReadFromBeforeAStop(t *testing.T) {
 	}
 }
 
+// TestQuitDialogFollowsTheJob draws the quit dialog from what runs now: a
+// bring-up that ends while it is open drops out of it.
+func TestQuitDialogFollowsTheJob(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	root.state.Job = state.Job{Kind: state.JobBringUp}
+	root.Update(press("q"))
+	if view := ansi.Strip(root.View().Content); !strings.Contains(view, "A bring-up is running") {
+		t.Fatalf("the quit dialog does not say the bring-up runs:\n%s", view)
+	}
+	root.state.EndJob()
+	if view := ansi.Strip(root.View().Content); strings.Contains(view, "A bring-up is running") ||
+		!strings.Contains(view, "The sandbox keeps running") {
+		t.Errorf("the quit dialog after the bring-up ended; want it to say only what keeps running:\n%s", view)
+	}
+}
+
 // TestRecreateAsks offers to recreate a cluster made for another issuer
 // URL, or one the kubeconfig has no context for, and says which. Recreating
 // deletes the cluster, so only y says yes: enter says no.
@@ -527,7 +544,7 @@ func TestNothingToStopOnAnExistingCluster(t *testing.T) {
 	if root.overlay.kind != overlayNone || !strings.Contains(root.ui.Toast.Text, "nothing for D to stop") {
 		t.Errorf("D: overlay %v, notice %q; want only a notice", root.overlay.kind, root.ui.Toast.Text)
 	}
-	if root.Update(press("q")); root.overlay.keepsRunning {
+	if root.Update(press("q")); root.anythingRunning() {
 		t.Error("the quit dialog offers to stop the existing cluster")
 	}
 	// While a bring-up runs, quitting stops it, and D still has nothing to

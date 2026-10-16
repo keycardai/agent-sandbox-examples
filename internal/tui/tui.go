@@ -95,9 +95,6 @@ type overlay struct {
 	title string
 	body  string
 	yes   tea.Msg
-	// keepsRunning is set on the quit dialog when part of the sandbox runs
-	// and stays up after the quit.
-	keepsRunning bool
 }
 
 type overlayKind int

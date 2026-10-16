@@ -139,24 +139,30 @@ func (m *model) overlayKeys(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 // quit asks how to leave. By default the sandbox keeps running: the
 // tunnel, the mirror and the cluster stay up, and they show again next
 // time. D asks, then stops everything first. With nothing running, it
-// only asks.
+// only asks. The dialog says what runs when it is drawn, so a job that
+// ends while it is open drops out of it.
 func (m *model) quit() tea.Cmd {
-	m.overlay = overlay{kind: overlayQuit, title: "Quit " + style.AppName + "?", keepsRunning: m.anythingRunning()}
-	m.overlay.body = "The sandbox keeps running. The tunnel, the mirror and the cluster stay up,\n" +
+	m.overlay = overlay{kind: overlayQuit, title: "Quit " + style.AppName + "?"}
+	return nil
+}
+
+// quitBody says what quitting leaves running, and what it stops.
+func (m *model) quitBody() string {
+	body := "The sandbox keeps running. The tunnel, the mirror and the cluster stay up,\n" +
 		"and they show here again next time."
 	if m.session.Local().Existing() {
-		m.overlay.body = "The sandbox keeps running in the cluster, and shows here again next time."
+		body = "The sandbox keeps running in the cluster, and shows here again next time."
 	}
 	switch job := m.state.Job; job.Kind {
 	case state.JobBringUp:
-		m.overlay.body = "A bring-up is running, and quitting stops it where it is.\n" + m.overlay.body
+		body = "A bring-up is running, and quitting stops it where it is.\n" + body
 	case state.JobChecks:
-		m.overlay.body = "The checks are running, and quitting stops them where they are.\n" + m.overlay.body
+		body = "The checks are running, and quitting stops them where they are.\n" + body
 	case state.JobAction, state.JobStop:
-		m.overlay.body = job.Name + " is running, and quitting stops it where it is.\n" + m.overlay.body
+		body = job.Name + " is running, and quitting stops it where it is.\n" + body
 	case state.JobNone:
 	}
-	return nil
+	return body
 }
 
 // anythingRunning reports whether a part of the sandbox runs that D
@@ -169,7 +175,7 @@ func (m *model) anythingRunning() bool {
 }
 
 func (m *model) quitKeys(msg tea.KeyPressMsg) tea.Cmd {
-	keepsRunning := m.overlay.keepsRunning
+	keepsRunning := m.anythingRunning()
 	m.overlay = overlay{}
 	switch msg.String() {
 	case component.KeyEnter, "q", "y", component.KeyCtrlC:
