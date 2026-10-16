@@ -140,8 +140,7 @@ func (s *Session) Steps() []Step {
 
 // Run runs one step with its output on out.
 func (s *Session) Run(ctx context.Context, stepID StepID, out io.Writer) error {
-	local := *s.Local()
-	local.Out = out
+	local := s.Local().WithIO(out, nil)
 	run, ok := map[StepID]func(context.Context, *Local) error{
 		StepTunnel: s.runTunnel, StepCluster: s.runCluster, StepMirror: s.runMirror,
 		StepIssuer: s.runIssuer, StepImages: s.runImages, StepZone: s.runZone,
@@ -151,7 +150,7 @@ func (s *Session) Run(ctx context.Context, stepID StepID, out io.Writer) error {
 		return fmt.Errorf("%w: %s", ErrStep, stepID)
 	}
 	defer s.changed()
-	return run(ctx, &local)
+	return run(ctx, local)
 }
 
 // RecreateCluster deletes the k3d cluster and creates it again with the
@@ -159,8 +158,7 @@ func (s *Session) Run(ctx context.Context, stepID StepID, out io.Writer) error {
 // ErrBrokenCluster.
 func (s *Session) RecreateCluster(ctx context.Context, out io.Writer) error {
 	defer s.changed()
-	local := *s.Local()
-	local.Out = out
+	local := s.Local().WithIO(out, nil)
 	if err := local.Down(ctx, "", true); err != nil {
 		return err
 	}
@@ -381,8 +379,7 @@ func (s *Session) RestartAgent(ctx context.Context, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	local := *s.Local()
-	local.Out = out
+	local := s.Local().WithIO(out, nil)
 	if _, err = local.kubectl(ctx, target.Cluster, nil, namespaceFlag, target.Namespace,
 		"delete", "pod", target.Pod, "--wait=true"); err != nil {
 		return fmt.Errorf("%w: %w", ErrPod, err)
@@ -395,8 +392,7 @@ func (s *Session) RestartAgent(ctx context.Context, out io.Writer) error {
 // zone-setup created in the zone stays.
 func (s *Session) Down(ctx context.Context, out io.Writer) error {
 	defer s.changed()
-	local := *s.Local()
-	local.Out = out
+	local := s.Local().WithIO(out, nil)
 	if err := local.StopServices(ctx); err != nil {
 		return err
 	}
@@ -552,9 +548,8 @@ func (s *Session) Describe() map[string]string {
 // the tunnel and the other agents stay as they are.
 func (s *Session) DeployAgent(ctx context.Context, email string, out io.Writer) error {
 	defer s.changed()
-	local := *s.Local()
-	local.Out = out
-	if err := s.runZone(ctx, &local); err != nil {
+	local := s.Local().WithIO(out, nil)
+	if err := s.runZone(ctx, local); err != nil {
 		return err
 	}
 	cfg, err := local.runSettings(ctx)
@@ -590,9 +585,8 @@ func (s *Session) DeployAgent(ctx context.Context, email string, out io.Writer) 
 // local/out/zone-setup.yaml still lists them.
 func (s *Session) RemoveAgent(ctx context.Context, email string, out io.Writer) error {
 	defer s.changed()
-	local := *s.Local()
-	local.Out = out
-	removal, err := s.removal(ctx, &local, email)
+	local := s.Local().WithIO(out, nil)
+	removal, err := s.removal(ctx, local, email)
 	if err != nil {
 		return err
 	}
@@ -602,7 +596,7 @@ func (s *Session) RemoveAgent(ctx context.Context, email string, out io.Writer) 
 		}
 	}
 	if removal.inSettings {
-		if err = s.removeUser(ctx, &local, email); err != nil {
+		if err = s.removeUser(ctx, local, email); err != nil {
 			return err
 		}
 	}
@@ -610,9 +604,8 @@ func (s *Session) RemoveAgent(ctx context.Context, email string, out io.Writer) 
 		_, _ = fmt.Fprintf(out, "Removed %s's agent from the settings. Nothing of it is running.\n", email)
 		return nil
 	}
-	local = *s.Local()
-	local.Out = out
-	return s.runZone(ctx, &local)
+	local = s.Local().WithIO(out, nil)
+	return s.runZone(ctx, local)
 }
 
 // agentRemoval is what RemoveAgent changes for one person.

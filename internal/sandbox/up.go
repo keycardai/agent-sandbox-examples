@@ -298,9 +298,7 @@ func (l *Local) startService(ctx context.Context, state *upRun, name string, run
 			return
 		}
 		defer func() { _ = log.Close() }()
-		service := *l
-		service.Out = log
-		err = run(ctx, &service)
+		err = run(ctx, l.WithIO(log, nil))
 		switch {
 		case ctx.Err() != nil:
 		case err == nil:

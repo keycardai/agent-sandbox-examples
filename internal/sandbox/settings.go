@@ -97,8 +97,9 @@ type Local struct {
 	// Stdin is the input of the command Shell runs in the agent container.
 	// If it is nil, the command reads no input.
 	Stdin io.Reader
-	// Ask asks the operator questions. When stdin is not a terminal, Ask is
-	// nil and every question returns ErrNoTerminal.
+	// Ask asks the operator questions. It is nil when no one can answer:
+	// stdin is not a terminal, the TUI draws the terminal, or the work runs
+	// in the background. Every question then returns ErrNoTerminal.
 	Ask Asker
 	// Getenv reads the environment for Init. If it is nil, Init does not
 	// read the environment.
@@ -126,6 +127,15 @@ func (l *Local) QuickIssuerFile() string {
 // the steps use that existing cluster instead of a k3d cluster.
 func (l *Local) Existing() bool {
 	return l.Settings[KeyKubeContext] != ""
+}
+
+// WithIO returns a copy of the checkout that writes to out and asks with
+// ask, which may be nil. Work in the background, such as a TUI step or a
+// service, runs on such a copy.
+func (l *Local) WithIO(out io.Writer, ask Asker) *Local {
+	copied := *l
+	copied.Out, copied.Ask = out, ask
+	return &copied
 }
 
 // StartsTunnel reports whether the bring-up starts a tunnel for the

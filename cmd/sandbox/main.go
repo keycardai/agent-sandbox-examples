@@ -134,13 +134,10 @@ func start(ctx context.Context, cmd *cli.Command) error {
 		_, _ = fmt.Fprint(cmd.Writer, intro)
 		return nil
 	}
-	local, err := newLocal(cmd)
+	local, err := loadLocal(cmd, true, forTUI)
 	if err != nil {
 		return err
 	}
-	// The TUI draws the whole terminal, so a step must not ask on it. A step
-	// that would ask fails instead, and says what to run.
-	local.Ask = nil
 	session := local.NewSession(defaultListen, defaultIssuerWait)
 	if problems := session.Problems(); len(problems) > 0 {
 		return fmt.Errorf("run go run ./cmd/sandbox init first: %w", errors.Join(problems...))
@@ -160,7 +157,7 @@ func initCommand() *cli.Command {
 			if err := noArgs(cmd); err != nil {
 				return err
 			}
-			local, err := loadLocal(cmd, false)
+			local, err := loadLocal(cmd, false, forCLI)
 			if err != nil {
 				return err
 			}
@@ -179,7 +176,7 @@ func forgetCommand() *cli.Command {
 			if err := noArgs(cmd); err != nil {
 				return err
 			}
-			local, err := loadLocal(cmd, false)
+			local, err := loadLocal(cmd, false, forCLI)
 			if err != nil {
 				return err
 			}
@@ -510,8 +507,18 @@ func runInit(ctx context.Context, local *sandbox.Local) (sandbox.InitResult, err
 }
 
 func newLocal(cmd *cli.Command) (*sandbox.Local, error) {
-	return loadLocal(cmd, true)
+	return loadLocal(cmd, true, forCLI)
 }
+
+// terminalUse says who uses the terminal: a subcommand, whose steps ask on
+// it, or the TUI, which draws all of it. A step in the TUI that would ask
+// fails instead, and says what to run.
+type terminalUse int
+
+const (
+	forCLI terminalUse = iota
+	forTUI
+)
 
 // configPath returns the settings file --config names, as an absolute path,
 // or the default one, or NoConfig.
@@ -531,10 +538,10 @@ func configPath(cmd *cli.Command) (string, error) {
 	return path, nil
 }
 
-// loadLocal returns the checkout and its settings. With strict unset, it
-// ignores a settings file that does not parse, so init can replace the file
-// and forget can delete it.
-func loadLocal(cmd *cli.Command, strict bool) (*sandbox.Local, error) {
+// loadLocal returns the checkout and its settings, for use. With strict
+// unset, it ignores a settings file that does not parse, so init can
+// replace the file and forget can delete it.
+func loadLocal(cmd *cli.Command, strict bool, use terminalUse) (*sandbox.Local, error) {
 	root, err := pinned.Root()
 	if err != nil {
 		return nil, fmt.Errorf("finding the repository: %w", err)
@@ -558,7 +565,7 @@ func loadLocal(cmd *cli.Command, strict bool) (*sandbox.Local, error) {
 		Root: root, Settings: sandbox.SettingsFrom(config, os.Getenv), Store: sandbox.NewStore(path, config, keychain),
 		Tool: sandbox.Tool, Out: cmd.Writer, Stdin: os.Stdin, Getenv: os.Getenv,
 	}
-	if onTerminal() {
+	if use == forCLI && onTerminal() {
 		local.Ask = terminalAsker{}
 	}
 	return local, nil

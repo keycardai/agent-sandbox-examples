@@ -691,3 +691,18 @@ func TestCheckIssuer(t *testing.T) {
 		})
 	}
 }
+
+// TestWithIO copies the checkout with its own output and asker, and leaves
+// the original as it was.
+func TestWithIO(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	local := &sandbox.Local{Root: t.TempDir(), Out: io.Discard, Ask: &confirmAsker{}}
+	copied := local.WithIO(&out, nil)
+	if copied == local || copied.Out != &out || copied.Ask != nil || copied.Root != local.Root {
+		t.Errorf("copy = %+v, want the same checkout writing to out, with no asker", copied)
+	}
+	if local.Out != io.Discard || local.Ask == nil {
+		t.Errorf("original = %+v, want it unchanged", local)
+	}
+}
