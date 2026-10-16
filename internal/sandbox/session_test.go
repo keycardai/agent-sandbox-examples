@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -116,6 +117,7 @@ func TestProblemSection(t *testing.T) {
 		}
 		return fmt.Errorf("the check for users@zone_url.example: %w", err)
 	}
+	account := zonesetup.ManagementServiceAccountValues{ClientSecretEnv: zonesetup.DefaultManagementSecretEnv}
 	for _, tc := range []struct {
 		name string
 		err  error
@@ -125,12 +127,30 @@ func TestProblemSection(t *testing.T) {
 		{"user", parse(valid + "users:\n  - email: not an email\n"), sandbox.SectionZone},
 		{"resource", parse(valid + "resources:\n  - name: GitHub\n"), sandbox.SectionScenario},
 		{"sign-in", fmt.Errorf("%w: invalid_client", zonesetup.ErrAuth), sandbox.SectionAccount},
+		{"management secret", noSecret(t, zonesetup.Values{ManagementServiceAccount: account}, ""), sandbox.SectionAccount},
+		{"resource secret", noSecret(t, zonesetup.Values{
+			ManagementServiceAccount: account,
+			Resources:                []zonesetup.ResourceValues{{SecretEnv: "TOKEN"}},
+		}, account.ClientSecretEnv), sandbox.SectionScenario},
 		{"mentions fields", errMentionsFields, ""},
 	} {
 		if got := sandbox.ProblemSection(tc.err); got != tc.want {
 			t.Errorf("%s: ProblemSection(%v) = %q, want %q", tc.name, tc.err, got, tc.want)
 		}
 	}
+}
+
+// noSecret returns the error LoadSecrets gives for values when only the
+// environment variable set is set.
+func noSecret(t *testing.T, values zonesetup.Values, set string) error {
+	t.Helper()
+	_, err := zonesetup.LoadSecrets(&values,
+		func(name string) (string, bool) { return "secret", name == set },
+		func(string) ([]byte, error) { return nil, fs.ErrNotExist })
+	if err == nil {
+		t.Fatalf("LoadSecrets(%+v) passed, want an error", values)
+	}
+	return fmt.Errorf("loading the secrets: %w", err)
 }
 
 // TestSessionIssuerServiceStopped stops waiting for the issuer once the

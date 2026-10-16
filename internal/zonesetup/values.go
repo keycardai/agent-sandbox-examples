@@ -627,11 +627,8 @@ func managementSecret(
 	}
 	secret, ok := lookupEnv(account.ClientSecretEnv)
 	if !ok || secret == "" {
-		return "", fmt.Errorf(
-			"%w: management_service_account.client_secret_env %s is unset",
-			ErrMissingSecret,
-			account.ClientSecretEnv,
-		)
+		const field = "management_service_account.client_secret_env"
+		return "", onField(field, fmt.Errorf("%w: %s %s is unset", ErrMissingSecret, field, account.ClientSecretEnv))
 	}
 	return secret, nil
 }
