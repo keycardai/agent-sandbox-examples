@@ -155,6 +155,12 @@ func shown(line string) string {
 // the service starts again. When the file is there but cannot be read, it
 // adds the error to log once.
 func TailFile(ctx context.Context, path string, log *Log) {
+	tailFile(ctx, path, log, func() <-chan time.Time { return time.After(tailEvery) })
+}
+
+// tailFile is TailFile, which looks at the file again when next's channel
+// sends.
+func tailFile(ctx context.Context, path string, log *Log, next func() <-chan time.Time) {
 	var offset int64
 	var ident os.FileInfo
 	failed := ""
@@ -173,7 +179,7 @@ func TailFile(ctx context.Context, path string, log *Log) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(tailEvery):
+		case <-next():
 		}
 	}
 }

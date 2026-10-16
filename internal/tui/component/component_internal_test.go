@@ -165,7 +165,8 @@ func TestTailFile(t *testing.T) {
 
 // TestTailFileUnreadable says once that the log cannot be read, instead of
 // showing an empty log. A directory stands in for the file, since even root
-// cannot read one as a file.
+// cannot read one as a file. The test sends each poll: a send returns once
+// the tail has looked at the file and waits for the next one.
 func TestTailFileUnreadable(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "tunnel.log")
@@ -173,8 +174,11 @@ func TestTailFileUnreadable(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := &Log{}
-	go TailFile(t.Context(), path, log)
-	time.Sleep(3 * tailEvery)
+	polls := make(chan time.Time)
+	go tailFile(t.Context(), path, log, func() <-chan time.Time { return polls })
+	for range 3 {
+		polls <- time.Now()
+	}
 	lines, _ := log.Snapshot()
 	if len(lines) != 1 || !strings.HasPrefix(lines[0], "Cannot read the log: ") {
 		t.Errorf("lines = %q, want one that says the log cannot be read", lines)
