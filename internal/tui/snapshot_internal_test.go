@@ -14,7 +14,7 @@ import (
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/component"
-	"github.com/keycardai/agent-sandbox-examples/internal/tui/page"
+	"github.com/keycardai/agent-sandbox-examples/internal/tui/state"
 )
 
 // update rewrites the snapshots' golden files from the screens drawn now.
@@ -111,7 +111,7 @@ func snapshots() map[string]func(t *testing.T) *model {
 // session.
 func writeSettings(t *testing.T, root *model) {
 	t.Helper()
-	root.shared.Session.Local().Store = sandbox.NewStore(sandbox.NoConfig, &sandbox.Config{}, nil)
+	root.session.Local().Store = sandbox.NewStore(sandbox.NoConfig, &sandbox.Config{}, nil)
 }
 
 // snapshotUp is a sandbox that is up, at the snapshots' size, with what
@@ -120,10 +120,10 @@ func snapshotUp(t *testing.T) *model {
 	t.Helper()
 	root := upModel(t)
 	root.Update(tea.WindowSizeMsg{Width: 150, Height: 42})
-	root.shared.Frame = 3
+	root.ui.Frame = 3
 	now := time.Now()
-	for i, row := range root.shared.Steps {
-		row.State, row.Started, row.Ended = page.StepDone, now.Add(-time.Duration(300-i*25)*time.Second),
+	for i, row := range root.state.Steps {
+		row.State, row.Started, row.Ended = state.StepDone, now.Add(-time.Duration(300-i*25)*time.Second),
 			now.Add(-time.Duration(290-i*25)*time.Second)
 	}
 	for _, event := range [][2]string{
@@ -133,7 +133,7 @@ func snapshotUp(t *testing.T) *model {
 		{"✓", "Checks: 6 of 6 passed"},
 		{"✓", "The sandbox is up"},
 	} {
-		root.shared.Record(event[0], event[1])
+		root.state.Record(event[0], event[1])
 	}
 	return root
 }
@@ -144,19 +144,19 @@ func snapshotUp(t *testing.T) *model {
 func snapshotBringUp(t *testing.T) *model {
 	t.Helper()
 	root := snapshotUp(t)
-	root.shared.Job = page.Job{Kind: page.JobBringUp}
+	root.state.Job = state.Job{Kind: state.JobBringUp}
 	now := sampleTime()
-	root.shared.Now = func() time.Time { return now }
-	for i, row := range root.shared.Steps {
+	root.state.Now = func() time.Time { return now }
+	for i, row := range root.state.Steps {
 		switch {
 		case i == 6:
-			row.State, row.Started, row.Ended = page.StepRunning, now.Add(-41*time.Second), time.Time{}
+			row.State, row.Started, row.Ended = state.StepRunning, now.Add(-41*time.Second), time.Time{}
 			row.Log.Add(`Release "keycard-sandbox" has been upgraded. Happy Helming!`, "NAME: keycard-sandbox",
 				"STATUS: deployed", "Waiting for deployment agent-sandbox-controller to be ready")
 		case i > 6:
-			row.State = page.StepPending
+			row.State = state.StepPending
 		}
 	}
-	root.shared.StepCursor = 6
+	root.state.Cursor = 6
 	return root
 }

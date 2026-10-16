@@ -6,7 +6,7 @@ import (
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/component"
-	"github.com/keycardai/agent-sandbox-examples/internal/tui/page"
+	"github.com/keycardai/agent-sandbox-examples/internal/tui/state"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/style"
 )
 
@@ -15,15 +15,14 @@ import (
 // up from before, and the TUI only shows what runs. Without a tunnel step, as on an
 // existing cluster, the bring-up waits for u.
 func (m *model) Init() tea.Cmd {
-	shared := m.shared
 	cmds := []tea.Cmd{frameTick(), m.poll(), m.bus.next(), tea.RequestWindowSize, tea.RequestBackgroundColor}
 	switch {
-	case len(shared.Steps) == 0:
-	case shared.Steps[0].Step.ID != sandbox.StepTunnel:
-		shared.Notify("Press u to bring the sandbox up.", false)
-	case shared.Session.Local().ServiceStatus(sandbox.ServiceTunnel).Running:
-		shared.Record("•", "Found the tunnel running from before")
-		shared.Notify("Found the tunnel from before. Press u to bring the sandbox up again.", false)
+	case len(m.state.Steps) == 0:
+	case m.state.Steps[0].Step.ID != sandbox.StepTunnel:
+		m.ui.Notify("Press u to bring the sandbox up.", false)
+	case m.session.Local().ServiceStatus(sandbox.ServiceTunnel).Running:
+		m.state.Record("•", "Found the tunnel running from before")
+		m.ui.Notify("Found the tunnel from before. Press u to bring the sandbox up again.", false)
 	default:
 		m.startBringUp(0, false)
 	}
@@ -43,9 +42,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.shared.Width, m.shared.Height = msg.Width, msg.Height
+		m.ui.Width, m.ui.Height = msg.Width, msg.Height
 	case tea.BackgroundColorMsg:
-		m.shared.Styles = style.New(msg.IsDark())
+		m.ui.Styles = style.New(msg.IsDark())
 	case tea.KeyPressMsg:
 		return m, m.keyPress(msg)
 	}
@@ -62,13 +61,13 @@ func (m *model) updateBackground(msg tea.Msg) (tea.Cmd, bool) {
 	}
 	switch msg := msg.(type) {
 	case frameMsg:
-		m.shared.Frame++
+		m.ui.Frame++
 		return frameTick(), true
 	case pollMsg:
 		m.tickPlanned = false
 		return m.poll(), true
 	case statusMsg:
-		m.shared.Status, m.shared.Read = msg.status, true
+		m.state.SetStatus(msg.status)
 		return m.polled(), true
 	case podsMsg:
 		m.onPods(msg)
@@ -81,7 +80,7 @@ func (m *model) updateBackground(msg tea.Msg) (tea.Cmd, bool) {
 func (m *model) updateJobs(msg tea.Msg) (tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case stepStartMsg:
-		m.onStepStart(msg)
+		m.state.StepStarted(msg.index)
 	case stepDoneMsg:
 		m.onStepDone(msg)
 	case bringUpDoneMsg:
@@ -111,7 +110,7 @@ func (m *model) keyPress(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case msg.String() == component.KeyCtrlC, msg.String() == "q":
 		return m.quit()
-	case key.Matches(msg, m.shared.Keys.Help):
+	case key.Matches(msg, m.ui.Keys.Help):
 		m.overlay = overlay{kind: overlayHelp}
 		return nil
 	}
@@ -141,15 +140,15 @@ func (m *model) quit() tea.Cmd {
 	m.overlay = overlay{kind: overlayQuit, title: "Quit " + style.AppName + "?", keepsRunning: m.anythingRunning()}
 	m.overlay.body = "The sandbox keeps running. The tunnel, the mirror and the cluster stay up,\n" +
 		"and they show here again next time."
-	if m.shared.Session.Local().Existing() {
+	if m.session.Local().Existing() {
 		m.overlay.body = "The sandbox keeps running in the cluster, and shows here again next time."
 	}
-	switch job := m.shared.Job; job.Kind {
-	case page.JobBringUp:
+	switch job := m.state.Job; job.Kind {
+	case state.JobBringUp:
 		m.overlay.body = "A bring-up is running, and quitting stops it where it is.\n" + m.overlay.body
-	case page.JobAction, page.JobStop:
+	case state.JobAction, state.JobStop:
 		m.overlay.body = job.Name + " is running, and quitting stops it where it is.\n" + m.overlay.body
-	case page.JobNone:
+	case state.JobNone:
 	}
 	return nil
 }
@@ -158,9 +157,9 @@ func (m *model) quit() tea.Cmd {
 // stops: a bring-up, an action, the tunnel, the mirror or the local
 // cluster.
 func (m *model) anythingRunning() bool {
-	status := m.shared.Status
-	local := status.ClusterExists && !m.shared.Session.Local().Existing()
-	return m.shared.Job.Busy() || status.Tunnel.Running || status.Mirror.Running || local
+	status := m.state.Status
+	local := status.ClusterExists && !m.session.Local().Existing()
+	return m.state.Job.Busy() || status.Tunnel.Running || status.Mirror.Running || local
 }
 
 func (m *model) quitKeys(msg tea.KeyPressMsg) tea.Cmd {
@@ -168,10 +167,10 @@ func (m *model) quitKeys(msg tea.KeyPressMsg) tea.Cmd {
 	m.overlay = overlay{}
 	switch msg.String() {
 	case component.KeyEnter, "q", "y", component.KeyCtrlC:
-		m.shared.CancelJob()
+		m.state.CancelJob()
 		return tea.Quit
 	case "D":
-		if !keepsRunning || !m.shared.Job.Is(page.JobBringUp) && m.shared.Busy() {
+		if !keepsRunning || !m.state.Job.Is(state.JobBringUp) && m.busy() {
 			return nil
 		}
 		m.askStopAll(true)
@@ -224,7 +223,7 @@ func (m *model) dashboardKeys(msg tea.KeyPressMsg) tea.Cmd {
 // actionKeys handles the keys that act on the sandbox, and reports whether
 // msg was one.
 func (m *model) actionKeys(msg tea.KeyPressMsg) bool {
-	keys := m.shared.Keys
+	keys := m.ui.Keys
 	switch {
 	case key.Matches(msg, keys.Start):
 		m.toggleBringUp()
@@ -242,7 +241,7 @@ func (m *model) actionKeys(msg tea.KeyPressMsg) bool {
 
 // agentActionKeys handles the keys that work with the agent.
 func (m *model) agentActionKeys(msg tea.KeyPressMsg) tea.Cmd {
-	keys := m.shared.Keys
+	keys := m.ui.Keys
 	switch {
 	case key.Matches(msg, keys.Agent):
 		return m.agent()
@@ -254,12 +253,22 @@ func (m *model) agentActionKeys(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
+// busy reports whether a job runs, and then says which in the footer.
+// Work that changes the sandbox waits for it.
+func (m *model) busy() bool {
+	text := m.state.Job.WaitText()
+	if text != "" {
+		m.ui.Notify(text, true)
+	}
+	return text != ""
+}
+
 // isDown reports whether the last read found the sandbox down, and then
 // says so in the footer. Work on the agent needs the sandbox up.
 func (m *model) isDown() bool {
-	if !m.shared.Read || m.shared.SandboxUp() {
+	if !m.state.Read || m.state.Up() {
 		return false
 	}
-	m.shared.Notify("The sandbox is down. Press u to bring it up.", true)
+	m.ui.Notify("The sandbox is down. Press u to bring it up.", true)
 	return true
 }

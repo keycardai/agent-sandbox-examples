@@ -12,6 +12,7 @@ import (
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/component"
+	"github.com/keycardai/agent-sandbox-examples/internal/tui/state"
 	"github.com/keycardai/agent-sandbox-examples/internal/zonesetup"
 )
 
@@ -27,46 +28,44 @@ const (
 // failed, and once it is up, what Keycard did for the agent and what to
 // try.
 type Home struct {
-	shared *Shared
+	view
 }
 
 // NewHome returns Home.
-func NewHome(shared *Shared) *Home { return &Home{shared: shared} }
+func NewHome(ui *UI, sandbox *state.Sandbox) *Home { return &Home{view{ui: ui, state: sandbox}} }
 
 // View draws Home for how the sandbox is.
 func (h *Home) View() string {
-	shared := h.shared
-	switch phase, row := shared.Phase(); phase {
-	case PhaseBringingUp:
+	switch phase, row := h.state.Phase(); phase {
+	case state.PhaseBringingUp:
 		return h.bringUp()
-	case PhaseStopping:
-		return shared.Styles.Muted.Render(shared.spinner() + " Stopping everything…")
-	case PhaseStopped, PhaseFailed:
+	case state.PhaseStopping:
+		return h.ui.Styles.Muted.Render(h.ui.spinner() + " Stopping everything…")
+	case state.PhaseStopped, state.PhaseFailed:
 		return h.failed(row)
-	case PhaseReading:
-		return shared.Styles.Muted.Render(shared.spinner() + " Reading the sandbox…")
-	case PhaseUp:
+	case state.PhaseReading:
+		return h.ui.Styles.Muted.Render(h.ui.spinner() + " Reading the sandbox…")
+	case state.PhaseUp:
 		return h.up()
-	case PhaseDown:
+	case state.PhaseDown:
 	}
 	return h.down()
 }
 
 // Hints lists Home's keys for how the sandbox is.
 func (h *Home) Hints() []component.Hint {
-	shared := h.shared
-	switch phase, _ := shared.Phase(); phase {
-	case PhaseBringingUp:
+	switch phase, _ := h.state.Phase(); phase {
+	case state.PhaseBringingUp:
 		return []component.Hint{
 			{Key: "u", Desc: "stop"},
 			{Key: "?", Desc: wordKeys},
 			{Key: "q", Desc: wordQuit},
 		}
-	case PhaseStopping:
+	case state.PhaseStopping:
 		return []component.Hint{{Key: "?", Desc: wordKeys}, {Key: "q", Desc: wordQuit}}
-	case PhaseStopped, PhaseFailed:
+	case state.PhaseStopped, state.PhaseFailed:
 		again := "try again"
-		if phase == PhaseStopped {
+		if phase == state.PhaseStopped {
 			again = "start again"
 		}
 		return []component.Hint{
@@ -74,15 +73,15 @@ func (h *Home) Hints() []component.Hint {
 			{Key: "?", Desc: wordKeys},
 			{Key: "q", Desc: wordQuit},
 		}
-	case PhaseUp:
+	case state.PhaseUp:
 		return []component.Hint{
-			{Key: "a", Desc: shared.AgentActionName()},
+			{Key: "a", Desc: h.AgentActionName()},
 			{Key: "o", Desc: "zone events"},
 			{Key: "x", Desc: "shell"},
 			{Key: "?", Desc: wordKeys},
 			{Key: "q", Desc: wordQuit},
 		}
-	case PhaseReading, PhaseDown:
+	case state.PhaseReading, state.PhaseDown:
 	}
 	return []component.Hint{
 		{Key: "u", Desc: "bring up"},
@@ -94,26 +93,25 @@ func (h *Home) Hints() []component.Hint {
 // bringUp shows the steps as they run, and the end of the running step's
 // log. A run of the checks alone shows only their log.
 func (h *Home) bringUp() string {
-	shared := h.shared
-	theme := shared.Styles
-	current := shared.Steps[shared.StepCursor]
+	theme := h.ui.Styles
+	current := h.state.Steps[h.state.Cursor]
 	title := "Bringing up your sandbox"
 	note := "The first time takes a few minutes. Quitting stops the step that runs. What is done stays, " +
 		"and u runs the steps again."
-	if from := shared.Job.From; from > 0 {
-		title += " from: " + shared.Steps[from].Step.Title
+	if from := h.state.Job.From; from > 0 {
+		title += " from: " + h.state.Steps[from].Step.Title
 	}
 	lines := []string{}
-	if current.Step.ID == sandbox.StepChecks && shared.Job.From == shared.StepCursor {
+	if current.Step.ID == sandbox.StepChecks && h.state.Job.From == h.state.Cursor {
 		title, note = "Running the checks", "Each check sends a request from the agent and reads what came back."
 	} else {
 		lines = append(lines, "")
-		for _, row := range shared.Steps {
-			lines = append(lines, shared.stepLine(row, min(shared.bodyWidth(), readWidth)))
+		for _, row := range h.state.Steps {
+			lines = append(lines, h.stepLine(row, min(h.ui.bodyWidth(), readWidth)))
 		}
 	}
-	lines = append([]string{theme.Title.Render(title), shared.para(theme.Muted, note)}, lines...)
-	rows := shared.BodyRows() - lipgloss.Height(strings.Join(lines, "\n")) - half
+	lines = append([]string{theme.Title.Render(title), h.ui.para(theme.Muted, note)}, lines...)
+	rows := h.ui.BodyRows() - lipgloss.Height(strings.Join(lines, "\n")) - half
 	if rows > 0 {
 		lines = append(lines, "", theme.SectionTitle.Render(strings.ToUpper(current.Step.Title)))
 		for _, line := range tail(current.Log, rows-1) {
@@ -125,48 +123,46 @@ func (h *Home) bringUp() string {
 
 // failed says where the bring-up stopped, why when a step failed, and what
 // to do.
-func (h *Home) failed(row *StepRow) string {
-	shared := h.shared
-	theme := shared.Styles
+func (h *Home) failed(row *state.StepRow) string {
+	theme := h.ui.Styles
 	lines := []string{theme.Failed.Bold(true).Render("✕ The bring-up stopped at: " + row.Step.Title)}
 	switch {
 	case row.Stopped():
 		lines[0] = theme.Text.Bold(true).Render("○ You stopped the bring-up at: " + row.Step.Title)
 	case row.Err != nil:
 		message := strings.Split(strings.TrimSpace(row.Err.Error()), "\n")
-		lines = append(lines, shared.para(theme.Text, strings.Join(message[:min(len(message), failureRows)], "\n")))
+		lines = append(lines, h.ui.para(theme.Text, strings.Join(message[:min(len(message), failureRows)], "\n")))
 		if hint := StepHint(row, row.Err); hint != "" {
-			lines = append(lines, shared.para(theme.Hint, "→ "+hint))
+			lines = append(lines, h.ui.para(theme.Hint, "→ "+hint))
 		}
 	}
 	lines = append(lines, "",
-		shared.actionLine("u", "Start again from: "+shared.Steps[shared.ResumeIndex()].Step.Title),
+		h.ui.actionLine("u", "Start again from: "+h.state.Steps[h.state.ResumeIndex()].Step.Title),
 		"")
-	for _, step := range shared.Steps {
-		lines = append(lines, shared.stepLine(step, min(shared.bodyWidth(), readWidth)))
+	for _, step := range h.state.Steps {
+		lines = append(lines, h.stepLine(step, min(h.ui.bodyWidth(), readWidth)))
 	}
 	return strings.Join(lines, "\n")
 }
 
 // down says that the sandbox does not run, and how to bring it up.
 func (h *Home) down() string {
-	shared := h.shared
-	theme := shared.Styles
+	theme := h.ui.Styles
 	why := "There is no sandbox yet."
 	switch {
-	case shared.Status.ClusterErr != nil:
-		why = "The cluster might exist. Checking it failed: " + component.FirstLine(shared.Status.ClusterErr.Error())
-	case shared.Status.ClusterExists && shared.Session.Local().StartsTunnel() && !shared.Status.Tunnel.Running:
+	case h.state.Status.ClusterErr != nil:
+		why = "The cluster might exist. Checking it failed: " + component.FirstLine(h.state.Status.ClusterErr.Error())
+	case h.state.Status.ClusterExists && h.state.Local().StartsTunnel() && !h.state.Status.Tunnel.Running:
 		why = "The cluster exists, but the tunnel is stopped, so Keycard cannot reach the cluster's issuer. " +
 			"u starts a new tunnel. A quick tunnel gets a new URL, so the bring-up then asks to recreate the cluster."
-	case shared.Status.ClusterExists:
+	case h.state.Status.ClusterExists:
 		why = "The cluster exists, but the sandbox was not set up in it."
 	}
 	return strings.Join([]string{
 		theme.Title.Render("○ The sandbox is down"),
-		shared.para(theme.Muted, why),
+		h.ui.para(theme.Muted, why),
 		"",
-		shared.actionLine("u", "Bring it up. The first time takes a few minutes."),
+		h.ui.actionLine("u", "Bring it up. The first time takes a few minutes."),
 		"",
 		h.contextLine(),
 	}, "\n")
@@ -175,22 +171,21 @@ func (h *Home) down() string {
 // up shows the agent, what Keycard did for it, what to try, and what
 // happened last.
 func (h *Home) up() string {
-	shared := h.shared
-	theme := shared.Styles
+	theme := h.ui.Styles
 	lines := h.agentHeadline()
 	lines = append(lines, "", theme.SectionTitle.Render("WHAT KEYCARD DID"))
-	for _, line := range shared.keycardLines() {
+	for _, line := range h.keycardLines() {
 		lines = append(lines, "  "+line)
 	}
 	lines = append(lines, "", theme.SectionTitle.Render("TRY IT"))
 	for _, action := range h.actions() {
 		lines = append(lines, "  "+action)
 	}
-	rows := min(shared.BodyRows()-len(lines)-half, activityRows)
-	activity, _ := shared.Logs.Log(SourceActivity).Snapshot()
+	rows := min(h.ui.BodyRows()-len(lines)-half, activityRows)
+	activity, _ := h.ui.Logs.Log(state.SourceActivity).Snapshot()
 	if rows > 0 && len(activity) > 0 {
 		lines = append(lines, "", theme.SectionTitle.Render("RECENT ACTIVITY"))
-		for _, line := range shared.colorActivity(activity[max(len(activity)-rows, 0):]) {
+		for _, line := range h.ui.colorActivity(activity[max(len(activity)-rows, 0):]) {
 			lines = append(lines, "  "+line)
 		}
 	}
@@ -198,8 +193,8 @@ func (h *Home) up() string {
 }
 
 // colorActivity colors each activity row by its mark.
-func (s *Shared) colorActivity(lines []string) []string {
-	theme := s.Styles
+func (u *UI) colorActivity(lines []string) []string {
+	theme := u.Styles
 	marks := map[string]func(...string) string{
 		"✓": theme.OK.Render, "✕": theme.Failed.Render, "▸": theme.Running.Render, "•": theme.Accent.Render,
 	}
@@ -220,67 +215,65 @@ func (s *Shared) colorActivity(lines []string) []string {
 // agentHeadline says whether the agent runs, who it acts as, and that it
 // does not hold any secrets.
 func (h *Home) agentHeadline() []string {
-	shared := h.shared
-	theme := shared.Styles
-	settings := shared.Session.Local().Settings
-	person, _ := shared.SelectedAgent()
+	theme := h.ui.Styles
+	settings := h.state.Local().Settings
+	person, _ := h.state.Selected()
 	user := cmp.Or(person.Email, "the zone's user")
 	about := "It acts as " + user + " in zone " + shortHost(settings[sandbox.KeyZoneURL]) + ", and does not " +
 		"hold any secrets. The egress proxy asks Keycard for " + user + "'s credential on each request, and adds it on " +
 		"the way out."
-	name := shared.AgentName()
+	name := h.agentName()
 	if person.Email == "" {
 		name = "The agent"
 	}
-	agent, found := shared.Container(AgentContainer)
-	switch {
-	case found && agent.Container.Ready:
-		return []string{theme.OK.Bold(true).Render("● " + name + " is running"), shared.para(theme.Muted, about)}
-	case found && (agent.Container.State == StateTerminated || slices.Contains(crashReasons(), agent.Container.Reason)):
+	switch pod, row := h.state.PodState(person); pod {
+	case state.PodRunning:
+		return []string{theme.OK.Bold(true).Render("● " + name + " is running"), h.ui.para(theme.Muted, about)}
+	case state.PodAgentFailed:
 		return []string{
-			theme.Failed.Bold(true).Render("✕ " + name + " is not running: " + containerDetail(agent.Container)),
-			shared.para(theme.Muted, "Press R to restart the pod."),
+			theme.Failed.Bold(true).Render("✕ " + name + " is not running: " + containerDetail(row.Container)),
+			h.ui.para(theme.Muted, "Press R to restart the pod."),
 		}
-	case !found && shared.PodsErr != nil:
+	case state.PodUnread:
 		return []string{
 			theme.Failed.Bold(true).Render("✕ Cannot read the sandbox's pods"),
-			shared.para(theme.Muted, component.FirstLine(shared.PodsErr.Error())),
+			h.ui.para(theme.Muted, component.FirstLine(h.state.PodsErr.Error())),
 		}
-	case person.Pod == "":
+	case state.PodNone:
 		return []string{
 			theme.Dim.Bold(true).Render("○ " + name + " is not up yet"),
-			shared.para(theme.Muted, "Press u to bring the sandbox up again. It creates every agent's pod."),
+			h.ui.para(theme.Muted, "Press u to bring the sandbox up again. It creates every agent's pod."),
 		}
+	case state.PodMissing, state.PodStarting:
 	}
 	return []string{
-		theme.Running.Bold(true).Render(shared.spinner() + " " + name + "'s pod is starting"),
-		shared.para(theme.Muted, about),
+		theme.Running.Bold(true).Render(h.ui.spinner() + " " + name + "'s pod is starting"),
+		h.ui.para(theme.Muted, about),
 	}
 }
 
 // actions lists what to try, for how the demo runs its agent.
 func (h *Home) actions() []string {
-	shared := h.shared
 	actions := []string{}
-	scenario := shared.Scenario()
+	scenario := h.state.LoadedDemo()
 	switch {
 	case scenario == nil:
 	case scenario.Run.Mode == sandbox.ModeShell && len(scenario.Run.Command) > 0:
-		actions = append(actions, shared.actionLine("a", "Open "+scenario.Run.Command[0]+
+		actions = append(actions, h.ui.actionLine("a", "Open "+scenario.Run.Command[0]+
 			" in the agent, and ask for something that needs your accounts"))
 	default:
-		actions = append(actions, shared.actionLine("c", "Run the checks again"+h.checksScore()))
+		actions = append(actions, h.ui.actionLine("c", "Run the checks again"+h.checksScore()))
 	}
 	actions = append(actions,
-		shared.actionLine("o", "Open the zone's events in the Keycard console"),
-		shared.actionLine("x", "Open a shell in the agent"),
+		h.ui.actionLine("o", "Open the zone's events in the Keycard console"),
+		h.ui.actionLine("x", "Open a shell in the agent"),
 	)
 	return actions
 }
 
 // checksScore says how the last checks went, or "".
 func (h *Home) checksScore() string {
-	for _, row := range h.shared.Steps {
+	for _, row := range h.state.Steps {
 		if row.Step.ID == sandbox.StepChecks && row.Total > 0 {
 			return fmt.Sprintf(" (last time %d of %d passed)", row.Passed, row.Total)
 		}
@@ -290,9 +283,8 @@ func (h *Home) checksScore() string {
 
 // contextLine names the demo, the zone, the user and the cluster.
 func (h *Home) contextLine() string {
-	shared := h.shared
-	theme := shared.Styles
-	settings := shared.Session.Local().Settings
+	theme := h.ui.Styles
+	settings := h.state.Local().Settings
 	parts := make([]string, 0, half*half)
 	for _, item := range [][2]string{
 		{"demo", cmp.Or(settings[sandbox.KeyScenario], sandbox.DefaultScenario)},
@@ -310,9 +302,9 @@ func (h *Home) contextLine() string {
 // agentContext names the selected agent's person, and how many agents
 // there are when there is more than one.
 func (h *Home) agentContext() string {
-	agent, _ := h.shared.SelectedAgent()
-	if len(h.shared.Agents) > 1 {
-		return agent.Email + " (" + component.Plural(len(h.shared.Agents), wordAgent) + ")"
+	agent, _ := h.state.Selected()
+	if len(h.state.Agents) > 1 {
+		return agent.Email + " (" + component.Plural(len(h.state.Agents), wordAgent) + ")"
 	}
 	return agent.Email
 }
@@ -329,7 +321,7 @@ func tail(log *component.Log, rows int) []string {
 // StepHint says what to do about a failed step. An issuer check that
 // cannot resolve the quick tunnel's name, and checks in which the agent
 // could not resolve a name, get their own hints.
-func StepHint(row *StepRow, err error) string {
+func StepHint(row *state.StepRow, err error) string {
 	if row.Step.ID == sandbox.StepIssuer && strings.Contains(err.Error(), "trycloudflare.com") &&
 		strings.Contains(err.Error(), "no such host") {
 		return "The quick tunnel's URL no longer exists. Press u: the bring-up starts a new tunnel, " +

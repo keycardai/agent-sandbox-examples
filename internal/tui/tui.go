@@ -4,11 +4,15 @@
 // mirror run as services, so quitting the TUI leaves the sandbox up, and
 // starting it again shows it.
 //
-// The root model in this package routes each message and key, and does
-// the work in the background: the bring-up, the actions, the polling and
-// the logs it follows. Home is in the page package, which draws it and
-// keeps its state. The component package draws the parts of the screen,
-// style holds the colors, and proxylog reads the egress proxy's audit log.
+// The TUI keeps its model, its views and its controller apart. The state
+// package holds what the TUI knows about the sandbox, and the rules that
+// read and change it. The page package draws it: Home, with the UI the
+// pages share. The root model in this package is the controller: it routes
+// each message and key, does the work in the background, such as the
+// bring-up, the actions, the polling and the logs it follows, and changes
+// the state with what that work finds. The component package draws the
+// parts of the screen, style holds the colors, and proxylog reads the
+// egress proxy's audit log.
 package tui
 
 import (
@@ -22,6 +26,7 @@ import (
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/page"
+	"github.com/keycardai/agent-sandbox-examples/internal/tui/state"
 )
 
 const (
@@ -45,12 +50,17 @@ type Options struct {
 	Session *sandbox.Session
 }
 
-// model is the root of the TUI. Update runs on one goroutine. Background
-// work writes only to logs, which lock, and sends messages through bus.
+// model is the root of the TUI, its controller. It routes each message and
+// key, runs the work that changes the sandbox, and keeps what that work
+// found in state, which the pages draw with ui. Update runs on one
+// goroutine. Background work writes only to logs, which lock, and sends
+// messages through bus.
 type model struct {
-	shared *page.Shared
-	bus    *bus
-	help   help.Model
+	session *sandbox.Session
+	state   *state.Sandbox
+	ui      *page.UI
+	bus     *bus
+	help    help.Model
 	// ctx is what the work in the background runs in, and ends when Run
 	// returns. jobs counts that work's goroutines, for Run to wait for.
 	ctx  context.Context //nolint:containedctx // The model owns its background work, which ends with Run's context.
@@ -123,9 +133,10 @@ func Run(ctx context.Context, opts Options) error {
 // newModel returns the TUI for a session. Its work in the background runs
 // in ctx.
 func newModel(ctx context.Context, session *sandbox.Session) *model {
-	shared := page.NewShared(session)
-	root := &model{shared: shared, bus: newBus(ctx), help: help.New(), ctx: ctx}
-	root.home = page.NewHome(shared)
+	ui := page.NewUI()
+	sandbox := state.New(session, ui.Logs.Log)
+	root := &model{session: session, state: sandbox, ui: ui, bus: newBus(ctx), help: help.New(), ctx: ctx}
+	root.home = page.NewHome(ui, sandbox)
 	return root
 }
 

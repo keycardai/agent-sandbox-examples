@@ -18,26 +18,26 @@ const nameWidth, targetWidth = 12, 24
 // which hosts it blocked, and how many names the agent looked up. There is
 // one line per endpoint and two more, however much traffic there is. When
 // the proxy's log cannot be read, it says why instead.
-func (s *Shared) keycardLines() []string {
-	if err := s.Traffic.Err(); err != nil {
+func (v view) keycardLines() []string {
+	if err := v.state.Traffic.Err(); err != nil {
 		return []string{
-			s.Styles.Failed.Render("✕ Cannot read the proxy's log: " + component.FirstLine(err.Error())),
-			s.Styles.Dim.Render("  The TUI tries again every few seconds."),
+			v.ui.Styles.Failed.Render("✕ Cannot read the proxy's log: " + component.FirstLine(err.Error())),
+			v.ui.Styles.Dim.Render("  The TUI tries again every few seconds."),
 		}
 	}
-	records, _ := s.Traffic.Snapshot()
-	uses, blocked := proxylog.Summarize(records, s.endpoints())
+	records, _ := v.state.Traffic.Snapshot()
+	uses, blocked := proxylog.Summarize(records, v.endpoints())
 	lines := make([]string, 0, len(uses)+half)
 	for _, use := range uses {
-		lines = append(lines, s.useLine(use))
+		lines = append(lines, v.useLine(use))
 	}
-	return append(lines, s.blockedLine(blocked), s.lookupLine(proxylog.Count(records)))
+	return append(lines, v.blockedLine(blocked), v.lookupLine(proxylog.Count(records)))
 }
 
 // useLine is one endpoint: its resource, where it is, and what came of the
 // requests to it.
-func (s *Shared) useLine(use proxylog.EndpointUse) string {
-	theme := s.Styles
+func (v view) useLine(use proxylog.EndpointUse) string {
+	theme := v.ui.Styles
 	endpoint := use.Endpoint
 	// An endpoint with a credential names its resource, then where it is.
 	// One without names only its host, across both columns.
@@ -46,7 +46,7 @@ func (s *Shared) useLine(use proxylog.EndpointUse) string {
 		where = theme.Text.Render(component.Pad(cmp.Or(endpoint.Name, endpoint.Host()), nameWidth)) + " " +
 			theme.Muted.Render(component.Pad(strings.TrimPrefix(endpoint.URL, "https://"), targetWidth))
 	}
-	icon, detail := s.useDetail(use)
+	icon, detail := v.useDetail(use)
 	return icon + " " + where + " " + detail
 }
 
@@ -55,8 +55,8 @@ func (s *Shared) useLine(use proxylog.EndpointUse) string {
 // credential, or that the server answered none of them. useRest says the
 // rest. A server's error comes after Keycard's part: the credential was
 // added, and the server refused the request.
-func (s *Shared) useDetail(use proxylog.EndpointUse) (string, string) {
-	theme := s.Styles
+func (v view) useDetail(use proxylog.EndpointUse) (string, string) {
+	theme := v.ui.Styles
 	icon, detail := theme.Faint.Render("·"), theme.Dim.Render("not used yet")
 	switch {
 	case refusedLast(use):
@@ -72,14 +72,14 @@ func (s *Shared) useDetail(use proxylog.EndpointUse) (string, string) {
 		icon = theme.Failed.Render("✕")
 		detail = theme.Failed.Render(component.Plural(use.Failed, "request") + ", the server did not answer")
 	}
-	return icon, detail + s.useRest(use)
+	return icon, detail + v.useRest(use)
 }
 
 // useRest says how many requests Keycard refused and how many the server
 // did not answer, where useDetail did not say so, what the server answered
 // the last one when that was an error, and when the last one was.
-func (s *Shared) useRest(use proxylog.EndpointUse) string {
-	theme := s.Styles
+func (v view) useRest(use proxylog.EndpointUse) string {
+	theme := v.ui.Styles
 	rest := ""
 	if use.Refused > 0 && !refusedLast(use) {
 		rest += theme.Warn.Render(fmt.Sprintf(", %d refused", use.Refused))
@@ -110,8 +110,8 @@ func serverError(record *proxylog.Record) string {
 }
 
 // blockedLine names the hosts the proxy refused, newest first.
-func (s *Shared) blockedLine(blocked []proxylog.BlockedHost) string {
-	theme := s.Styles
+func (v view) blockedLine(blocked []proxylog.BlockedHost) string {
+	theme := v.ui.Styles
 	if len(blocked) == 0 {
 		return theme.Faint.Render("·") + " " + theme.Text.Render(component.Pad("Blocked", nameWidth)) + " " +
 			theme.Dim.Render("nothing yet. A host off the allow list shows here.")
@@ -125,8 +125,8 @@ func (s *Shared) blockedLine(blocked []proxylog.BlockedHost) string {
 }
 
 // lookupLine counts the agent's DNS lookups.
-func (s *Shared) lookupLine(counts proxylog.Counts) string {
-	theme := s.Styles
+func (v view) lookupLine(counts proxylog.Counts) string {
+	theme := v.ui.Styles
 	return theme.Faint.Render("·") + " " + theme.Text.Render(component.Pad("DNS", nameWidth)) + " " +
 		theme.Dim.Render(fmt.Sprintf(
 			"%s, %d refused. The resolver tries cluster names first, so refusals are normal.",

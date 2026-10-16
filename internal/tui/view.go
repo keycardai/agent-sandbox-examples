@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/component"
-	"github.com/keycardai/agent-sandbox-examples/internal/tui/page"
+	"github.com/keycardai/agent-sandbox-examples/internal/tui/state"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/style"
 )
 
@@ -25,15 +25,14 @@ const (
 
 // View draws the TUI.
 func (m *model) View() tea.View {
-	shared := m.shared
 	content := ""
 	switch {
-	case shared.Width == 0 || shared.Height == 0:
-	case shared.Width < component.MinWidth || shared.Height < component.MinHeight:
-		content = lipgloss.Place(shared.Width, shared.Height, lipgloss.Center, lipgloss.Center,
-			shared.Styles.Muted.Render(fmt.Sprintf(
+	case m.ui.Width == 0 || m.ui.Height == 0:
+	case m.ui.Width < component.MinWidth || m.ui.Height < component.MinHeight:
+		content = lipgloss.Place(m.ui.Width, m.ui.Height, lipgloss.Center, lipgloss.Center,
+			m.ui.Styles.Muted.Render(fmt.Sprintf(
 				"The window is too small for %s.\nIt needs %d×%d, and it is %d×%d.",
-				style.AppName, component.MinWidth, component.MinHeight, shared.Width, shared.Height,
+				style.AppName, component.MinWidth, component.MinHeight, m.ui.Width, m.ui.Height,
 			)))
 	default:
 		content = m.withOverlay(m.dashboardView())
@@ -48,42 +47,41 @@ func (m *model) View() tea.View {
 // dashboardView draws Home, under the header band and over the footer
 // with Home's keys.
 func (m *model) dashboardView() string {
-	return m.shared.PageUnder(m.band(), m.home.View(), m.home.Hints())
+	return m.ui.PageUnder(m.band(), m.home.View(), m.home.Hints())
 }
 
 // band draws the header band, with how the sandbox is on the right.
 func (m *model) band() string {
-	theme := m.shared.Styles
+	theme := m.ui.Styles
 	label := theme.BandLabel.Render("home")
 	badge := m.statusBadge()
-	if lipgloss.Width(theme.Wordmark())+lipgloss.Width(label)+lipgloss.Width(badge)+bandSpace > m.shared.Width {
+	if lipgloss.Width(theme.Wordmark())+lipgloss.Width(label)+lipgloss.Width(badge)+bandSpace > m.ui.Width {
 		badge = m.shortBadge()
 	}
-	return component.Band(theme, m.shared.Width, label, badge)
+	return component.Band(theme, m.ui.Width, label, badge)
 }
 
 // statusBadge says how the sandbox is, for the header band: a progress bar
 // while it comes up, else one word.
 func (m *model) statusBadge() string {
-	shared := m.shared
-	theme := shared.Styles
-	switch phase, row := shared.Phase(); phase {
-	case page.PhaseBringingUp:
+	theme := m.ui.Styles
+	switch phase, row := m.state.Phase(); phase {
+	case state.PhaseBringingUp:
 		done := m.stepsDone()
-		return theme.BandBusy.Render(component.Spinner(shared.Frame)+" bringing up ") +
-			m.progressBar(done, len(shared.Steps)) + theme.BandLabel.Render(" "+strconv.Itoa(done)+"/"+
-			strconv.Itoa(len(shared.Steps)))
-	case page.PhaseStopping:
-		return theme.BandBusy.Render(component.Spinner(shared.Frame) + " stopping")
-	case page.PhaseStopped:
+		return theme.BandBusy.Render(component.Spinner(m.ui.Frame)+" bringing up ") +
+			m.progressBar(done, len(m.state.Steps)) + theme.BandLabel.Render(" "+strconv.Itoa(done)+"/"+
+			strconv.Itoa(len(m.state.Steps)))
+	case state.PhaseStopping:
+		return theme.BandBusy.Render(component.Spinner(m.ui.Frame) + " stopping")
+	case state.PhaseStopped:
 		return theme.BandDown.Render("○ stopped at " + row.Step.Title)
-	case page.PhaseFailed:
+	case state.PhaseFailed:
 		return theme.BandFail.Render("✕ stopped at " + row.Step.Title)
-	case page.PhaseReading:
-		return theme.BandBusy.Render(component.Spinner(shared.Frame) + " reading")
-	case page.PhaseUp:
+	case state.PhaseReading:
+		return theme.BandBusy.Render(component.Spinner(m.ui.Frame) + " reading")
+	case state.PhaseUp:
 		return theme.BandUp.Render("● up")
-	case page.PhaseDown:
+	case state.PhaseDown:
 	}
 	return theme.BandDown.Render("○ down")
 }
@@ -91,17 +89,16 @@ func (m *model) statusBadge() string {
 // shortBadge is the status badge for a narrow band: the steps done while it
 // comes up, else one word.
 func (m *model) shortBadge() string {
-	shared := m.shared
-	theme := shared.Styles
-	switch phase, _ := shared.Phase(); phase {
-	case page.PhaseBringingUp:
-		return theme.BandBusy.Render(component.Spinner(shared.Frame) + " " + strconv.Itoa(m.stepsDone()) + "/" +
-			strconv.Itoa(len(shared.Steps)))
-	case page.PhaseStopped:
+	theme := m.ui.Styles
+	switch phase, _ := m.state.Phase(); phase {
+	case state.PhaseBringingUp:
+		return theme.BandBusy.Render(component.Spinner(m.ui.Frame) + " " + strconv.Itoa(m.stepsDone()) + "/" +
+			strconv.Itoa(len(m.state.Steps)))
+	case state.PhaseStopped:
 		return theme.BandDown.Render("○ stopped")
-	case page.PhaseFailed:
+	case state.PhaseFailed:
 		return theme.BandFail.Render("✕ stopped")
-	case page.PhaseReading, page.PhaseStopping, page.PhaseUp, page.PhaseDown:
+	case state.PhaseReading, state.PhaseStopping, state.PhaseUp, state.PhaseDown:
 	}
 	return m.statusBadge()
 }
@@ -109,8 +106,8 @@ func (m *model) shortBadge() string {
 // stepsDone counts the bring-up's steps that are done.
 func (m *model) stepsDone() int {
 	done := 0
-	for _, row := range m.shared.Steps {
-		if row.State == page.StepDone {
+	for _, row := range m.state.Steps {
+		if row.State == state.StepDone {
 			done++
 		}
 	}
@@ -119,7 +116,7 @@ func (m *model) stepsDone() int {
 
 // progressBar draws done of total as filled and empty cells.
 func (m *model) progressBar(done, total int) string {
-	theme := m.shared.Styles
+	theme := m.ui.Styles
 	filled := 0
 	if total > 0 {
 		filled = done * progressCells / total
@@ -132,17 +129,17 @@ func (m *model) progressBar(done, total int) string {
 // progress is the bring-up's progress for terminals that show it, such as
 // Ghostty, iTerm2 and Windows Terminal.
 func (m *model) progress() *tea.ProgressBar {
-	steps := m.shared.Steps
+	steps := m.state.Steps
 	if len(steps) == 0 {
 		return nil
 	}
 	done := m.stepsDone()
-	switch phase, _ := m.shared.Phase(); phase {
-	case page.PhaseFailed:
+	switch phase, _ := m.state.Phase(); phase {
+	case state.PhaseFailed:
 		return tea.NewProgressBar(tea.ProgressBarError, done*percent/len(steps))
-	case page.PhaseBringingUp:
+	case state.PhaseBringingUp:
 		return tea.NewProgressBar(tea.ProgressBarDefault, done*percent/len(steps))
-	case page.PhaseReading, page.PhaseStopping, page.PhaseStopped, page.PhaseUp, page.PhaseDown:
+	case state.PhaseReading, state.PhaseStopping, state.PhaseStopped, state.PhaseUp, state.PhaseDown:
 	}
 	return nil
 }
@@ -160,16 +157,16 @@ func (m *model) withOverlay(base string) string {
 	case overlayNone:
 		return base
 	}
-	return component.Overlay(base, modal, m.shared.Width, m.shared.Height)
+	return component.Overlay(base, modal, m.ui.Width, m.ui.Height)
 }
 
 func (m *model) helpModal() string {
-	theme := m.shared.Styles
+	theme := m.ui.Styles
 	m.help.ShowAll = true
 	m.help.Styles.FullKey = theme.Accent
 	m.help.Styles.FullDesc = theme.Muted
 	m.help.Styles.FullSeparator = theme.Faint
-	body := m.help.FullHelpView(m.shared.Keys.All())
+	body := m.help.FullHelpView(m.ui.Keys.All())
 	about := theme.Muted.Render("Quitting leaves the sandbox up: the tunnel, the mirror and the cluster keep running,\n" +
 		"and they show here again next time. D stops everything.")
 	return theme.Modal.Render(lipgloss.JoinVertical(lipgloss.Left, theme.ModalTitle.Render("Keys"), "", body, "",
@@ -177,21 +174,21 @@ func (m *model) helpModal() string {
 }
 
 func (m *model) confirmModal() string {
-	theme := m.shared.Styles
+	theme := m.ui.Styles
 	choice := component.Chips(theme, component.Hint{Key: "y", Desc: "yes"}, component.Hint{Key: "n", Desc: "no"})
-	return theme.Modal.Width(component.ModalWidth(m.shared.Width)).Render(lipgloss.JoinVertical(lipgloss.Left,
+	return theme.Modal.Width(component.ModalWidth(m.ui.Width)).Render(lipgloss.JoinVertical(lipgloss.Left,
 		theme.ModalTitle.Render(m.overlay.title), "", theme.Muted.Render(m.overlay.body), "", choice))
 }
 
 // quitModal asks how to leave. With nothing running, it only asks.
 func (m *model) quitModal() string {
-	theme := m.shared.Styles
+	theme := m.ui.Styles
 	if !m.overlay.keepsRunning {
 		return theme.Modal.Render(lipgloss.JoinVertical(lipgloss.Left, theme.ModalTitle.Render(m.overlay.title), "",
 			component.Chips(theme, component.Hint{Key: component.KeyEnter, Desc: "quit"},
 				component.Hint{Key: component.KeyEsc, Desc: "stay"})))
 	}
-	return theme.Modal.Width(component.ModalWidth(m.shared.Width)).Render(lipgloss.JoinVertical(lipgloss.Left,
+	return theme.Modal.Width(component.ModalWidth(m.ui.Width)).Render(lipgloss.JoinVertical(lipgloss.Left,
 		theme.ModalTitle.Render(m.overlay.title), "", theme.Muted.Render(m.overlay.body), "",
 		component.Chips(theme, component.Hint{Key: component.KeyEnter, Desc: "quit, leave it running"},
 			component.Hint{Key: "D", Desc: "stop everything and quit"}, component.Hint{Key: component.KeyEsc, Desc: "stay"})))

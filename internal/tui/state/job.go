@@ -1,4 +1,4 @@
-package page
+package state
 
 import "context"
 
@@ -19,7 +19,7 @@ const (
 
 // Job is the background work that changes the sandbox. At most one runs,
 // and the zero Job means none does. The root model starts and ends it
-// through Shared, and the pages read it.
+// through Sandbox, and the pages read it.
 type Job struct {
 	Kind JobKind
 	// Name says what runs, in the footer and the quit dialog, such as
@@ -40,8 +40,8 @@ func (j Job) Busy() bool { return j.Kind != JobNone }
 // Is reports whether the job is of kind.
 func (j Job) Is(kind JobKind) bool { return j.Kind == kind }
 
-// waitText says what runs, for a key that waits for it, or returns "".
-func (j Job) waitText() string {
+// WaitText says what runs, for work that waits for it, or returns "".
+func (j Job) WaitText() string {
 	switch j.Kind {
 	case JobBringUp:
 		return "A bring-up is running. Wait for it to finish, or press u to stop it."
@@ -53,9 +53,9 @@ func (j Job) waitText() string {
 }
 
 // StartJob makes job the one that runs, with cancel to stop it, or nil.
-// While another job runs, it says which in the footer and refuses.
-func (s *Shared) StartJob(job Job, cancel context.CancelFunc) bool {
-	if s.Busy() {
+// While another job runs, it refuses.
+func (s *Sandbox) StartJob(job Job, cancel context.CancelFunc) bool {
+	if s.Job.Busy() {
 		return false
 	}
 	job.cancel = cancel
@@ -64,26 +64,15 @@ func (s *Shared) StartJob(job Job, cancel context.CancelFunc) bool {
 }
 
 // EndJob ends the job that runs, and returns it.
-func (s *Shared) EndJob() Job {
+func (s *Sandbox) EndJob() Job {
 	ended := s.Job
 	s.Job = Job{}
 	return ended
 }
 
 // CancelJob stops the job that runs, when it can be stopped.
-func (s *Shared) CancelJob() {
+func (s *Sandbox) CancelJob() {
 	if s.Job.cancel != nil {
 		s.Job.cancel()
 	}
-}
-
-// Busy reports whether a job runs, and says which in the footer. Work that
-// changes the sandbox waits for it.
-func (s *Shared) Busy() bool {
-	text := s.Job.waitText()
-	if text == "" {
-		return false
-	}
-	s.Notify(text, true)
-	return true
 }

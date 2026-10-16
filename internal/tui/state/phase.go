@@ -1,4 +1,4 @@
-package page
+package state
 
 // Phase is how the sandbox is, as every screen says it.
 type Phase int
@@ -24,7 +24,7 @@ const (
 // Phase says how the sandbox is, and for PhaseStopped and PhaseFailed,
 // the step the bring-up stopped at. The band and every page read it, so
 // that they agree.
-func (s *Shared) Phase() (Phase, *StepRow) {
+func (s *Sandbox) Phase() (Phase, *StepRow) {
 	switch {
 	case s.Job.Is(JobBringUp):
 		return PhaseBringingUp, nil
@@ -40,7 +40,7 @@ func (s *Shared) Phase() (Phase, *StepRow) {
 	switch {
 	case !s.Read:
 		return PhaseReading, nil
-	case s.SandboxUp():
+	case s.Up():
 		return PhaseUp, nil
 	}
 	return PhaseDown, nil

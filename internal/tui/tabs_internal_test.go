@@ -13,6 +13,7 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/page"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/proxylog"
+	"github.com/keycardai/agent-sandbox-examples/internal/tui/state"
 )
 
 // Sample hosts and endpoints the tab tests share.
@@ -102,27 +103,26 @@ func sampleTime() time.Time {
 func upModel(t *testing.T) *model {
 	t.Helper()
 	root := testModel(t)
-	shared := root.shared
-	settings := shared.Session.Local().Settings
+	settings := root.session.Local().Settings
 	settings[sandbox.KeyUserEmail] = sampleUser
 	settings[sandbox.KeyZoneURL] = "https://wvqowjom3ctf3eysdimuj4h745.keycard.cloud"
-	shared.Loaded = piScenario()
-	shared.Status = sandbox.Status{
+	root.state.Loaded = piScenario()
+	root.state.Status = sandbox.Status{
 		Deployed: true, ClusterExists: true, Tunnel: sandbox.ServiceState{Running: true},
 		Mirror: sandbox.ServiceState{Running: true},
 	}
-	shared.AllPods = []page.ContainerRow{
+	root.state.Pods = []state.ContainerRow{
 		{Pod: samplePod, Container: sandbox.ContainerStatus{
-			Name: "egress-netsetup", Init: true, State: page.StateTerminated,
+			Name: "egress-netsetup", Init: true, State: state.StateTerminated,
 		}},
-		{Pod: samplePod, Container: sandbox.ContainerStatus{Name: page.ProxyContainer, Ready: true, State: "running"}},
-		{Pod: samplePod, Container: sandbox.ContainerStatus{Name: page.AgentContainer, Ready: true, State: "running"}},
+		{Pod: samplePod, Container: sandbox.ContainerStatus{Name: state.ProxyContainer, Ready: true, State: "running"}},
+		{Pod: samplePod, Container: sandbox.ContainerStatus{Name: state.AgentContainer, Ready: true, State: "running"}},
 	}
-	shared.Pods, root.shownPod = shared.AllPods, samplePod
-	shared.Agents = []sandbox.Agent{{Email: sampleUser, Pod: samplePod, Default: true}}
-	shared.Traffic.Reset(samplePod)
+	root.shownPod = samplePod
+	root.state.Agents = []sandbox.Agent{{Email: sampleUser, Pod: samplePod, Default: true}}
+	root.state.Traffic.Reset(samplePod)
 	for _, record := range sampleRecords(sampleTime()) {
-		shared.Traffic.Add(record)
+		root.state.Traffic.Add(record)
 	}
 	return root
 }
@@ -133,8 +133,8 @@ func quietModel(t *testing.T) *model {
 	t.Helper()
 	root := upModel(t)
 	writeSettings(t, root)
-	root.shared.Session.Local().Settings[sandbox.KeyKubeContext] = "keycard-test-none"
-	root.shared.ResetSteps()
+	root.session.Local().Settings[sandbox.KeyKubeContext] = "keycard-test-none"
+	root.state.ResetSteps()
 	return root
 }
 
@@ -143,23 +143,23 @@ func TestHomeStates(t *testing.T) {
 	t.Parallel()
 	down := testModel(t)
 	bringingUp := upModel(t)
-	bringingUp.shared.Job = page.Job{Kind: page.JobBringUp}
-	bringingUp.shared.Steps[2].State = page.StepRunning
-	bringingUp.shared.StepCursor = 2
+	bringingUp.state.Job = state.Job{Kind: state.JobBringUp}
+	bringingUp.state.Steps[2].State = state.StepRunning
+	bringingUp.state.Cursor = 2
 	failed := testModel(t)
 	failed.Update(stepDoneMsg{index: 1, err: sandbox.ErrDocker})
 	reading := testModel(t)
-	reading.shared.Read = false
+	reading.state.Read = false
 	podsErr := upModel(t)
-	podsErr.shared.Pods, podsErr.shared.PodsErr = nil, fmt.Errorf(
+	podsErr.state.Pods, podsErr.state.PodsErr = nil, fmt.Errorf(
 		"%w: the connection to the server was refused",
 		sandbox.ErrPod,
 	)
 	clusterErr := testModel(t)
-	clusterErr.shared.Status.ClusterErr = fmt.Errorf("%w: cannot list k3d clusters", sandbox.ErrDocker)
+	clusterErr.state.Status.ClusterErr = fmt.Errorf("%w: cannot list k3d clusters", sandbox.ErrDocker)
 	dockerDown := upModel(t)
-	dockerDown.shared.Status.ClusterExists = false
-	dockerDown.shared.Status.ClusterErr = clusterErr.shared.Status.ClusterErr
+	dockerDown.state.Status.ClusterExists = false
+	dockerDown.state.Status.ClusterErr = clusterErr.state.Status.ClusterErr
 	const isDown = "The sandbox is down"
 	for name, tc := range map[string]struct {
 		root *model
@@ -173,7 +173,7 @@ func TestHomeStates(t *testing.T) {
 		"coming":  {bringingUp, []string{"Bringing up your sandbox", "Start the issuer mirror", "START THE ISSUER MIRROR"}},
 		"failed": {failed, []string{
 			"The bring-up stopped at: Create or check the cluster", "→ Start Docker",
-			"Start again from: " + failed.shared.Steps[0].Step.Title,
+			"Start again from: " + failed.state.Steps[0].Step.Title,
 		}},
 		"up": {upModel(t), []string{
 			sampleUser + "'s agent is running", "acts as " + sampleUser, "does not hold any secrets", "WHAT KEYCARD DID",
@@ -195,12 +195,12 @@ func TestHomeStates(t *testing.T) {
 func TestDeadTunnelHint(t *testing.T) {
 	t.Parallel()
 	root := testModel(t)
-	issuer := slices.IndexFunc(root.shared.Steps, func(row *page.StepRow) bool {
+	issuer := slices.IndexFunc(root.state.Steps, func(row *state.StepRow) bool {
 		return row.Step.ID == sandbox.StepIssuer
 	})
 	err := fmt.Errorf("%w: discovery refused: dial tcp: lookup given-shareware-tales-beta.trycloudflare.com: "+
 		"no such host", sandbox.ErrIssuer)
-	if hint := page.StepHint(root.shared.Steps[issuer], err); !strings.Contains(hint, "starts a new tunnel") {
+	if hint := page.StepHint(root.state.Steps[issuer], err); !strings.Contains(hint, "starts a new tunnel") {
 		t.Errorf("hint = %q, want it to say u starts a new tunnel", hint)
 	}
 }
@@ -213,7 +213,7 @@ func TestServerErrorAfterCredential(t *testing.T) {
 	record := newRecord(time.Now(), scopeRequest, routerHost, "/api/v1/messages", verdictAllow, sampleAllowed,
 		routerEndpoint)
 	record.Outcome.Status = http.StatusNotFound
-	root.shared.Traffic.Add(record)
+	root.state.Traffic.Add(record)
 	view := ansi.Strip(root.View().Content)
 	for _, want := range []string{"1 request, credential added", "but the server answered 404 Not Found"} {
 		if !strings.Contains(view, want) {
@@ -229,9 +229,9 @@ func TestUnansweredRequests(t *testing.T) {
 	t.Parallel()
 	root := upModel(t)
 	stamp := sampleTime().Add(5 * time.Second)
-	root.shared.Traffic.Add(newRecord(stamp, scopeRequest, "github.com", "/org/repo.git/info/refs", verdictDeny,
+	root.state.Traffic.Add(newRecord(stamp, scopeRequest, "github.com", "/org/repo.git/info/refs", verdictDeny,
 		reasonUnanswered, "github.com:443/"))
-	root.shared.Traffic.Add(newRecord(stamp, scopeRequest, githubHost, "/user", verdictDeny, reasonUnanswered,
+	root.state.Traffic.Add(newRecord(stamp, scopeRequest, githubHost, "/user", verdictDeny, reasonUnanswered,
 		githubEndpoint))
 	view := ansi.Strip(root.View().Content)
 	for target, wants := range map[string][]string{

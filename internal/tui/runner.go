@@ -20,6 +20,7 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/component"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/page"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/proxylog"
+	"github.com/keycardai/agent-sandbox-examples/internal/tui/state"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/style"
 )
 
@@ -49,7 +50,7 @@ type (
 	bringUpDoneMsg struct{ err error }
 	statusMsg      struct{ status sandbox.Status }
 	podsMsg        struct {
-		rows   []page.ContainerRow
+		rows   []state.ContainerRow
 		agents []sandbox.Agent
 		err    error
 	}
@@ -90,26 +91,21 @@ func pollTick() tea.Cmd {
 // creates it again. A failed step stops the run, except the checks: the
 // sandbox is up even when a check fails.
 func (m *model) startBringUp(from int, recreate bool) {
-	shared := m.shared
-	if from >= len(shared.Steps) {
+	if from >= len(m.state.Steps) {
 		return
 	}
 	ctx, cancel := context.WithCancel(m.ctx)
-	if !shared.StartJob(page.Job{Kind: page.JobBringUp, From: from}, cancel) {
+	if !m.state.StartJob(state.Job{Kind: state.JobBringUp, From: from}, cancel) {
 		cancel()
 		return
 	}
 	if from == 0 {
-		shared.Record("▸", "Bring-up started")
+		m.state.Record("▸", "Bring-up started")
 	} else {
-		shared.Record("▸", "Bring-up started again at: "+shared.Steps[from].Step.Title)
+		m.state.Record("▸", "Bring-up started again at: "+m.state.Steps[from].Step.Title)
 	}
-	for _, row := range shared.Steps[from:] {
-		row.State, row.Err = page.StepPending, nil
-		row.Log.Reset()
-	}
-	m.trackStep(from)
-	run := bringUp{session: shared.Session, out: m.bus, steps: slices.Clone(shared.Steps), recreate: recreate}
+	m.state.StartSteps(from)
+	run := bringUp{session: m.session, out: m.bus, steps: slices.Clone(m.state.Steps), recreate: recreate}
 	m.jobs.Go(func() { runSteps(ctx, cancel, run, from) })
 }
 
@@ -117,7 +113,7 @@ func (m *model) startBringUp(from int, recreate bool) {
 type bringUp struct {
 	session  *sandbox.Session
 	out      *bus
-	steps    []*page.StepRow
+	steps    []*state.StepRow
 	recreate bool
 }
 
@@ -154,40 +150,25 @@ func runSteps(ctx context.Context, cancel context.CancelFunc, run bringUp, from 
 	run.out.Send(bringUpDoneMsg{})
 }
 
-// trackStep follows step i on Home.
-func (m *model) trackStep(i int) {
-	m.shared.StepCursor = i
-}
-
-func (m *model) onStepStart(msg stepStartMsg) {
-	row := m.shared.Steps[msg.index]
-	row.State, row.Started, row.Ended = page.StepRunning, m.shared.Now(), time.Time{}
-	m.trackStep(msg.index)
-}
-
 // onStepDone marks the step, and offers to recreate a cluster that was made
 // for another tunnel URL. A step the operator stopped says so, and not why
 // it ended.
 func (m *model) onStepDone(msg stepDoneMsg) {
-	shared := m.shared
-	row := shared.Steps[msg.index]
-	row.Ended, row.Err = m.shared.Now(), msg.err
-	row.State = page.StepDone
+	row := m.state.StepEnded(msg.index, msg.err)
 	if row.Step.ID == sandbox.StepChecks {
 		m.recordChecks(row, msg.err)
 	} else if msg.err == nil {
-		shared.Record("✓", row.Step.Title+" ("+component.Duration(row.Ended.Sub(row.Started))+")")
+		m.state.Record("✓", row.Step.Title+" ("+component.Duration(row.Ended.Sub(row.Started))+")")
 	}
 	if msg.err == nil {
 		return
 	}
-	row.State = page.StepFailed
 	if row.Stopped() {
 		m.recordStop(row)
 		return
 	}
 	if row.Step.ID != sandbox.StepChecks {
-		shared.Record("✕", row.Step.Title+": "+component.FirstLine(msg.err.Error()))
+		m.state.Record("✕", row.Step.Title+": "+component.FirstLine(msg.err.Error()))
 	}
 	row.Log.Add("", "✕ "+msg.err.Error())
 	if hint := page.StepHint(row, msg.err); hint != "" {
@@ -206,26 +187,25 @@ func recreatable(err error) bool {
 
 // recordStop says in the activity log and in the step's log that the
 // operator stopped the bring-up at row. recordChecks says it for the checks.
-func (m *model) recordStop(row *page.StepRow) {
+func (m *model) recordStop(row *state.StepRow) {
 	row.Log.Add("", "○ You stopped the bring-up here.")
 	if row.Step.ID != sandbox.StepChecks {
-		m.shared.Record("•", "Stopped the bring-up at: "+row.Step.Title)
+		m.state.Record("•", "Stopped the bring-up at: "+row.Step.Title)
 	}
 }
 
-// recordChecks counts the checks that passed, and records how they went,
-// that they were stopped, or that they did not run.
-func (m *model) recordChecks(row *page.StepRow, err error) {
-	row.Passed, row.Total = countChecks(row.Log)
+// recordChecks records how the checks went, that they were stopped, or
+// that they did not run.
+func (m *model) recordChecks(row *state.StepRow, err error) {
 	switch {
 	case errors.Is(err, context.Canceled):
-		m.shared.Record("•", "Stopped the checks")
+		m.state.Record("•", "Stopped the checks")
 	case err != nil && row.Total == 0:
-		m.shared.Record("✕", "The checks did not run: "+component.FirstLine(err.Error()))
+		m.state.Record("✕", "The checks did not run: "+component.FirstLine(err.Error()))
 	case err != nil:
-		m.shared.Record("✕", fmt.Sprintf("Checks: %d of %d passed", row.Passed, row.Total))
+		m.state.Record("✕", fmt.Sprintf("Checks: %d of %d passed", row.Passed, row.Total))
 	default:
-		m.shared.Record("✓", fmt.Sprintf("Checks: %d of %d passed", row.Passed, row.Total))
+		m.state.Record("✓", fmt.Sprintf("Checks: %d of %d passed", row.Passed, row.Total))
 	}
 }
 
@@ -241,39 +221,22 @@ func recreateReason(err error) string {
 	return why + " It takes about a minute, and the\nsandbox's Keycard setup stays."
 }
 
-// countChecks counts the PASS and FAIL lines the checks print.
-func countChecks(log *component.Log) (int, int) {
-	lines, _ := log.Snapshot()
-	passed, total := 0, 0
-	for _, line := range lines {
-		switch {
-		case strings.HasPrefix(line, "  PASS"):
-			passed++
-			total++
-		case strings.HasPrefix(line, "  FAIL"):
-			total++
-		}
-	}
-	return passed, total
-}
-
 // onBringUpDone ends the run and points the operator at the agent. When
 // everything is to stop, it stops now. A run of the checks alone brings
 // nothing up, so it says nothing more than the checks did.
 func (m *model) onBringUpDone(msg bringUpDoneMsg) tea.Cmd {
-	shared := m.shared
-	ended := shared.EndJob()
+	ended := m.state.EndJob()
 	switch {
 	case errors.Is(msg.err, context.Canceled):
 		// The step that ran says where the operator stopped the bring-up.
 	case msg.err != nil:
 		if !recreatable(msg.err) {
-			shared.Notify("The bring-up stopped: "+component.FirstLine(msg.err.Error()), true)
+			m.ui.Notify("The bring-up stopped: "+component.FirstLine(msg.err.Error()), true)
 		}
-		shared.Record("✕", "Bring-up stopped")
-	case shared.Steps[ended.From].Step.ID == sandbox.StepChecks:
+		m.state.Record("✕", "Bring-up stopped")
+	case m.state.Steps[ended.From].Step.ID == sandbox.StepChecks:
 	default:
-		shared.Record("✓", "The sandbox is up")
+		m.state.Record("✓", "The sandbox is up")
 		m.notifyUp()
 	}
 	if ended.StopAfter {
@@ -285,27 +248,26 @@ func (m *model) onBringUpDone(msg bringUpDoneMsg) tea.Cmd {
 
 // notifyUp says the sandbox is up, and what to do with the agent.
 func (m *model) notifyUp() {
-	shared := m.shared
-	scenario := shared.Scenario()
+	scenario := m.state.LoadedDemo()
 	switch {
 	case scenario == nil:
 	case scenario.Run.Mode == sandbox.ModeBackground:
-		shared.Notify("The sandbox is up, and the agent runs in the background. Run sandbox logs to follow it.", false)
+		m.ui.Notify("The sandbox is up, and the agent runs in the background. Run sandbox logs to follow it.", false)
 	case scenario.Run.Mode == sandbox.ModeShell && len(scenario.Run.Command) > 0:
-		shared.Notify("The sandbox is up. Press a to open "+scenario.Run.Command[0]+".", false)
+		m.ui.Notify("The sandbox is up. Press a to open "+scenario.Run.Command[0]+".", false)
 	default:
-		shared.Notify("The sandbox is up. Press x to open a shell in the agent.", false)
+		m.ui.Notify("The sandbox is up. Press x to open a shell in the agent.", false)
 	}
 }
 
 func (m *model) toggleBringUp() {
-	if !m.shared.Job.Is(page.JobBringUp) {
-		if m.shared.Busy() {
+	if !m.state.Job.Is(state.JobBringUp) {
+		if m.busy() {
 			return
 		}
-		from := m.shared.ResumeIndex()
+		from := m.state.ResumeIndex()
 		if from > 0 {
-			m.shared.Notify("Starting again at: "+m.shared.Steps[from].Step.Title, false)
+			m.ui.Notify("Starting again at: "+m.state.Steps[from].Step.Title, false)
 		}
 		m.startBringUp(from, false)
 		return
@@ -319,8 +281,8 @@ func (m *model) toggleBringUp() {
 func (m *model) updateAnswers(msg tea.Msg) bool {
 	switch msg := msg.(type) {
 	case stopBringUpMsg:
-		if m.shared.Job.Is(page.JobBringUp) {
-			m.shared.CancelJob()
+		if m.state.Job.Is(state.JobBringUp) {
+			m.state.CancelJob()
 		}
 	case recreateClusterMsg:
 		m.recreateCluster(msg.from)
@@ -338,7 +300,7 @@ func (m *model) updateAnswers(msg tea.Msg) bool {
 // stopAllNow stops everything, then quits with quit, unless a job other
 // than a bring-up runs.
 func (m *model) stopAllNow(quit bool) {
-	if !m.shared.Job.Is(page.JobBringUp) && m.shared.Busy() {
+	if !m.state.Job.Is(state.JobBringUp) && m.busy() {
 		return
 	}
 	m.stopEverything(quit)
@@ -349,13 +311,12 @@ func (m *model) stopAllNow(quit bool) {
 // fixes. Once D stopped everything, or a later bring-up passed the step, the
 // question no longer applies.
 func (m *model) recreateCluster(from int) {
-	shared := m.shared
-	if from >= len(shared.Steps) || shared.Steps[from].State != page.StepFailed ||
-		!recreatable(shared.Steps[from].Err) {
-		shared.Notify("The cluster does not need to be recreated now.", false)
+	if from >= len(m.state.Steps) || m.state.Steps[from].State != state.StepFailed ||
+		!recreatable(m.state.Steps[from].Err) {
+		m.ui.Notify("The cluster does not need to be recreated now.", false)
 		return
 	}
-	if shared.Busy() {
+	if m.busy() {
 		return
 	}
 	m.startBringUp(from, true)
@@ -363,10 +324,10 @@ func (m *model) recreateCluster(from int) {
 
 // runChecks runs the checks step again, against the running sandbox.
 func (m *model) runChecks() {
-	if m.shared.Busy() || m.isDown() {
+	if m.busy() || m.isDown() {
 		return
 	}
-	for i, row := range m.shared.Steps {
+	for i, row := range m.state.Steps {
 		if row.Step.ID == sandbox.StepChecks {
 			m.startBringUp(i, false)
 		}
@@ -376,44 +337,44 @@ func (m *model) runChecks() {
 // agent opens the scenario's command in the agent, such as pi, or shows the
 // agent's log for an agent that runs in the background.
 func (m *model) agent() tea.Cmd {
-	scenario, err := m.shared.LoadScenario()
+	scenario, err := m.state.Demo()
 	if err != nil {
-		m.shared.Notify(component.FirstLine(err.Error()), true)
+		m.ui.Notify(component.FirstLine(err.Error()), true)
 		return nil
 	}
 	if scenario.Run.Mode == sandbox.ModeBackground {
-		m.shared.Notify("The agent runs in the background. Run sandbox logs to follow its log.", false)
+		m.ui.Notify("The agent runs in the background. Run sandbox logs to follow its log.", false)
 		return nil
 	}
 	return m.openAgent(false)
 }
 
 func (m *model) restartAgent() {
-	if m.shared.Busy() || m.isDown() {
+	if m.busy() || m.isDown() {
 		return
 	}
-	m.confirm("Restart "+m.shared.AgentName()+"'s pod?", "This deletes the pod, and the controller creates it again\n"+
+	m.confirm("Restart "+page.AgentName(m.state)+"'s pod?", "This deletes the pod, and the controller creates it again\n"+
 		"with the current images and settings. The agent loses what it kept in the pod.", restartPodMsg{})
 }
 
 // restartPod restarts the selected agent's pod, while nothing else runs and
 // the sandbox is up.
 func (m *model) restartPod() {
-	if m.shared.Busy() || m.isDown() {
+	if m.busy() || m.isDown() {
 		return
 	}
-	job := page.Job{Kind: page.JobAction, Name: "Restarting " + m.shared.AgentName() + "'s pod"}
-	m.runAction(job, m.shared.Session.RestartAgent)
+	job := state.Job{Kind: state.JobAction, Name: "Restarting " + page.AgentName(m.state) + "'s pod"}
+	m.runAction(job, m.session.RestartAgent)
 }
 
 // stopAll asks, then stops everything. A running bring-up stops first.
 // On an existing cluster, the TUI did not start anything that D stops.
 func (m *model) stopAll() {
-	if !m.shared.Job.Is(page.JobBringUp) && m.shared.Busy() {
+	if !m.state.Job.Is(state.JobBringUp) && m.busy() {
 		return
 	}
-	if m.shared.Session.Local().Existing() {
-		m.shared.Notify("On an existing cluster, there is nothing for D to stop.", false)
+	if m.session.Local().Existing() {
+		m.ui.Notify("On an existing cluster, there is nothing for D to stop.", false)
 		return
 	}
 	m.askStopAll(false)
@@ -434,27 +395,25 @@ func (m *model) askStopAll(quit bool) {
 // then quits with quit. A running bring-up stops first, and
 // onBringUpDone stops everything once it has.
 func (m *model) stopEverything(quit bool) {
-	shared := m.shared
 	// A question about the cluster's issuer is gone with the cluster.
 	m.waiting = nil
-	if shared.Job.Is(page.JobBringUp) {
-		shared.Job.StopAfter, shared.Job.QuitAfter = true, quit
-		shared.CancelJob()
-		shared.Notify("Stopping the bring-up first…", false)
+	if m.state.Job.Is(state.JobBringUp) {
+		m.state.Job.StopAfter, m.state.Job.QuitAfter = true, quit
+		m.state.CancelJob()
+		m.ui.Notify("Stopping the bring-up first…", false)
 		return
 	}
-	m.runAction(page.Job{Kind: page.JobStop, Name: "Stopping everything", QuitAfter: quit}, shared.Session.Down)
+	m.runAction(state.Job{Kind: state.JobStop, Name: "Stopping everything", QuitAfter: quit}, m.session.Down)
 }
 
 // runAction runs job's work in the background, and reports when it is
 // done. While another job runs, it refuses and says so.
-func (m *model) runAction(job page.Job, work func(ctx context.Context, out io.Writer) error) {
-	shared := m.shared
-	if !shared.StartJob(job, nil) {
+func (m *model) runAction(job state.Job, work func(ctx context.Context, out io.Writer) error) {
+	if !m.state.StartJob(job, nil) {
 		return
 	}
-	shared.Record("▸", job.Name)
-	shared.Notify(job.Name+"…", false)
+	m.state.Record("▸", job.Name)
+	m.ui.Notify(job.Name+"…", false)
 	ctx, out := m.ctx, m.bus
 	m.jobs.Go(func() {
 		defer func() {
@@ -470,16 +429,15 @@ func (m *model) runAction(job page.Job, work func(ctx context.Context, out io.Wr
 // stopped, the bring-up that stopped or failed before is gone with the
 // sandbox, so its steps start over.
 func (m *model) onActionDone(msg actionDoneMsg) tea.Cmd {
-	shared := m.shared
-	ended := shared.EndJob()
+	ended := m.state.EndJob()
 	if msg.err != nil {
-		shared.Notify(ended.Name+" failed: "+component.FirstLine(msg.err.Error()), true)
-		shared.Record("✕", ended.Name+" failed: "+component.FirstLine(msg.err.Error()))
+		m.ui.Notify(ended.Name+" failed: "+component.FirstLine(msg.err.Error()), true)
+		m.state.Record("✕", ended.Name+" failed: "+component.FirstLine(msg.err.Error()))
 	} else {
-		shared.Notify(ended.Name+": done", false)
-		shared.Record("✓", ended.Name+": done")
-		if ended.Is(page.JobStop) {
-			shared.ResetSteps()
+		m.ui.Notify(ended.Name+": done", false)
+		m.state.Record("✓", ended.Name+": done")
+		if ended.Is(state.JobStop) {
+			m.state.ResetSteps()
 		}
 	}
 	// A quit that waited for the job does not hide its failure.
@@ -498,11 +456,11 @@ func (m *model) poll() tea.Cmd {
 		return nil
 	}
 	m.polling = pollReads
-	base, session := m.ctx, m.shared.Session
+	base, session := m.ctx, m.session
 	// The pods need the cluster and the zone step. Without them, kubectl
 	// has nothing to list, so the poll skips it.
-	last := m.shared.Status
-	noPods := m.shared.Read && (!last.ClusterExists || !last.Deployed)
+	last := m.state.Status
+	noPods := m.state.Read && (!last.ClusterExists || !last.Deployed)
 	status := func() tea.Msg {
 		ctx, cancel := context.WithTimeout(base, readTimeout)
 		defer cancel()
@@ -515,10 +473,10 @@ func (m *model) poll() tea.Cmd {
 		ctx, cancel := context.WithTimeout(base, readTimeout)
 		defer cancel()
 		list, err := session.Pods(ctx)
-		var rows []page.ContainerRow
+		var rows []state.ContainerRow
 		for _, pod := range list {
 			for _, container := range pod.Containers {
-				rows = append(rows, page.ContainerRow{Pod: pod.Name, Container: container})
+				rows = append(rows, state.ContainerRow{Pod: pod.Name, Container: container})
 			}
 		}
 		return podsMsg{rows: rows, agents: session.Agents(), err: err}
@@ -538,29 +496,17 @@ func (m *model) polled() tea.Cmd {
 }
 
 func (m *model) onPods(msg podsMsg) {
-	shared := m.shared
-	shared.AllPods, shared.Agents, shared.PodsErr = msg.rows, msg.agents, msg.err
+	m.state.SetPods(msg.rows, msg.agents, msg.err)
 	m.syncAgents()
-	if len(shared.Pods) > 0 {
+	if len(m.state.SelectedPods()) > 0 {
 		m.startTraffic()
 	}
 }
 
-// syncAgents keeps the selection on an agent in the list, and shows the
-// selected agent's pod alone. When that pod changed, Home moves to it.
+// syncAgents follows the selected agent's pod. When that pod changed, Home
+// moves to it.
 func (m *model) syncAgents() {
-	shared := m.shared
-	if _, index := shared.SelectedAgent(); index < 0 && len(shared.Agents) > 0 {
-		shared.Session.SelectAgent(shared.Agents[0].Email)
-	}
-	agent, _ := shared.SelectedAgent()
-	var pods []page.ContainerRow
-	for _, row := range shared.AllPods {
-		if agent.Pod != "" && row.Pod == agent.Pod {
-			pods = append(pods, row)
-		}
-	}
-	shared.Pods = pods
+	agent, _ := m.state.Selected()
 	if agent.Pod != m.shownPod {
 		m.shownPod = agent.Pod
 		m.agentSwitched()
@@ -575,18 +521,17 @@ func (m *model) agentSwitched() {
 // startTraffic follows the proxy of the selected agent's pod, once there
 // is one, and again when the pod changes.
 func (m *model) startTraffic() {
-	shared := m.shared
-	target, err := shared.Session.Target()
+	target, err := m.session.Target()
 	if err != nil || target.Pod == "" {
 		// The selected agent has no pod: its traffic is empty.
 		if m.trafficStop != nil {
 			m.trafficStop()
 			m.trafficStop = nil
 		}
-		shared.Traffic.Reset("")
+		m.state.Traffic.Reset("")
 		return
 	}
-	if _, pod := shared.Traffic.Snapshot(); pod == target.Pod && m.trafficStop != nil {
+	if _, pod := m.state.Traffic.Snapshot(); pod == target.Pod && m.trafficStop != nil {
 		return
 	}
 	if m.trafficStop != nil {
@@ -594,8 +539,8 @@ func (m *model) startTraffic() {
 	}
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.trafficStop = cancel
-	shared.Traffic.Reset(target.Pod)
-	session, store, pod := shared.Session, &shared.Traffic, target.Pod
+	m.state.Traffic.Reset(target.Pod)
+	session, store, pod := m.session, &m.state.Traffic, target.Pod
 	m.jobs.Go(func() { followTraffic(ctx, session, pod, store) })
 }
 
@@ -623,7 +568,7 @@ func followTraffic(ctx context.Context, session *sandbox.Session, pod string, st
 // records into store. It returns why kubectl stopped, with the first line
 // it wrote to standard error.
 func streamRecords(ctx context.Context, session *sandbox.Session, pod string, store *proxylog.Store) error {
-	cmd, err := session.LogsCommand(ctx, pod, page.ProxyContainer, trafficTail, true)
+	cmd, err := session.LogsCommand(ctx, pod, state.ProxyContainer, trafficTail, true)
 	if err != nil {
 		return fmt.Errorf("following the proxy's log: %w", err)
 	}
@@ -668,8 +613,8 @@ func readRecords(stdout io.Reader, store *proxylog.Store) error {
 // openEvents opens the zone's event log in the console, where the zone
 // records each credential it issues to the proxy.
 func (m *model) openEvents() tea.Cmd {
-	m.shared.Notify("Finding the zone in the Keycard console…", false)
-	base, session := m.ctx, m.shared.Session
+	m.ui.Notify("Finding the zone in the Keycard console…", false)
+	base, session := m.ctx, m.session
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(base, readTimeout)
 		defer cancel()
@@ -682,17 +627,16 @@ func (m *model) openEvents() tea.Cmd {
 }
 
 func (m *model) onEvents(msg eventsMsg) {
-	shared := m.shared
 	switch {
 	case msg.url == "":
-		shared.Notify("Cannot find the zone's events: "+component.FirstLine(msg.err.Error()), true)
-		shared.Record("✕", "Could not find the zone's events: "+component.FirstLine(msg.err.Error()))
+		m.ui.Notify("Cannot find the zone's events: "+component.FirstLine(msg.err.Error()), true)
+		m.state.Record("✕", "Could not find the zone's events: "+component.FirstLine(msg.err.Error()))
 	case msg.err != nil:
-		shared.Notify("Open "+msg.url, false)
-		shared.Record("•", "The zone's events are at "+msg.url)
+		m.ui.Notify("Open "+msg.url, false)
+		m.state.Record("•", "The zone's events are at "+msg.url)
 	default:
-		shared.Notify("Opened the zone's events in the browser.", false)
-		shared.Record("✓", "Opened the zone's events: "+msg.url)
+		m.ui.Notify("Opened the zone's events in the browser.", false)
+		m.state.Record("✓", "Opened the zone's events: "+msg.url)
 	}
 }
 
@@ -713,21 +657,20 @@ func openBrowser(ctx context.Context, address string) error {
 // scenario's command, such as pi, or sh when plain is set. The screen comes
 // back when it exits.
 func (m *model) openAgent(plain bool) tea.Cmd {
-	shared := m.shared
-	if shared.Busy() || m.isDown() {
+	if m.busy() || m.isDown() {
 		return nil
 	}
-	cmd, err := shared.Session.ShellCommand(m.ctx, plain)
+	cmd, err := m.session.ShellCommand(m.ctx, plain)
 	if err != nil {
-		shared.Notify("Cannot open the agent: "+component.FirstLine(err.Error()), true)
+		m.ui.Notify("Cannot open the agent: "+component.FirstLine(err.Error()), true)
 		return nil
 	}
-	title, leave := "sh in "+shared.AgentName(), "Type exit to come back to "+style.AppName+"."
-	if scenario, err := shared.Session.Scenario(); err == nil && !plain && len(scenario.Run.Command) > 0 {
-		title = scenario.Run.Command[0] + " in " + shared.AgentName()
+	title, leave := "sh in "+page.AgentName(m.state), "Type exit to come back to "+style.AppName+"."
+	if scenario, err := m.session.Scenario(); err == nil && !plain && len(scenario.Run.Command) > 0 {
+		title = scenario.Run.Command[0] + " in " + page.AgentName(m.state)
 		leave = "Quit " + scenario.Run.Command[0] + " to come back to " + style.AppName + "."
 	}
-	shared.Record("▸", "Opened "+title)
+	m.state.Record("▸", "Opened "+title)
 	return tea.Exec(&agentExec{cmd: cmd, title: title, leave: leave}, func(err error) tea.Msg {
 		return execDoneMsg{plain: plain, err: err}
 	})
@@ -739,14 +682,14 @@ func (m *model) onExecDone(msg execDoneMsg) tea.Cmd {
 	var exit *exec.ExitError
 	switch {
 	case msg.err == nil:
-		m.shared.Record("✓", "Came back from the agent")
+		m.state.Record("✓", "Came back from the agent")
 	case msg.plain && errors.As(msg.err, &exit):
 		// sh exits with the status of the last command it ran, such as a
 		// curl the proxy refused.
-		m.shared.Record("•", "Came back from the shell, which exited with status "+strconv.Itoa(exit.ExitCode()))
+		m.state.Record("•", "Came back from the shell, which exited with status "+strconv.Itoa(exit.ExitCode()))
 	default:
-		m.shared.Record("✕", "The agent's command ended: "+component.FirstLine(msg.err.Error()))
-		m.shared.Notify("The agent's command ended: "+component.FirstLine(msg.err.Error()), true)
+		m.state.Record("✕", "The agent's command ended: "+component.FirstLine(msg.err.Error()))
+		m.ui.Notify("The agent's command ended: "+component.FirstLine(msg.err.Error()), true)
 	}
 	return tea.Batch(m.poll(), tea.RequestWindowSize)
 }
