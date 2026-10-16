@@ -185,8 +185,14 @@ func (l *Local) needsTunnel() bool {
 	if l.Settings[KeyIssuer] != "" {
 		return false
 	}
+	return !l.quickTunnelRuns()
+}
+
+// quickTunnelRuns reports whether a running quick tunnel has
+// QuickIssuerFile locked, with its URL in it.
+func (l *Local) quickTunnelRuns() bool {
 	_, running, err := readQuickIssuer(l.QuickIssuerFile())
-	return err != nil || !running
+	return err == nil && running
 }
 
 func (l *Local) upTunnel(ctx context.Context, state *upRun) error {
@@ -200,10 +206,7 @@ func (l *Local) upTunnel(ctx context.Context, state *upRun) error {
 	if !state.quickTunnel {
 		return nil
 	}
-	return waitFor(ctx, state, "the quick tunnel's URL", func() bool {
-		_, running, err := readQuickIssuer(l.QuickIssuerFile())
-		return err == nil && running
-	})
+	return waitFor(ctx, state.services, "the quick tunnel's URL", l.quickTunnelRuns)
 }
 
 // upBootstrap runs bootstrap. If the cluster has another issuer, or the
@@ -232,11 +235,16 @@ func (l *Local) upMirror(ctx context.Context, state *upRun) error {
 	l.startService(ctx, state, "mirror", func(ctx context.Context, service *Local) error {
 		return service.mirror(ctx, "", "", listener)
 	})
-	// The listener accepts connections before the mirror serves, so wait for
-	// an HTTP response with any status.
+	return waitFor(ctx, state.services, "the mirror on "+state.opts.Listen, mirrorServes(ctx, state.opts.Listen))
+}
+
+// mirrorServes returns a check that the mirror on address answers. The
+// mirror's listener accepts connections before the mirror serves, so the
+// check waits for an HTTP response with any status.
+func mirrorServes(ctx context.Context, address string) func() bool {
 	client := &http.Client{Transport: &http.Transport{}, Timeout: pollEvery}
-	return waitFor(ctx, state, "the mirror on "+state.opts.Listen, func() bool {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+state.opts.Listen+"/", nil)
+	return func() bool {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+address+"/", nil)
 		if err != nil {
 			return false
 		}
@@ -246,7 +254,7 @@ func (l *Local) upMirror(ctx context.Context, state *upRun) error {
 		}
 		_ = resp.Body.Close()
 		return true
-	})
+	}
 }
 
 // upCheckIssuer runs check-issuer until it passes, opts.IssuerWait runs
@@ -315,15 +323,15 @@ func openLog(path string) (*os.File, error) {
 	return log, nil
 }
 
-// waitFor polls ready until it returns true, a service stops, ctx ends, or
-// serviceStart runs out.
-func waitFor(ctx context.Context, state *upRun, what string, ready func() bool) error {
+// waitFor polls ready until it returns true, ctx ends, serviceStart runs out,
+// or stopped sends the error of a service that stopped.
+func waitFor(ctx context.Context, stopped <-chan error, what string, ready func() bool) error {
 	timeout := time.After(serviceStart)
 	for !ready() {
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("waiting for %s: %w", what, ctx.Err())
-		case err := <-state.services:
+		case err := <-stopped:
 			return err
 		case <-timeout:
 			return fmt.Errorf("%w: %s did not start within %s", ErrService, what, serviceStart)

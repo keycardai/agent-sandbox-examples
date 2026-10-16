@@ -661,10 +661,7 @@ func (s *Session) runTunnel(ctx context.Context, local *Local) error {
 	if tunnel != "" {
 		return nil
 	}
-	if err := s.waitService(ctx, local, ServiceTunnel, "the quick tunnel's URL", func() bool {
-		_, err := os.Stat(local.QuickIssuerFile())
-		return err == nil
-	}); err != nil {
+	if err := s.waitService(ctx, local, ServiceTunnel, "the quick tunnel's URL", local.quickTunnelRuns); err != nil {
 		return err
 	}
 	url, err := local.issuer("")
@@ -735,9 +732,7 @@ func (s *Session) runMirror(ctx context.Context, local *Local) error {
 	}
 	_, _ = fmt.Fprintf(local.Out, "Started the mirror on %s. Its log is %s.\n",
 		s.listen, local.serviceFile(ServiceMirror, ".log"))
-	return s.waitService(ctx, local, ServiceMirror, "the mirror on "+s.listen, func() bool {
-		return answers(ctx, s.listen)
-	})
+	return s.waitService(ctx, local, ServiceMirror, "the mirror on "+s.listen, mirrorServes(ctx, s.listen))
 }
 
 // answers reports whether something accepts a TCP connection on address.
@@ -756,12 +751,11 @@ func answers(ctx context.Context, address string) bool {
 func (s *Session) runIssuer(ctx context.Context, local *Local) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	return local.checkIssuerUntil(ctx, s.IssuerWait, s.watchServices(ctx, local))
+	return local.checkIssuerUntil(ctx, s.IssuerWait, watchServices(ctx, local, s.stepServices()...))
 }
 
-// watchServices sends an error once a service the steps start is not
-// running. It stops watching when ctx ends.
-func (s *Session) watchServices(ctx context.Context, local *Local) <-chan error {
+// stepServices returns the services the steps start.
+func (s *Session) stepServices() []string {
 	services := map[StepID]string{StepTunnel: ServiceTunnel, StepMirror: ServiceMirror}
 	var names []string
 	for _, step := range s.Steps() {
@@ -769,6 +763,12 @@ func (s *Session) watchServices(ctx context.Context, local *Local) <-chan error 
 			names = append(names, name)
 		}
 	}
+	return names
+}
+
+// watchServices sends an error once one of the named services is not
+// running. It stops watching when ctx ends.
+func watchServices(ctx context.Context, local *Local, names ...string) <-chan error {
 	stopped := make(chan error, 1)
 	go func() {
 		for {
@@ -923,22 +923,10 @@ func (s *Session) needZone(local *Local) (*zonesetup.Output, error) {
 	return output, nil
 }
 
-// waitService polls ready until it holds, the service stops, ctx ends, or
-// serviceStart runs out.
+// waitService waits for ready as Up does, and stops waiting when the
+// service is not running.
 func (s *Session) waitService(ctx context.Context, local *Local, name, what string, ready func() bool) error {
-	timeout := time.After(serviceStart)
-	for !ready() {
-		if !local.ServiceStatus(name).Running {
-			return fmt.Errorf("%w: %s stopped before %s was ready. Its log is %s",
-				ErrService, name, what, local.serviceFile(name, ".log"))
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("waiting for %s: %w", what, ctx.Err())
-		case <-timeout:
-			return fmt.Errorf("%w: %s did not start within %s", ErrService, what, serviceStart)
-		case <-time.After(pollEvery):
-		}
-	}
-	return nil
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	return waitFor(ctx, watchServices(ctx, local, name), what, ready)
 }

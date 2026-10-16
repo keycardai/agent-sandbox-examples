@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -187,8 +188,8 @@ func TestMain(m *testing.M) {
 }
 
 // fakeService stands in for `sandbox tunnel` and `sandbox mirror`. It
-// prints the settings that tell which tunnel runs, and the mirror listens
-// on address. It runs until it is stopped, for a minute at most.
+// prints the settings that tell which tunnel runs, and the mirror answers
+// HTTP on address. It runs until it is stopped, for a minute at most.
 func fakeService(name, address string) int {
 	_, _ = fmt.Fprintf(os.Stdout, "%s=%s %s=%s\n", sandbox.EnvConfig, os.Getenv(sandbox.EnvConfig),
 		sandbox.KeyTunnel, os.Getenv(sandbox.KeyTunnel))
@@ -198,7 +199,8 @@ func fakeService(name, address string) int {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		defer func() { _ = listener.Close() }()
+		server := &http.Server{Handler: http.NotFoundHandler(), ReadHeaderTimeout: time.Second}
+		go func() { _ = server.Serve(listener) }()
 	}
 	time.Sleep(time.Minute)
 	return 0
