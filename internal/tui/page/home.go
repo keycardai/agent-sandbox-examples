@@ -313,22 +313,21 @@ func tail(log *component.Log, rows int) []string {
 	return lines[max(len(lines)-rows, 0):]
 }
 
-// StepHint says what to do about a failed step. Checks that failed because
-// the agent could not resolve a name get their own hint: the cluster's DNS
-// was not ready.
+// StepHint says what to do about a failed step. An issuer check that
+// cannot resolve the quick tunnel's name, and checks in which the agent
+// could not resolve a name, get their own hints.
 func StepHint(row *StepRow, err error) string {
 	if row.Step.ID == sandbox.StepIssuer && strings.Contains(err.Error(), "trycloudflare.com") &&
 		strings.Contains(err.Error(), "no such host") {
-		return "The quick tunnel's URL no longer exists. Cloudflare deletes a quick tunnel that loses its " +
-			"connection for a while, as when the laptop sleeps. Press u: the bring-up starts a new tunnel, " +
+		return "The quick tunnel's URL no longer exists. Press u: the bring-up starts a new tunnel, " +
 			"and asks to recreate the cluster for its URL."
 	}
 	lines, _ := row.Log.Snapshot()
 	if row.Step.ID == sandbox.StepChecks && slices.ContainsFunc(lines, func(line string) bool {
 		return strings.Contains(line, "Could not resolve host")
 	}) {
-		return "The agent could not resolve the hosts' names, so the cluster's DNS was not ready. " +
-			"Check kube-system/coredns, then press c to run the checks again."
+		return "The agent could not resolve a host's name. Check kube-system/coredns, then press c to run " +
+			"the checks again."
 	}
 	return HintFor(err)
 }
@@ -341,15 +340,14 @@ func HintFor(err error) string {
 	}{
 		{sandbox.ErrDocker, "Start Docker (OrbStack or Docker Desktop), then press u."},
 		{sandbox.ErrImages, "Do what the error says, then press u to start again from this step."},
-		{sandbox.ErrBuild, "A build that cannot download anything usually means Docker's network is down: " +
-			"restart OrbStack or Docker Desktop, then press u."},
-		{sandbox.ErrOtherIssuer, "The cluster belongs to an older tunnel URL. Press u and recreate it."},
+		{sandbox.ErrBuild, "Fix what the build's output says, then press u."},
+		{sandbox.ErrOtherIssuer, "The cluster was made for another issuer URL. Press u and recreate it."},
 		{sandbox.ErrBrokenCluster, "Your kubeconfig has no context for the cluster. Press u and recreate it."},
 		{zonesetup.ErrPolicySetActive, "Run sandbox init, and allow replacing the active policy set."},
 		{zonesetup.ErrAuth, "Keycard refused the service account. Check KEYCARD_CLIENT_ID and KEYCARD_CLIENT_SECRET."},
 		{zonesetup.ErrMissingSecret, "A credential has no value. Run sandbox init to enter it."},
-		{zonesetup.ErrValues, "A setting is missing. Run sandbox init to give each credential a value."},
-		{zonesetup.ErrUserNotFound, "The user has not signed in to the zone yet. Invite them in the Keycard console."},
+		{zonesetup.ErrValues, "Run sandbox init to fix the setting the error names."},
+		{zonesetup.ErrUserNotFound, "The zone has no user with this email. Add them in the Keycard console."},
 		{
 			zonesetup.ErrProviderNotFound,
 			"The zone lacks a provider the demo names. Run sandbox init and choose the demo again.",
@@ -357,10 +355,7 @@ func HintFor(err error) string {
 		{sandbox.ErrSettings, "Run sandbox init to set the sandbox up."},
 		{sandbox.ErrScenario, "Run sandbox init and choose a demo."},
 		{sandbox.ErrService, "Read the service's log: local/out/tunnel.log or local/out/mirror.log."},
-		{
-			sandbox.ErrIssuer,
-			"Keycard cannot reach the cluster's issuer. Read local/out/tunnel.log and local/out/mirror.log.",
-		},
+		{sandbox.ErrIssuer, "Read local/out/tunnel.log and local/out/mirror.log, then press u."},
 		{sandbox.ErrPod, "Run sandbox logs to follow the agent's log."},
 		{sandbox.ErrCheck, "The sandbox is up. Read the failed check, then press c to run the checks again."},
 		{sandbox.ErrAgent, "Run sandbox logs to follow the agent's log."},

@@ -84,7 +84,7 @@ func TestStepsFollowTheBringUp(t *testing.T) {
 	}
 }
 
-// TestRecreateAsks offers to recreate a cluster made for an older tunnel
+// TestRecreateAsks offers to recreate a cluster made for another issuer
 // URL, or one the kubeconfig has no context for, and says which. Recreating
 // deletes the cluster, so only y says yes: enter says no.
 func TestRecreateAsks(t *testing.T) {
@@ -93,7 +93,7 @@ func TestRecreateAsks(t *testing.T) {
 		name, why string
 		err       error
 	}{
-		{"other issuer", "older tunnel URL", errors.Join(sandbox.ErrIssuer, sandbox.ErrOtherIssuer)},
+		{"other issuer", "another issuer URL", errors.Join(sandbox.ErrIssuer, sandbox.ErrOtherIssuer)},
 		{"no kubeconfig context", "no context for the cluster", sandbox.ErrBrokenCluster},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

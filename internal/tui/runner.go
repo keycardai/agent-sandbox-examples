@@ -206,7 +206,7 @@ func (m *model) recordChecks(row *page.StepRow, err error) {
 // recreateReason says why the cluster must be created again, and that the
 // sandbox's Keycard setup stays.
 func recreateReason(err error) string {
-	why := "The cluster was made for an older tunnel URL, and a cluster keeps its issuer for life.\n" +
+	why := "The cluster was made for another issuer URL, and a cluster keeps its issuer for life.\n" +
 		"Delete it and create it again for the new URL?"
 	if errors.Is(err, sandbox.ErrBrokenCluster) {
 		why = "Your kubeconfig has no context for the cluster, so kubectl cannot reach it.\n" +
