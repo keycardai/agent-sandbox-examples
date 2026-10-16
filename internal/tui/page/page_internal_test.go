@@ -1,6 +1,7 @@
 package page
 
 import (
+	"context"
 	"io"
 	"testing"
 	"time"
@@ -65,5 +66,40 @@ func TestOneJob(t *testing.T) {
 	}
 	if shared.Busy() {
 		t.Error("Busy with no job, want false")
+	}
+}
+
+// TestPhase says how the sandbox is from the job, the steps and the last
+// read, in that order: a job that runs comes first, then where a bring-up
+// stopped, then what the read found.
+func TestPhase(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		setup func(shared *Shared)
+		want  Phase
+	}{
+		{"reading", func(shared *Shared) { shared.Read = false }, PhaseReading},
+		{"bringing up", func(shared *Shared) { shared.Job = Job{Kind: JobBringUp} }, PhaseBringingUp},
+		{"stopping", func(shared *Shared) { shared.Job = Job{Kind: JobStop} }, PhaseStopping},
+		{"stopped", func(shared *Shared) {
+			shared.Steps[0].State, shared.Steps[0].Err = StepFailed, context.Canceled
+		}, PhaseStopped},
+		{"failed", func(shared *Shared) {
+			shared.Steps[0].State, shared.Steps[0].Err = StepFailed, sandbox.ErrDocker
+		}, PhaseFailed},
+		{"up", func(shared *Shared) {
+			shared.Status = sandbox.Status{Deployed: true, ClusterExists: true}
+			shared.Status.Tunnel.Running = true
+		}, PhaseUp},
+		{"down", func(*Shared) {}, PhaseDown},
+	} {
+		local := &sandbox.Local{Root: t.TempDir(), Settings: sandbox.Settings{}, Out: io.Discard}
+		shared := NewShared(local.NewSession("127.0.0.1:8480", time.Second))
+		shared.Read = true
+		tc.setup(shared)
+		if got, _ := shared.Phase(); got != tc.want {
+			t.Errorf("%s: phase %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

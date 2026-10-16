@@ -9,7 +9,6 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/component"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/page"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/style"
@@ -68,23 +67,23 @@ func (m *model) band() string {
 func (m *model) statusBadge() string {
 	shared := m.shared
 	theme := shared.Styles
-	if shared.Job.Is(page.JobBringUp) {
+	switch phase, row := shared.Phase(); phase {
+	case page.PhaseBringingUp:
 		done := m.stepsDone()
 		return theme.BandBusy.Render(component.Spinner(shared.Frame)+" bringing up ") +
 			m.progressBar(done, len(shared.Steps)) + theme.BandLabel.Render(" "+strconv.Itoa(done)+"/"+
 			strconv.Itoa(len(shared.Steps)))
-	}
-	if shared.Job.Is(page.JobStop) {
+	case page.PhaseStopping:
 		return theme.BandBusy.Render(component.Spinner(shared.Frame) + " stopping")
-	}
-	if row := shared.FailedStep(); row != nil {
-		if row.Stopped() {
-			return theme.BandDown.Render("○ stopped at " + row.Step.Title)
-		}
+	case page.PhaseStopped:
+		return theme.BandDown.Render("○ stopped at " + row.Step.Title)
+	case page.PhaseFailed:
 		return theme.BandFail.Render("✕ stopped at " + row.Step.Title)
-	}
-	if shared.SandboxUp() {
+	case page.PhaseReading:
+		return theme.BandBusy.Render(component.Spinner(shared.Frame) + " reading")
+	case page.PhaseUp:
 		return theme.BandUp.Render("● up")
+	case page.PhaseDown:
 	}
 	return theme.BandDown.Render("○ down")
 }
@@ -94,17 +93,17 @@ func (m *model) statusBadge() string {
 func (m *model) shortBadge() string {
 	shared := m.shared
 	theme := shared.Styles
-	if !shared.Job.Is(page.JobBringUp) {
-		if row := shared.FailedStep(); !shared.Job.Is(page.JobStop) && row != nil {
-			if row.Stopped() {
-				return theme.BandDown.Render("○ stopped")
-			}
-			return theme.BandFail.Render("✕ stopped")
-		}
-		return m.statusBadge()
+	switch phase, _ := shared.Phase(); phase {
+	case page.PhaseBringingUp:
+		return theme.BandBusy.Render(component.Spinner(shared.Frame) + " " + strconv.Itoa(m.stepsDone()) + "/" +
+			strconv.Itoa(len(shared.Steps)))
+	case page.PhaseStopped:
+		return theme.BandDown.Render("○ stopped")
+	case page.PhaseFailed:
+		return theme.BandFail.Render("✕ stopped")
+	case page.PhaseReading, page.PhaseStopping, page.PhaseUp, page.PhaseDown:
 	}
-	return theme.BandBusy.Render(component.Spinner(shared.Frame) + " " + strconv.Itoa(m.stepsDone()) + "/" +
-		strconv.Itoa(len(shared.Steps)))
+	return m.statusBadge()
 }
 
 // stepsDone counts the bring-up's steps that are done.
@@ -137,18 +136,13 @@ func (m *model) progress() *tea.ProgressBar {
 	if len(steps) == 0 {
 		return nil
 	}
-	done, failed := 0, false
-	for _, row := range steps {
-		if row.State == page.StepDone {
-			done++
-		}
-		failed = failed || (row.State == page.StepFailed && row.Step.ID != sandbox.StepChecks && !row.Stopped())
-	}
-	switch {
-	case failed:
+	done := m.stepsDone()
+	switch phase, _ := m.shared.Phase(); phase {
+	case page.PhaseFailed:
 		return tea.NewProgressBar(tea.ProgressBarError, done*percent/len(steps))
-	case m.shared.Job.Is(page.JobBringUp):
+	case page.PhaseBringingUp:
 		return tea.NewProgressBar(tea.ProgressBarDefault, done*percent/len(steps))
+	case page.PhaseReading, page.PhaseStopping, page.PhaseStopped, page.PhaseUp, page.PhaseDown:
 	}
 	return nil
 }

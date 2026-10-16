@@ -36,18 +36,18 @@ func NewHome(shared *Shared) *Home { return &Home{shared: shared} }
 // View draws Home for how the sandbox is.
 func (h *Home) View() string {
 	shared := h.shared
-	failed := shared.FailedStep()
-	switch {
-	case shared.Job.Is(JobBringUp):
+	switch phase, row := shared.Phase(); phase {
+	case PhaseBringingUp:
 		return h.bringUp()
-	case shared.Job.Is(JobStop):
+	case PhaseStopping:
 		return shared.Styles.Muted.Render(shared.spinner() + " Stopping everything…")
-	case failed != nil:
-		return h.failed(failed)
-	case !shared.Read:
+	case PhaseStopped, PhaseFailed:
+		return h.failed(row)
+	case PhaseReading:
 		return shared.Styles.Muted.Render(shared.spinner() + " Reading the sandbox…")
-	case shared.SandboxUp():
+	case PhaseUp:
 		return h.up()
+	case PhaseDown:
 	}
 	return h.down()
 }
@@ -55,18 +55,18 @@ func (h *Home) View() string {
 // Hints lists Home's keys for how the sandbox is.
 func (h *Home) Hints() []component.Hint {
 	shared := h.shared
-	switch {
-	case shared.Job.Is(JobBringUp):
+	switch phase, _ := shared.Phase(); phase {
+	case PhaseBringingUp:
 		return []component.Hint{
 			{Key: "u", Desc: "stop"},
 			{Key: "?", Desc: wordKeys},
 			{Key: "q", Desc: wordQuit},
 		}
-	case shared.Job.Is(JobStop):
+	case PhaseStopping:
 		return []component.Hint{{Key: "?", Desc: wordKeys}, {Key: "q", Desc: wordQuit}}
-	case shared.FailedStep() != nil:
+	case PhaseStopped, PhaseFailed:
 		again := "try again"
-		if shared.FailedStep().Stopped() {
+		if phase == PhaseStopped {
 			again = "start again"
 		}
 		return []component.Hint{
@@ -74,7 +74,7 @@ func (h *Home) Hints() []component.Hint {
 			{Key: "?", Desc: wordKeys},
 			{Key: "q", Desc: wordQuit},
 		}
-	case shared.SandboxUp():
+	case PhaseUp:
 		return []component.Hint{
 			{Key: "a", Desc: shared.AgentActionName()},
 			{Key: "o", Desc: "zone events"},
@@ -82,6 +82,7 @@ func (h *Home) Hints() []component.Hint {
 			{Key: "?", Desc: wordKeys},
 			{Key: "q", Desc: wordQuit},
 		}
+	case PhaseReading, PhaseDown:
 	}
 	return []component.Hint{
 		{Key: "u", Desc: "bring up"},
