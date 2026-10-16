@@ -3,14 +3,7 @@ package sandbox
 import (
 	"context"
 	"strings"
-
-	"github.com/keycardai/agent-sandbox-examples/internal/pinned"
 )
-
-// pullFix says what to do when Docker cannot reach ghcr.io. The images are
-// public, so it is the network.
-const pullFix = "Docker cannot reach ghcr.io. Check its network, such as by restarting OrbStack or " +
-	"Docker Desktop, then check again."
 
 // release returns the tag of a pinned image reference, such as v0.2.1 for
 // ghcr.io/keycardai/sandbox-base:v0.2.1@sha256:...
@@ -22,36 +15,25 @@ func release(ref string) string {
 	return ref
 }
 
-// missingImages returns those of refs Docker does not have.
+// missingImages returns those of refs Docker does not have. It fails when
+// Docker does not answer, instead of calling every image missing.
 func (l *Local) missingImages(ctx context.Context, refs []string) ([]string, error) {
+	if err := l.checkDocker(ctx); err != nil {
+		return nil, err
+	}
 	var missing []string
 	for _, ref := range refs {
-		cmd, err := l.Tool(ctx, "docker", "image", "inspect", ref)
-		if err != nil {
-			return nil, err
-		}
-		if _, err = pinned.Run(cmd, nil); err != nil {
+		if _, err := l.runTool(ctx, "docker", "image", "inspect", ref); err != nil {
 			missing = append(missing, ref)
 		}
 	}
 	return missing, nil
 }
 
-// canPull reports whether Docker can read the manifest of ref from its
-// registry, without pulling it.
-func (l *Local) canPull(ctx context.Context, ref string) bool {
-	cmd, err := l.Tool(ctx, "docker", "manifest", "inspect", ref)
-	if err != nil {
-		return false
-	}
-	_, err = pinned.Run(cmd, nil)
-	return err == nil
-}
-
 // checkImages says which images the sandbox runs. Without
 // KEYCARD_LOCAL_IMAGE_TAG, that is the release the charts pin, which the
-// cluster pulls from ghcr.io, and the check fails when ghcr.io is out of
-// reach. With it, a k3d cluster runs the images Docker has at that tag, and
+// cluster pulls from ghcr.io, and the check fails when Docker cannot read
+// its manifest there. With it, a k3d cluster runs the images Docker has at that tag, and
 // the check fails when one is missing.
 func (l *Local) checkImages(ctx context.Context) Check {
 	check := Check{Name: "Sandbox images"}
@@ -68,8 +50,10 @@ func (l *Local) checkImages(ctx context.Context) Check {
 		return check
 	}
 	check.Detail = "the release " + release(base) + " from ghcr.io/keycardai"
-	if !l.canPull(ctx, base) {
-		check.State, check.Detail, check.Fix = CheckFailed, "cannot reach ghcr.io/keycardai", pullFix
+	if _, err := l.runTool(ctx, "docker", "manifest", "inspect", base); err != nil {
+		check.State, check.Detail = CheckFailed, firstLine(err)
+		check.Fix = "Docker must be able to pull " + release(base) + " from ghcr.io/keycardai. " +
+			"Fix what Docker says, then check again."
 	}
 	return check
 }
@@ -83,7 +67,7 @@ func (l *Local) checkTaggedImages(ctx context.Context, check Check, tag string) 
 	missing, err := l.missingImages(ctx, images(tag))
 	switch {
 	case err != nil:
-		check.State, check.Detail = CheckFailed, err.Error()
+		check.State, check.Detail = CheckFailed, firstLine(err)
 	case len(missing) > 0:
 		check.State, check.Detail = CheckFailed, "Docker does not have "+strings.Join(missing, ", ")
 		check.Fix = "Build them in the egress-proxy repository and tag them with these names, " +

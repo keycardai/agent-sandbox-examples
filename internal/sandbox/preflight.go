@@ -51,17 +51,14 @@ func (s *Session) PreflightItems() []PreflightItem {
 
 func (l *Local) preflightDocker(ctx context.Context) Check {
 	check := Check{Name: "Docker"}
-	cmd, err := l.Tool(ctx, "docker", "info", "--format", "{{.ServerVersion}}|{{.OperatingSystem}}")
-	if err == nil {
-		var out []byte
-		if out, err = pinned.Run(cmd, nil); err == nil {
-			version, system, _ := strings.Cut(strings.TrimSpace(string(out)), "|")
-			check.Detail = system + ", engine " + version
-			return check
-		}
+	out, err := l.runTool(ctx, "docker", "info", "--format", "{{.ServerVersion}}|{{.OperatingSystem}}")
+	if err != nil {
+		check.State, check.Detail = CheckFailed, firstLine(err)
+		check.Fix = "Install Docker, and start OrbStack or Docker Desktop."
+		return check
 	}
-	check.State, check.Detail = CheckFailed, "not running"
-	check.Fix = "Install Docker, and start OrbStack or Docker Desktop."
+	version, system, _ := strings.Cut(strings.TrimSpace(string(out)), "|")
+	check.Detail = system + ", engine " + version
 	return check
 }
 
@@ -69,25 +66,40 @@ func (l *Local) preflightDocker(ctx context.Context) Check {
 func (l *Local) checkTools(ctx context.Context) Check {
 	check := Check{Name: "Tools"}
 	var broken []string
+	var first error
 	const version = "version"
 	for _, tool := range [][]string{
 		{"k3d", version}, {"kubectl", version, "--client"}, {"helm", version}, {"cloudflared", "--" + version},
 	} {
-		cmd, err := l.Tool(ctx, tool[0], tool[1:]...)
-		if err == nil {
-			_, err = pinned.Run(cmd, nil)
-		}
-		if err != nil {
+		if _, err := l.runTool(ctx, tool[0], tool[1:]...); err != nil {
 			broken = append(broken, tool[0])
+			first = cmp.Or(first, err)
 		}
 	}
 	if len(broken) == 0 {
 		check.Detail = "k3d, kubectl, helm, cloudflared (from mise.toml)"
 		return check
 	}
-	check.State, check.Detail = CheckFailed, "cannot run "+strings.Join(broken, ", ")
+	check.State, check.Detail = CheckFailed, "cannot run "+strings.Join(broken, ", ")+": "+firstLine(first)
 	check.Fix = "Run mise install in this repository."
 	return check
+}
+
+// runTool runs the tool name with args and returns its standard output.
+// The error names the tool and holds what it wrote to standard error.
+func (l *Local) runTool(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd, err := l.Tool(ctx, name, args...)
+	if err != nil {
+		return nil, err
+	}
+	return pinned.Run(cmd, nil) //nolint:wrapcheck // pinned.Run names the tool and its arguments.
+}
+
+// firstLine returns the first line of err's text, for a check's one-line
+// detail.
+func firstLine(err error) string {
+	line, _, _ := strings.Cut(err.Error(), "\n")
+	return line
 }
 
 // checkAccount says where the Keycard service account comes from: the
