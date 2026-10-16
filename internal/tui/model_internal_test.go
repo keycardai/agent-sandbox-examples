@@ -130,6 +130,36 @@ func TestChecksAlone(t *testing.T) {
 	}
 }
 
+// TestReadFromBeforeAStop drops the reads that started before D's stop
+// ended, which still find the cluster D deleted, and reads again at once.
+// Until a read made after the stop comes back, the screens say they read
+// the sandbox.
+func TestReadFromBeforeAStop(t *testing.T) {
+	t.Parallel()
+	root := testModel(t)
+	before := sandbox.Status{Deployed: true, ClusterExists: true}
+	before.Tunnel.Running = true
+	root.state.SetStatus(before)
+	mark := root.state.ReadMark()
+	root.state.StartJob(state.Job{Kind: state.JobStop, Name: "Stopping everything"}, nil)
+	root.polling = pollReads
+	root.Update(actionDoneMsg{})
+	if phase, _ := root.state.Phase(); phase != state.PhaseReading {
+		t.Errorf("phase after the stop = %v, want reading", phase)
+	}
+	root.Update(statusMsg{status: before, mark: mark})
+	if _, cmd := root.Update(podsMsg{mark: mark}); cmd == nil || root.polling != pollReads {
+		t.Errorf("polling = %d after the old reads; want a new poll at once", root.polling)
+	}
+	if root.state.Read || root.state.Status.ClusterExists {
+		t.Errorf("status = %+v, read %v; want the old read dropped", root.state.Status, root.state.Read)
+	}
+	root.Update(statusMsg{mark: root.state.ReadMark()})
+	if phase, _ := root.state.Phase(); phase != state.PhaseDown {
+		t.Errorf("phase after a new read = %v, want down", phase)
+	}
+}
+
 // TestRecreateAsks offers to recreate a cluster made for another issuer
 // URL, or one the kubeconfig has no context for, and says which. Recreating
 // deletes the cluster, so only y says yes: enter says no.
@@ -535,8 +565,9 @@ func TestPollsDoNotOverlap(t *testing.T) {
 	if _, read := root.Update(actionDoneMsg{}); read == nil {
 		t.Fatal("an action ended, and the sandbox was not read again")
 	}
-	root.Update(statusMsg{status: root.state.Status})
-	if _, next := root.Update(podsMsg{rows: root.state.Pods, agents: root.state.Agents}); next != nil {
+	mark := root.state.ReadMark()
+	root.Update(statusMsg{status: root.state.Status, mark: mark})
+	if _, next := root.Update(podsMsg{rows: root.state.Pods, agents: root.state.Agents, mark: mark}); next != nil {
 		t.Error("a second poll was planned while one waits")
 	}
 }

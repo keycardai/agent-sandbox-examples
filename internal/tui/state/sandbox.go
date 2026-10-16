@@ -37,6 +37,9 @@ type Sandbox struct {
 	// first read came back.
 	Status sandbox.Status
 	Read   bool
+	// readMark moves on each time a job ends. A read takes it when it
+	// starts, so that a read from before the job can be told apart.
+	readMark int
 	// Agents lists an agent for each person the settings give one, and Pods
 	// the containers of every pod. PodsErr is the last read's error.
 	Agents  []sandbox.Agent
@@ -80,6 +83,23 @@ func (s *Sandbox) Record(mark, text string) {
 // the operator publishes, needs none.
 func (s *Sandbox) Up() bool {
 	return s.Status.Deployed && s.Status.ClusterExists && (s.Status.Tunnel.Running || !s.StartsTunnel())
+}
+
+// ReadMark returns the mark a read that starts now takes.
+func (s *Sandbox) ReadMark() int { return s.readMark }
+
+// ReadCurrent reports whether a read that started with mark found the
+// sandbox as it is: no job ended since it started. The root model drops a
+// read that is not, and reads again.
+func (s *Sandbox) ReadCurrent(mark int) bool { return mark == s.readMark }
+
+// StoppedAll forgets the bring-up and what the reads found, once
+// everything stopped. The sandbox they describe is gone, so the screens say
+// they read it until a read made after the stop comes back.
+func (s *Sandbox) StoppedAll() {
+	s.ResetSteps()
+	s.Status, s.Read = sandbox.Status{}, false
+	s.Pods, s.PodsErr = nil, nil
 }
 
 // SetStatus keeps what a read of the services and the cluster found.

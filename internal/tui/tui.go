@@ -75,9 +75,12 @@ type model struct {
 
 	// polling counts the reads of the sandbox on their way. The next poll
 	// starts pollEvery after the last read comes back, and tickPlanned is
-	// set while it waits, so that one poll is planned at a time.
+	// set while it waits, so that one poll is planned at a time. stale is
+	// set when a read that came back started before a job ended, so that
+	// the next poll starts at once.
 	polling     int
 	tickPlanned bool
+	stale       bool
 	// trafficStop stops following the proxy's audit log.
 	trafficStop context.CancelFunc
 	// shownPod is the selected agent's pod, which Home shows.

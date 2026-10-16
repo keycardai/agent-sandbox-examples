@@ -75,10 +75,12 @@ func (s *Sandbox) StartJob(job Job, cancel context.CancelFunc) bool {
 // with quit, quit after that.
 func (s *Sandbox) StopAfterJob(quit bool) { s.Job.StopAfter, s.Job.QuitAfter = true, quit }
 
-// EndJob ends the job that runs, and returns it.
+// EndJob ends the job that runs, and returns it. A read that started
+// before is no longer current.
 func (s *Sandbox) EndJob() Job {
 	ended := s.Job
 	s.Job = Job{}
+	s.readMark++
 	return ended
 }
 

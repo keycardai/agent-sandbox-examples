@@ -74,6 +74,29 @@ func TestOneJob(t *testing.T) {
 	}
 }
 
+// TestReadMark makes a read from before a job ended no longer current,
+// and StoppedAll forget what the reads found.
+func TestReadMark(t *testing.T) {
+	t.Parallel()
+	known := testSandbox(t, sandbox.Settings{})
+	mark := known.ReadMark()
+	known.StartJob(Job{Kind: JobStop}, nil)
+	if !known.ReadCurrent(mark) {
+		t.Error("a read is not current while the job runs, want it current until the job ends")
+	}
+	known.EndJob()
+	if known.ReadCurrent(mark) || !known.ReadCurrent(known.ReadMark()) {
+		t.Error("a read from before the job ended is current, want only one that started after it")
+	}
+	known.SetStatus(sandbox.Status{Deployed: true, ClusterExists: true})
+	known.Pods = []ContainerRow{{Pod: "u7k2vjw9ab"}}
+	known.StoppedAll()
+	if known.Read || known.Status.ClusterExists || known.Pods != nil {
+		t.Errorf("after StoppedAll: read %v, status %+v, pods %v; want them forgotten",
+			known.Read, known.Status, known.Pods)
+	}
+}
+
 // TestPhase says how the sandbox is from the job, the steps and the last
 // read, in that order: a job that runs comes first, then where a bring-up
 // stopped, then what the read found.

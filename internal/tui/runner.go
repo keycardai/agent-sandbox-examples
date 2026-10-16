@@ -48,11 +48,15 @@ type (
 		err   error
 	}
 	bringUpDoneMsg struct{ err error }
-	statusMsg      struct{ status sandbox.Status }
-	podsMsg        struct {
+	statusMsg      struct {
+		status sandbox.Status
+		mark   int
+	}
+	podsMsg struct {
 		rows   []state.ContainerRow
 		agents []sandbox.Agent
 		err    error
+		mark   int
 	}
 	actionDoneMsg struct{ err error }
 	execDoneMsg   struct {
@@ -444,7 +448,7 @@ func (m *model) runAction(job state.Job, work func(ctx context.Context, out io.W
 
 // onActionDone ends the job, and says how it went. Once everything
 // stopped, the bring-up that stopped or failed before is gone with the
-// sandbox, so its steps start over.
+// sandbox, so its steps start over, and the screens wait for a new read.
 func (m *model) onActionDone(msg actionDoneMsg) tea.Cmd {
 	ended := m.state.EndJob()
 	if msg.err != nil {
@@ -454,7 +458,7 @@ func (m *model) onActionDone(msg actionDoneMsg) tea.Cmd {
 		m.ui.Notify(ended.Name+": done", false)
 		m.state.Record("✓", ended.Name+": done")
 		if ended.Is(state.JobStop) {
-			m.state.ResetSteps()
+			m.state.StoppedAll()
 		}
 	}
 	// A quit that waited for the job does not hide its failure.
@@ -473,7 +477,7 @@ func (m *model) poll() tea.Cmd {
 		return nil
 	}
 	m.polling = pollReads
-	base, session := m.ctx, m.session
+	base, session, mark := m.ctx, m.session, m.state.ReadMark()
 	// The pods need the cluster and the zone step. Without them, kubectl
 	// has nothing to list, so the poll skips it.
 	last := m.state.Status
@@ -481,11 +485,11 @@ func (m *model) poll() tea.Cmd {
 	status := func() tea.Msg {
 		ctx, cancel := context.WithTimeout(base, readTimeout)
 		defer cancel()
-		return statusMsg{status: session.Status(ctx)}
+		return statusMsg{status: session.Status(ctx), mark: mark}
 	}
 	pods := func() tea.Msg {
 		if noPods {
-			return podsMsg{agents: session.Agents()}
+			return podsMsg{agents: session.Agents(), mark: mark}
 		}
 		ctx, cancel := context.WithTimeout(base, readTimeout)
 		defer cancel()
@@ -496,23 +500,37 @@ func (m *model) poll() tea.Cmd {
 				rows = append(rows, state.ContainerRow{Pod: pod.Name, Container: container})
 			}
 		}
-		return podsMsg{rows: rows, agents: session.Agents(), err: err}
+		return podsMsg{rows: rows, agents: session.Agents(), err: err, mark: mark}
 	}
 	return tea.Batch(status, pods)
 }
 
 // polled counts a read that came back, and plans the next poll pollEvery
-// after the last one, unless one is planned.
+// after the last one, unless one is planned. A poll with a read from before
+// a job ended reads again at once.
 func (m *model) polled() tea.Cmd {
 	m.polling = max(m.polling-1, 0)
-	if m.polling > 0 || m.tickPlanned {
+	if m.polling > 0 {
+		return nil
+	}
+	if m.stale {
+		m.stale = false
+		return m.poll()
+	}
+	if m.tickPlanned {
 		return nil
 	}
 	m.tickPlanned = true
 	return pollTick()
 }
 
+// onPods keeps what a read of the pods found, unless a job ended since it
+// started.
 func (m *model) onPods(msg podsMsg) {
+	if !m.state.ReadCurrent(msg.mark) {
+		m.stale = true
+		return
+	}
 	m.state.SetPods(msg.rows, msg.agents, msg.err)
 	m.syncAgents()
 	if len(m.state.SelectedPods()) > 0 {
