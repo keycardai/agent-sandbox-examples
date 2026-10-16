@@ -1,4 +1,4 @@
- keycard sandbox    1 Home   2 Agents   3 Traffic   4 Health                                                          ⠸ bringing up ━━━━━━━━━━━━ 6/10
+ keycard sandbox    1 Home   2 Agents   3 Traffic                                                                     ⠸ bringing up ━━━━━━━━━━━━ 6/10
 
   Bringing up your sandbox
   The first time takes a few minutes. Quitting stops the step that runs. What is done stays, and u runs the steps
@@ -39,4 +39,4 @@
 
 
 
-  u  stop   4  step logs   ?  keys   q  quit
+  u  stop   l  logs   ?  keys   q  quit

@@ -34,15 +34,14 @@ step. A review lists the settings before the launch. When a saved setting
 stops the bring-up, such as a credential with no value, the TUI says which
 one and asks only that step's questions.
 
-After the launch, the TUI has four tabs. The number keys switch between
+After the launch, the TUI has three tabs. The number keys switch between
 them.
 
 | Tab | What it shows |
 |---|---|
-| 1 Home | the bring-up as it runs, or where it stopped and why. Once the agent runs: what Keycard did for each of the demo's endpoints, which hosts the proxy blocked, what to try next, and the latest activity. |
+| 1 Home | the bring-up as it runs, or where it stopped and why. Once the agent runs: what needs a look, such as a mirror that stopped or checks that failed, what Keycard did for each of the demo's endpoints, which hosts the proxy blocked, what to try next, and the latest activity. |
 | 2 Agents | three panes. Top left, the agent every tab shows and how its pod is. Enter there lists every agent to switch to. Under it, the requests the agent can send, one per endpoint, and one to a host the demo does not allow. ↑↓ chooses one, and Enter sends it from the agent through the egress proxy. The pane on the right shows the agent's log, or with the requests in focus, the last response: its status, its body, whether the proxy got the person's credential from Keycard, and the `curl` command the agent ran. Tab goes round the panes. |
 | 3 Traffic | the same summary as Home, over every decision of the egress proxy as it makes it. `d` adds the DNS lookups. |
-| 4 Health | whether everything works: the agent runs, its requests go through Keycard, Keycard can verify the agent, and the checks pass. A check that fails says what to do. Below, the log of the one selected. `l` lists every log, for looking into a problem. |
 
 `u` brings the sandbox up, or starts again at the step that failed. `a`
 hands the terminal to the demo's agent, such as pi, and the TUI comes back
@@ -50,8 +49,10 @@ when it exits. `s` sends a request from the agent. `x` opens a shell in
 the agent, and `R` restarts the agent's pod. `a`, `s`, `x` and `R` act on
 the agent selected on the Agents tab. `o` opens the zone's events in the
 Keycard console, where the zone records each credential it issues. `c`
-runs the checks, `t` shows the activity log of everything that happened,
-`e` opens the settings, and `?` lists every key.
+runs the checks, `l` lists every log, such as each bring-up step's and the
+mirror's, and shows the one chosen over the screen. `t` shows the activity
+log of everything that happened, `e` opens the settings, and `?` lists
+every key.
 
 `n` gives one more person an agent in the current demo. It asks who, from
 the zone's users without an agent in it, and the demo's questions for that

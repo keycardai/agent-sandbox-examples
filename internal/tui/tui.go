@@ -2,10 +2,10 @@
 // the same questions as `sandbox init`, and brings it up one step at a
 // time. Then Home says what Keycard did for the agent and what to try, the
 // Agents tab lists an agent for each person, sends requests from the one
-// selected and shows what came back, the Traffic tab shows each decision of
-// its egress proxy, and the Health tab shows the checks, its pod and every
-// log. The tunnel and the mirror run as services, so quitting the TUI
-// leaves the sandbox up, and starting it again shows it.
+// selected and shows what came back, and the Traffic tab shows each
+// decision of its egress proxy. l lists every log, from any tab. The tunnel
+// and the mirror run as services, so quitting the TUI leaves the sandbox
+// up, and starting it again shows it.
 //
 // The state package holds what the TUI knows and the rules that change it,
 // and the page package draws it. The root model here is the controller: it
@@ -43,8 +43,7 @@ const (
 type screen int
 
 const (
-	// screenDashboard shows the sandbox in tabs: Home, Agents, Traffic and
-	// Health.
+	// screenDashboard shows the sandbox in tabs: Home, Agents and Traffic.
 	screenDashboard screen = iota
 	// screenWelcome greets a first run, or says what the settings lack.
 	screenWelcome
@@ -57,15 +56,14 @@ const (
 )
 
 // tab is a view of the dashboard. Home says what happens and what to do,
-// Agents is for working with the agents, Traffic for what they ask for,
-// and Health for how the sandbox is provisioned.
+// Agents is for working with the agents, and Traffic for what they ask
+// for.
 type tab int
 
 const (
 	tabHome tab = iota
 	tabAgent
 	tabTraffic
-	tabHealth
 	tabCount
 )
 
@@ -99,7 +97,7 @@ type model struct {
 	home     *page.Home
 	agents   *page.Agents
 	traffic  *page.Traffic
-	health   *page.Health
+	logs     *page.Logs
 	demos    *page.Demos
 
 	// polling counts the reads on their way. tickPlanned is set while the
@@ -155,8 +153,10 @@ const (
 	overlayQuestion
 	overlayQuit
 	overlayDemo
-	// overlayLogs lists every log, for looking into a problem.
+	// overlayLogs lists every log, for looking into a problem, and
+	// overlayLog shows the one chosen.
 	overlayLogs
+	overlayLog
 	// overlayAgents lists every agent, to switch to another.
 	overlayAgents
 )
@@ -197,7 +197,9 @@ func (m *model) overlayLayer() (layer, bool) {
 	case overlayDemo:
 		return layer{m.demos.View, m.demoKeys}, true
 	case overlayLogs:
-		return layer{m.health.LogsView, m.logsKeys}, true
+		return layer{m.logs.ListView, m.logsKeys}, true
+	case overlayLog:
+		return layer{m.logs.View, m.logKeys}, true
 	case overlayAgents:
 		return layer{m.agents.PickerView, m.agentListKeys}, true
 	case overlayQuestion:
@@ -242,7 +244,7 @@ func newModel(ctx context.Context, session *sandbox.Session) *model {
 	root.home = page.NewHome(pageUI, sandbox)
 	root.agents = page.NewAgents(pageUI, sandbox, root)
 	root.traffic = page.NewTraffic(pageUI, sandbox)
-	root.health = page.NewHealth(pageUI, sandbox, root)
+	root.logs = page.NewLogs(pageUI, sandbox)
 	root.demos = page.NewDemos(pageUI, sandbox)
 	if len(sandbox.Run.Steps) > 0 {
 		pageUI.Logs.Show(state.StepSource(sandbox.Run.Steps[0].Step.ID))

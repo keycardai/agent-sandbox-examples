@@ -19,7 +19,7 @@ type Hint struct{ Key, Desc string }
 // focused pane, and ? shows them all.
 type KeyMap struct {
 	// Moving around.
-	Up, Down, NextPane, PrevPane, Tab1, Tab2, Tab3, Tab4, Output key.Binding
+	Up, Down, NextPane, PrevPane, Tab1, Tab2, Tab3, Output key.Binding
 	// Actions on the sandbox.
 	Start, Checks, Agent, Shell, Restart, Send, Events, DNS, Setup, Demo, Activity, Logs, StopAll key.Binding
 	// The agents.
@@ -43,7 +43,6 @@ func NewKeyMap() KeyMap {
 		Tab1:     bind([]string{"1"}, "1", "home"),
 		Tab2:     bind([]string{"2"}, "2", "agents"),
 		Tab3:     bind([]string{"3"}, "3", "traffic"),
-		Tab4:     bind([]string{"4"}, "4", "health"),
 		Output:   bind([]string{KeyEnter}, "enter", "focus the log"),
 		Start:    bind([]string{"u"}, "u", "bring up"),
 		Checks:   bind([]string{"c"}, "c", "run checks"),
@@ -85,7 +84,7 @@ type HelpGroup struct {
 // Groups returns every binding, in the groups ? lists.
 func (k KeyMap) Groups() []HelpGroup {
 	return []HelpGroup{
-		{"Tabs", []key.Binding{k.Tab1, k.Tab2, k.Tab3, k.Tab4}},
+		{"Tabs", []key.Binding{k.Tab1, k.Tab2, k.Tab3}},
 		{"General", []key.Binding{k.Up, k.Down, k.NextPane, k.PrevPane, k.Output, k.Back, k.Help, k.Quit}},
 		{"Sandbox", []key.Binding{k.Start, k.Checks, k.Demo, k.Setup, k.Events, k.StopAll}},
 		{"Agent", []key.Binding{k.Agent, k.Send, k.Shell, k.Restart, k.AddAgent, k.RemoveAgent}},

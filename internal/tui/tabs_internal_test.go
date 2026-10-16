@@ -626,57 +626,46 @@ func TestBlockedReasons(t *testing.T) {
 	}
 }
 
-// TestHealthChecks marks what needs a look with what to do, says
-// everything works when it does, and opens any log from the list of every
-// log.
-func TestHealthChecks(t *testing.T) {
+// TestHomeTroubles says on Home what keeps a sandbox that runs from
+// working, with what to do: nothing when all is well, then the mirror that
+// stopped, the proxy that stopped, and its log that cannot be read.
+func TestHomeTroubles(t *testing.T) {
 	t.Parallel()
 	root := upModel(t)
 	root.Update(tea.WindowSizeMsg{Width: 150, Height: 42})
-	root.Update(press("4"))
-	checkHealth := func(name string, wants ...string) {
-		t.Helper()
-		view := ansi.Strip(root.View().Content)
-		for _, want := range wants {
-			if !strings.Contains(view, want) {
-				t.Errorf("%s: Health lacks %q:\n%s", name, want, view)
-			}
+	if view := ansi.Strip(root.View().Content); strings.Contains(view, "NEEDS A LOOK") {
+		t.Errorf("all well, and Home says something needs a look:\n%s", view)
+	}
+	root.state.Reads.Status.Mirror.Running = false
+	for i, row := range root.state.Agents.Pods {
+		if row.Container.Name == state.ProxyContainer {
+			ctr := &root.state.Agents.Pods[i].Container
+			ctr.Ready, ctr.State, ctr.ExitCode = false, state.StateTerminated, 1
 		}
 	}
-	checkHealth("a refused credential", "! Something needs a look", "Keycard refused a credential once",
-		"The agent runs · log", "The agent's own output")
-	root.state.Agents.Traffic.Reset(samplePod)
-	for _, record := range sampleRecords(time.Now().Add(-time.Minute)) {
-		if !record.RefusedCredential() {
-			root.state.Agents.Traffic.Add(samplePod, record)
+	root.state.Agents.Traffic.SetErr(errRefused)
+	view := ansi.Strip(root.View().Content)
+	for _, want := range []string{
+		"NEEDS A LOOK", "The mirror is down, so Keycard cannot verify the agent.", "Press u to start it again.",
+		"The egress proxy stopped: terminated (exit 1).", "Press l for its log, or R to restart the pod.",
+		"Cannot read the proxy's log: kubectl get pods: connection refused.",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("Home lacks %q:\n%s", want, view)
 		}
 	}
-	checkHealth("all well", "✓ Everything works", "credential added", "Not run in this session")
-	root.state.Reads.Status.Tunnel.Running = false
-	checkHealth("the tunnel down", "The sandbox is not running", "The tunnel is down", "u brings the sandbox up again")
-	root.Update(press("l"))
-	for range 3 {
-		root.Update(press("j"))
-	}
-	root.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if source := root.ui.Logs.Source(); source != state.ServiceSource(sandbox.ServiceMirror) {
-		t.Errorf("the mirror from every log shows %q", source)
-	}
-	checkHealth("the mirror's log", "Mirror · log", "serves the cluster's public keys")
-	root.state.Reads.Status.ClusterErr = fmt.Errorf("%w: cannot list k3d clusters", sandbox.ErrDocker)
-	checkHealth("the cluster check failed", "cannot list k3d clusters", "Start Docker")
 }
 
 // errRefused is a read of the pods that the cluster refused.
 var errRefused = errors.New("kubectl get pods: connection refused")
 
 // TestPodsError says why there is no pod when the pods cannot be read, on
-// the Agents tab and on the Health tab.
+// Home and on the Agents tab.
 func TestPodsError(t *testing.T) {
 	t.Parallel()
 	root := upModel(t)
 	root.Update(podsMsg{agents: root.state.Agents.List, err: errRefused})
-	for _, tab := range []string{"2", "4"} {
+	for _, tab := range []string{"1", "2"} {
 		root.Update(press(tab))
 		if view := ansi.Strip(root.View().Content); !strings.Contains(view, "connection refused") {
 			t.Errorf("tab %s does not say why there is no pod:\n%s", tab, view)
@@ -692,10 +681,11 @@ func TestLogsListAfterFewerSteps(t *testing.T) {
 	root := testModel(t)
 	root.screen = screenDashboard
 	root.Update(press("l"))
-	for range len(root.health.LogEntries()) {
+	for range len(root.logs.Entries()) {
 		root.Update(press("j"))
 	}
 	root.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	root.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	root.session.Local().Settings[sandbox.KeyKubeContext] = "keycard-test-none"
 	root.state.ResetSteps()
 	root.Update(press("l"))
@@ -725,124 +715,33 @@ func TestOldResponseStaysOut(t *testing.T) {
 	}
 }
 
-// healthFailure is one way the sandbox fails, and what the Health tab says
-// about it.
-type healthFailure struct {
-	name  string
-	cause func(root *model)
-	want  []string
-	// source is the log the check shows, or "" for a check that passes.
-	source string
-}
-
-// TestHealthFailures says what fails, with its own log under it, for an
-// issuer that Keycard cannot verify, a proxy that crashes and a firewall
-// that did not start. With an issuer URL of the operator's, there is no
-// tunnel to ask for.
-func TestHealthFailures(t *testing.T) {
-	t.Parallel()
-	crash := func(name string) func(root *model) {
-		return func(root *model) {
-			for i, row := range root.state.Agents.Pods {
-				if row.Container.Name == name {
-					ctr := &root.state.Agents.Pods[i].Container
-					ctr.Ready, ctr.State, ctr.ExitCode = false, state.StateTerminated, 1
-				}
-			}
-			root.syncAgents()
-		}
-	}
-	for _, tc := range []healthFailure{
-		{"issuer", func(root *model) {
-			i := slices.IndexFunc(root.state.Run.Steps, func(row *state.StepRow) bool { return row.Step.ID == sandbox.StepIssuer })
-			root.state.Run.Steps[i].State = state.StepFailed
-			root.state.Run.Steps[i].Err = fmt.Errorf("%w: discovery answered 404", sandbox.ErrIssuer)
-		}, []string{"✕ Keycard can verify the agent", "discovery answered 404"}, state.StepSource(sandbox.StepIssuer)},
-		{
-			"proxy", crash(state.ProxyContainer),
-			[]string{"✕ Its requests go through Keycard", "R restarts the pod"},
-			state.ContainerSource(samplePod, state.ProxyContainer),
-		},
-		{
-			"firewall", crash("egress-netsetup"),
-			[]string{"The firewall did not start", "R restarts the pod"},
-			state.ContainerSource(samplePod, "egress-netsetup"),
-		},
-		{"own issuer", func(root *model) {
-			settings := root.session.Local().Settings
-			settings[sandbox.KeyIssuer], settings[sandbox.KeyTunnel] = "https://keys.example.com", ""
-			root.state.ResetSteps()
-			root.state.Reads.Status.Tunnel.Running = false
-		}, []string{"✓ Keycard can verify the agent", "at your issuer's URL"}, ""},
-	} {
-		checkFailure(t, tc)
-	}
-}
-
-// checkFailure causes a failure on a sandbox that is up, and checks the
-// Health tab, with the cursor on the check that shows the failure's log.
-func checkFailure(t *testing.T, tc healthFailure) {
-	t.Helper()
-	root := upModel(t)
-	root.Update(tea.WindowSizeMsg{Width: 150, Height: 42})
-	tc.cause(root)
-	root.Update(press("4"))
-	for range 3 {
-		if tc.source == "" || root.ui.Logs.Source() == tc.source {
-			break
-		}
-		root.Update(press("j"))
-	}
-	view := ansi.Strip(root.View().Content)
-	for _, want := range tc.want {
-		if !strings.Contains(view, want) {
-			t.Errorf("%s: Health lacks %q:\n%s", tc.name, want, view)
-		}
-	}
-	if tc.source != "" && root.ui.Logs.Source() != tc.source {
-		t.Errorf("%s: the check's log is %q, want %q", tc.name, root.ui.Logs.Source(), tc.source)
-	}
-	if strings.Contains(view, "The tunnel is down") {
-		t.Errorf("%s: Health asks for a tunnel:\n%s", tc.name, view)
-	}
-}
-
-// TestHealthShowsTheStep opens the Health tab on the log of the step that
-// stopped the bring-up, which Home's hint points at.
-func TestHealthShowsTheStep(t *testing.T) {
+// TestLogsShowTheStep opens the list of every log on the step that stopped
+// the bring-up, which Home's hint points at.
+func TestLogsShowTheStep(t *testing.T) {
 	t.Parallel()
 	root := testModel(t)
 	root.screen = screenDashboard
 	root.Update(stepDoneMsg{index: 1, err: sandbox.ErrDocker})
-	root.Update(press("4"))
+	root.Update(press("l"))
+	root.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if want := state.StepSource(root.state.Run.Steps[1].Step.ID); root.ui.Logs.Source() != want {
-		t.Errorf("4 after a failed step shows %q, want %q", root.ui.Logs.Source(), want)
+		t.Errorf("l then enter after a failed step shows %q, want %q", root.ui.Logs.Source(), want)
 	}
 }
 
-// TestHealthAfterAStop says where the operator stopped the bring-up, and
-// shows neither the stopped issuer step nor the stopped checks as failed.
-func TestHealthAfterAStop(t *testing.T) {
+// TestStoppedChecksAreNoTrouble keeps checks the operator stopped off what
+// needs a look on Home: they did not fail.
+func TestStoppedChecksAreNoTrouble(t *testing.T) {
 	t.Parallel()
 	root := upModel(t)
-	root.screen = screenDashboard
 	root.Update(tea.WindowSizeMsg{Width: 150, Height: 42})
-	for _, id := range []sandbox.StepID{sandbox.StepChecks, sandbox.StepIssuer} {
-		index := slices.IndexFunc(root.state.Run.Steps, func(row *state.StepRow) bool { return row.Step.ID == id })
-		root.Update(stepDoneMsg{index: index, err: context.Canceled})
-	}
-	root.Update(press("4"))
-	view := ansi.Strip(root.View().Content)
-	for _, want := range []string{
-		"○ You stopped the bring-up at: Verify the issuer with Keycard", "✓ Keycard can verify the agent",
-		"Stopped. c runs them again",
-	} {
-		if !strings.Contains(view, want) {
-			t.Errorf("Health lacks %q:\n%s", want, view)
-		}
-	}
-	if strings.Contains(view, "context canceled") || strings.Contains(view, "Their log is below") {
-		t.Errorf("Health shows the stop as a failure:\n%s", view)
+	checks := slices.IndexFunc(root.state.Run.Steps, func(row *state.StepRow) bool {
+		return row.Step.ID == sandbox.StepChecks
+	})
+	root.Update(stepDoneMsg{index: checks, err: context.Canceled})
+	if view := ansi.Strip(root.View().Content); strings.Contains(view, "NEEDS A LOOK") ||
+		strings.Contains(view, "context canceled") {
+		t.Errorf("Home shows the stopped checks as a failure:\n%s", view)
 	}
 }
 
@@ -868,25 +767,9 @@ func TestHelpFits(t *testing.T) {
 	}
 }
 
-// TestHealthWhenTheProxyLogFails says on Health that the proxy's log cannot
-// be read, as Home does, instead of saying no request went out yet.
-func TestHealthWhenTheProxyLogFails(t *testing.T) {
-	t.Parallel()
-	root := upModel(t)
-	root.Update(tea.WindowSizeMsg{Width: 150, Height: 42})
-	root.state.Agents.Traffic.Reset(samplePod)
-	root.state.Agents.Traffic.SetErr(errRefused)
-	root.Update(press("4"))
-	view := ansi.Strip(root.View().Content)
-	if !strings.Contains(view, "Cannot read the proxy's log: kubectl get pods: connection refused") ||
-		strings.Contains(view, "No requests yet") {
-		t.Errorf("Health does not say the proxy's log cannot be read:\n%s", view)
-	}
-}
-
 // TestHomeFirewallFailed says on Home that the agent does not run when its
-// pod's firewall did not start, as Health and the Agents tab do, instead of
-// saying the pod is starting.
+// pod's firewall did not start, as the Agents tab does, instead of saying
+// the pod is starting.
 func TestHomeFirewallFailed(t *testing.T) {
 	t.Parallel()
 	root := upModel(t)
@@ -906,8 +789,8 @@ func TestHomeFirewallFailed(t *testing.T) {
 	}
 }
 
-// TestTabsAgreeOnThePhase says on Home, the Agents tab and Health that the
-// sandbox is being read, or where the bring-up stopped.
+// TestTabsAgreeOnThePhase says on Home and the Agents tab that the sandbox
+// is being read, or where the bring-up stopped.
 func TestTabsAgreeOnThePhase(t *testing.T) {
 	t.Parallel()
 	for want, setup := range map[string]func(root *model){
@@ -917,7 +800,7 @@ func TestTabsAgreeOnThePhase(t *testing.T) {
 		root := testModel(t)
 		root.Update(tea.WindowSizeMsg{Width: 150, Height: 42})
 		setup(root)
-		for _, tab := range []string{"1", "2", "4"} {
+		for _, tab := range []string{"1", "2"} {
 			root.Update(press(tab))
 			if view := ansi.Strip(root.View().Content); !strings.Contains(view, want) {
 				t.Errorf("tab %s lacks %q:\n%s", tab, want, view)

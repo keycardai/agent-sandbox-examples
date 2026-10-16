@@ -1,4 +1,4 @@
- keycard sandbox    1 Home   2 Agents   3 Traffic   4 Health             ⠸ 6/10
+ keycard sandbox    1 Home   2 Agents   3 Traffic                        ⠸ 6/10
 
   Bringing up your sandbox
   The first time takes a few minutes. Quitting stops the step that runs. What
@@ -19,4 +19,4 @@
   │ STATUS: deployed
   │ Waiting for deployment agent-sandbox-controller to be ready
 
-  u  stop   4  step logs   ?  keys   q  quit
+  u  stop   l  logs   ?  keys   q  quit

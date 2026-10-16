@@ -1,0 +1,42 @@
+ keycard sandbox    1 Home   2 Agents   3 Traffic                                                                                                ● up
+
+  ● ada@example.com's agent is running
+  It acts as ada@example.com in zone wvqowjom…keycard.cloud, and does not hold any secrets. The egress proxy asks
+  Keycard for ada@example.com's credential on each request, and adds it on the way out.
+
+  WHAT KEYCARD DID
+    ✓ GitHub       api.github.com           1 request, credential added · hh:mm:ss
+    · GitHub git   github.com╭──────────────────────────────────────────────────────────────────────────────────────────╮
+    ✕ OpenRouter   openrouter│                                                                                          │
+    ✓ pypi.org               │  Every log                                                                               │
+    · files.pythonhosted.org │  For looking into a problem.                                                             │
+    ✕ Blocked      example.co│                                                                                          │
+    · DNS          3 lookups,│  ▸ Agent                                                                                 │
+                             │    Egress proxy                                                                          │
+  TRY IT                     │    Firewall                                                                              │
+     a  Open pi-session in th│    Mirror                                                                                │
+     s  Send a request from t│    Tunnel                                                                                │
+     o  Open the zone's event│    Bring-up: Start the tunnel                                                            │
+     x  Open a shell in the a│    Bring-up: Create or check the cluster                                                 │
+                             │    Bring-up: Start the issuer mirror                                                     │
+  RECENT ACTIVITY            │    Bring-up: Verify the issuer with Keycard                                              │
+    hh:mm:ss  ✓ Start the tun│    Bring-up: Import the images                                                           │
+    hh:mm:ss  ✓ Install the c│    Bring-up: Set up the Keycard zone                                                     │
+    hh:mm:ss  ✓ Checks: 6 of │    Bring-up: Install the charts                                                          │
+    hh:mm:ss  ✓ The sandbox i│    Bring-up: Create each agent's sandbox                                                 │
+    hh:mm:ss  ▸ The agent sen│    Bring-up: Wait for each agent's pod                                                   │
+    hh:mm:ss  ✓ GET https://a│    Bring-up: Run the checks in each agent                                                │
+                             │    Last action                                                                           │
+                             │    Activity                                                                              │
+                             │                                                                                          │
+                             │   ↑↓  choose    enter  show    esc  close                                                │
+                             │                                                                                          │
+                             ╰──────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+  a  open pi-session   s  send a request   p  switch demo   o  zone events   x  shell   ?  keys   q  quit

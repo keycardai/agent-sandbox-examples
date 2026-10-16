@@ -59,10 +59,11 @@ func (m *model) dashboardView() string {
 		body, hints = m.agents.View(), m.agents.Hints()
 	case tabTraffic:
 		body, hints = m.traffic.View(), m.traffic.Hints()
-	case tabHealth:
-		body, hints = m.health.View(), m.health.Hints()
 	case tabHome, tabCount:
 		body, hints = m.home.View(), m.home.Hints()
+	}
+	if m.overlay.kind == overlayLog {
+		hints = m.logs.Hints()
 	}
 	return m.ui.PageUnder(m.tabBand(), body, hints)
 }
@@ -71,7 +72,7 @@ func (m *model) dashboardView() string {
 // and how the sandbox is on the right.
 func (m *model) tabBand() string {
 	theme := m.ui.Styles
-	tabs := component.Tabs(theme, []string{"Home", "Agents", "Traffic", "Health"}, int(m.tab))
+	tabs := component.Tabs(theme, []string{"Home", "Agents", "Traffic"}, int(m.tab))
 	badge := m.statusBadge()
 	if lipgloss.Width(theme.Wordmark())+lipgloss.Width(tabs)+lipgloss.Width(badge)+bandSpace > m.ui.Width {
 		badge = m.shortBadge()
@@ -153,15 +154,18 @@ func (m *model) progress() *tea.ProgressBar {
 	return nil
 }
 
-// layout sizes the log pane for the window and the tab that shows.
+// layout sizes the log pane for the window, and the log chosen from the
+// list or the tab that shows.
 func (m *model) layout() {
+	if m.overlay.kind == overlayLog {
+		m.logs.Layout()
+		return
+	}
 	switch m.tab {
 	case tabAgent:
 		m.agents.Layout()
 	case tabTraffic:
 		m.traffic.Layout()
-	case tabHealth:
-		m.health.Layout()
 	case tabHome, tabCount:
 		width := m.ui.Width - component.PageIndent - component.BorderCols
 		m.ui.Logs.SetSize(max(width, 1), max(m.ui.BodyRows()-component.BorderRows-1, 1))

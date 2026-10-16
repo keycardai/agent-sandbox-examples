@@ -302,14 +302,8 @@ func (m *model) notifyUp() {
 	}
 }
 
-// watchBringUp shows a bring-up that starts: on Home, unless the Health
-// tab shows, which follows each step's log.
-func (m *model) watchBringUp() {
-	m.health.Focus = page.PaneChecks
-	if m.tab != tabHealth {
-		m.openTab(tabHome)
-	}
-}
+// watchBringUp shows a bring-up that starts on Home.
+func (m *model) watchBringUp() { m.openTab(tabHome) }
 
 func (m *model) toggleBringUp() {
 	if m.state.Run.Job.Is(state.JobChecks) {
@@ -605,8 +599,6 @@ func (m *model) onPods(msg podsMsg) {
 		if row, ok := m.state.Container(state.AgentContainer); ok {
 			m.Follow(row)
 		}
-	case m.tab == tabHealth:
-		m.health.OnPods()
 	}
 }
 
@@ -629,10 +621,6 @@ func (m *model) agentSwitched() {
 	switch m.tab {
 	case tabAgent:
 		m.agents.ShowRight()
-	case tabHealth:
-		if m.health.Focus == page.PaneChecks {
-			m.health.ShowCheck()
-		}
 	case tabHome, tabTraffic, tabCount:
 	}
 	m.layout()

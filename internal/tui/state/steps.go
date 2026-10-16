@@ -83,6 +83,15 @@ func (s *Sandbox) StepEnded(i int, err error) *StepRow {
 	return row
 }
 
+// StepOf returns the step id, or nil when the bring-up does not have it.
+func (r *Run) StepOf(id sandbox.StepID) *StepRow {
+	index := slices.IndexFunc(r.Steps, func(row *StepRow) bool { return row.Step.ID == id })
+	if index < 0 {
+		return nil
+	}
+	return r.Steps[index]
+}
+
 // FailedStep returns the step a bring-up stopped at, or nil. A failed check
 // does not count: the sandbox is up.
 func (r *Run) FailedStep() *StepRow {

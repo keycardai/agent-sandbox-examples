@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"cmp"
 	"context"
 
 	"charm.land/bubbles/v2/key"
@@ -135,11 +136,6 @@ func (m *model) updateBackground(msg tea.Msg) (tea.Cmd, bool) {
 func (m *model) onFrame() tea.Cmd {
 	m.ui.Frame++
 	m.ui.Logs.Refresh(false)
-	if m.tab == tabHealth {
-		// A check gains or loses its fix line as the sandbox changes,
-		// which moves the log under the checks.
-		m.health.Layout()
-	}
 	return tea.Batch(frameTick(), m.welcomeGlint())
 }
 
@@ -377,7 +373,7 @@ func (m *model) dashboardKeys(msg tea.KeyPressMsg) tea.Cmd {
 // switchTab moves to the tab a number key names.
 func (m *model) switchTab(msg tea.KeyPressMsg) bool {
 	keys := m.ui.Keys
-	for i, binding := range []key.Binding{keys.Tab1, keys.Tab2, keys.Tab3, keys.Tab4} {
+	for i, binding := range []key.Binding{keys.Tab1, keys.Tab2, keys.Tab3} {
 		if key.Matches(msg, binding) {
 			m.openTab(tab(i))
 			return true
@@ -387,9 +383,7 @@ func (m *model) switchTab(msg tea.KeyPressMsg) bool {
 }
 
 // openTab shows a tab, and points the log pane at the log it shows: the
-// agent's on the Agents tab, the proxy's decisions on the Traffic tab, and
-// on the Health tab the step that runs or stopped the bring-up, or else
-// the log chosen there.
+// agent's on the Agents tab, and the proxy's decisions on the Traffic tab.
 func (m *model) openTab(next tab) {
 	m.tab = next
 	m.ui.Logs.ClearFilter()
@@ -398,8 +392,6 @@ func (m *model) openTab(next tab) {
 		m.agents.ShowRight()
 	case tabTraffic:
 		m.traffic.Show()
-	case tabHealth:
-		m.health.Open()
 	case tabHome, tabCount:
 	}
 	m.layout()
@@ -417,8 +409,6 @@ func (m *model) tabKeys(msg tea.KeyPressMsg) tea.Cmd {
 		return m.agents.Keys(msg)
 	case tabTraffic:
 		return m.traffic.Keys(msg)
-	case tabHealth:
-		return m.health.Keys(msg)
 	case tabHome, tabCount:
 	}
 	return nil
@@ -466,10 +456,10 @@ func (m *model) agentActionKeys(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		m.addAgent()
 		return nil, true
 	case key.Matches(msg, keys.Activity):
-		entries := m.health.LogEntries()
+		entries := m.logs.Entries()
 		m.showLog(entries[len(entries)-1])
 	case key.Matches(msg, keys.Logs):
-		m.health.OpenLogs()
+		m.logs.Open()
 		m.overlay = overlay{kind: overlayLogs}
 	default:
 		return nil, false
@@ -477,18 +467,35 @@ func (m *model) agentActionKeys(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	return nil, true
 }
 
-// showLog shows a log from the list of every log on the Health tab.
+// showLog shows a log from the list of every log over the screen: a
+// container's, followed, or another log.
 func (m *model) showLog(entry page.LogEntry) {
-	if m.tab != tabHealth {
-		m.openTab(tabHealth)
+	m.logs.Shown = entry
+	m.ui.Logs.ClearFilter()
+	if row, ok := m.state.Container(entry.Container); ok && entry.Container != "" {
+		m.Follow(row)
+	} else {
+		m.ui.Logs.Show(cmp.Or(entry.Source, state.ContainerSource("", entry.Container)))
 	}
-	m.health.ShowLog(entry)
+	m.overlay = overlay{kind: overlayLog}
+	m.layout()
 }
 
-// logsKeys moves through the list of every log, and shows the one chosen
-// on the Health tab.
+// logKeys moves through the log chosen from the list. Esc closes it, and
+// the tab that shows points the log pane at its own log again.
+func (m *model) logKeys(msg tea.KeyPressMsg) tea.Cmd {
+	if !key.Matches(msg, m.ui.Keys.Back) || m.ui.Logs.Filter() != "" {
+		return m.ui.Logs.Keys(msg, m.ui.Keys)
+	}
+	m.closeOverlay()
+	m.stopStream()
+	m.openTab(m.tab)
+	return nil
+}
+
+// logsKeys moves through the list of every log, and shows the one chosen.
 func (m *model) logsKeys(msg tea.KeyPressMsg) tea.Cmd {
-	entry, pick := m.health.LogsKeys(msg)
+	entry, pick := m.logs.Keys(msg)
 	switch pick {
 	case component.PickChosen:
 		m.closeOverlay()
@@ -658,7 +665,6 @@ func (m *model) launch() tea.Cmd {
 		return nil
 	}
 	m.screen, m.tab = screenDashboard, tabHome
-	m.health.Focus = page.PaneChecks
 	m.agents.Reset()
 	m.layout()
 	m.startBringUp(0, false)

@@ -60,7 +60,7 @@ func (h *Home) Hints() []component.Hint {
 func (h *Home) phaseHints() []component.Hint {
 	switch phase, _ := h.state.Phase(); phase {
 	case state.PhaseBringingUp, state.PhaseChecking:
-		return []component.Hint{{Key: "u", Desc: "stop"}, {Key: "4", Desc: "step logs"}}
+		return []component.Hint{{Key: "u", Desc: "stop"}, {Key: "l", Desc: "logs"}}
 	case state.PhaseStopping:
 		return nil
 	case state.PhaseStopped, state.PhaseFailed:
@@ -68,7 +68,7 @@ func (h *Home) phaseHints() []component.Hint {
 		if phase == state.PhaseStopped {
 			again = "start again"
 		}
-		return []component.Hint{{Key: "u", Desc: again}, {Key: "4", Desc: "step logs"}, {Key: "e", Desc: "settings"}}
+		return []component.Hint{{Key: "u", Desc: again}, {Key: "l", Desc: "logs"}, {Key: "e", Desc: "settings"}}
 	case state.PhaseUp:
 		return []component.Hint{
 			{Key: "a", Desc: h.AgentActionName()},
@@ -128,7 +128,7 @@ func (h *Home) failed(row *state.StepRow) string {
 	}
 	lines = append(lines, "",
 		h.ui.actionLine("u", "Start again from: "+h.state.Run.Steps[h.state.ResumeIndex()].Step.Title),
-		h.ui.actionLine("4", "Read the step's full log on the Health tab"),
+		h.ui.actionLine("l", "Read the step's full log"),
 		h.ui.actionLine("e", "Change the settings"),
 		"")
 	for _, step := range h.state.Run.Steps {
@@ -164,6 +164,9 @@ func (h *Home) down() string {
 func (h *Home) up() string {
 	theme := h.ui.Styles
 	lines := append(h.agentBar(), h.agentHeadline()...)
+	if troubles := h.troubleLines(); len(troubles) > 0 {
+		lines = append(append(lines, "", theme.SectionTitle.Render("NEEDS A LOOK")), troubles...)
+	}
 	lines = append(lines, "", theme.SectionTitle.Render("WHAT KEYCARD DID"))
 	for _, line := range h.keycardLines() {
 		lines = append(lines, "  "+line)
@@ -181,6 +184,34 @@ func (h *Home) up() string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// troubleLines say what keeps the sandbox from working as it should, and
+// what to do about each.
+func (h *Home) troubleLines() []string {
+	theme := h.ui.Styles
+	troubles := h.state.Troubles()
+	lines := make([]string, 0, len(troubles))
+	for _, trouble := range troubles {
+		what, fix := "", ""
+		switch trouble {
+		case state.TroubleMirror:
+			what, fix = "The mirror is down, so Keycard cannot verify the agent.", "Press u to start it again."
+		case state.TroubleProxy:
+			proxy, _ := h.state.Container(state.ProxyContainer)
+			what = "The egress proxy stopped: " + containerDetail(proxy.Container) + "."
+			fix = "Press l for its log, or R to restart the pod."
+		case state.TroubleProxyLog:
+			what = "Cannot read the proxy's log: " + component.FirstLine(h.state.Agents.Traffic.Err().Error()) + "."
+			fix = "The TUI tries again every few seconds."
+		case state.TroubleChecks:
+			checks := h.state.Run.StepOf(sandbox.StepChecks)
+			what = fmt.Sprintf("Checks: %d of %d passed.", checks.Passed, checks.Total)
+			fix = "Press l for their log, or c to run them again."
+		}
+		lines = append(lines, "  "+theme.Failed.Render("✕ ")+theme.Text.Render(what)+" "+theme.Hint.Render(fix))
+	}
+	return lines
 }
 
 // colorActivity colors each activity row by its mark.
@@ -222,7 +253,7 @@ func (h *Home) agentHeadline() []string {
 		return []string{
 			theme.Failed.Bold(true).Render("✕ " + name + " is not running: the firewall did not start: " +
 				containerDetail(row.Container)),
-			h.ui.para(theme.Muted, "Press 4 to read the firewall's log, or R to restart the pod."),
+			h.ui.para(theme.Muted, "Press l to read the firewall's log, or R to restart the pod."),
 		}
 	case state.PodAgentFailed:
 		return []string{
@@ -352,7 +383,7 @@ func HintFor(err error) string {
 	}{
 		{sandbox.ErrDocker, "Start Docker (OrbStack or Docker Desktop), then press u."},
 		{sandbox.ErrImages, "Do what the error says, then press u to start again from this step."},
-		{sandbox.ErrBuild, "Its log is on the Health tab (4). Fix what the build's output says, then press u."},
+		{sandbox.ErrBuild, "Press l for the step's log. Fix what the build's output says, then press u."},
 		{sandbox.ErrOtherIssuer, "The cluster was made for another issuer URL. Press u and recreate it."},
 		{sandbox.ErrBrokenCluster, "Your kubeconfig has no context for the cluster. Press u and recreate it."},
 		{zonesetup.ErrPolicySetActive, "Press e, choose Zone and user, and allow replacing the active policy set."},
@@ -363,9 +394,9 @@ func HintFor(err error) string {
 		{zonesetup.ErrProviderNotFound, "The zone lacks a provider the demo names. Press e and choose Demo."},
 		{sandbox.ErrSettings, "Press e to set the sandbox up."},
 		{sandbox.ErrScenario, "Press e and choose Demo."},
-		{sandbox.ErrService, "Read the service's log on the Health tab: 4, then l lists every log."},
-		{sandbox.ErrIssuer, "Read the tunnel and mirror logs on the Health tab: 4, then l. Then press u."},
-		{sandbox.ErrPod, "Read the agent's and the proxy's logs on the Health tab: 4, then l."},
+		{sandbox.ErrService, "Press l and read the service's log."},
+		{sandbox.ErrIssuer, "Press l and read the tunnel's and the mirror's logs. Then press u."},
+		{sandbox.ErrPod, "Press l and read the agent's and the proxy's logs."},
 		{sandbox.ErrCheck, "The sandbox is up. Read the failed check, then press c to run the checks again."},
 		{sandbox.ErrAgent, "Read the agent's log on the Agents tab (2)."},
 	}

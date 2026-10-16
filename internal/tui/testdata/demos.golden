@@ -1,4 +1,4 @@
- keycard sandbox    1 Home   2 Agents   3 Traffic   4 Health                                                                                     ● up
+ keycard sandbox    1 Home   2 Agents   3 Traffic                                                                                                ● up
 
   ● ada@example.com's agent is running
   It acts as ada@example.com in zone wvqowjom…keycard.cloud, and does not hold any secrets. The egress proxy asks

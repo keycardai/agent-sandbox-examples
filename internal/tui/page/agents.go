@@ -105,8 +105,8 @@ type requestState struct {
 
 // Agents is the dashboard's tab for working with the agents. It lists an
 // agent for each person the settings give one, and the agent selected
-// there is the one every tab shows: its pod, its log, its traffic and its
-// health. On the left are the agent it shows and the requests it can send.
+// there is the one every tab shows: its pod, its log and its traffic. On
+// the left are the agent it shows and the requests it can send.
 // On the right is the agent's log, or with the requests in focus, what the
 // last one got back.
 type Agents struct {

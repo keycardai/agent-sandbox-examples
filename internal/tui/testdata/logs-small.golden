@@ -1,0 +1,22 @@
+ keycard sandbox    1 Home   2 Agents   3 Traffic                          ● up
+    ╭──────────────────────────────────────────────────────────────────────╮
+  ● │                                                                      │
+  It│  Every log                                                           │ld
+  an│  For looking into a problem.                                         │l
+  on│                                                                      │
+    │  ▸ Agent                                                             │
+  WH│    Egress proxy                                                      │
+    │    Firewall                                                          │:31…
+    │    Mirror                                                            │
+    │    Tunnel                                                            │doe…
+    │    Bring-up: Start the tunnel                                        │· 1…
+    │    Bring-up: Create or check the cluster                             │
+    │    Bring-up: Start the issuer mirror                                 │
+    │    Bring-up: Verify the issuer with Keycard                          │rst…
+    │    Bring-up: Import the images                                       │
+  TR│                                                                      │
+    │   ↑↓  choose    enter  show    esc  close                            │acc…
+    │                                                                      │
+    ╰──────────────────────────────────────────────────────────────────────╯
+     x  Open a shell in the agent
+  a  open pi-session   s  send a request   p  switch demo   o  zone events   x…

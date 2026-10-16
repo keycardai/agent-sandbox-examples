@@ -258,7 +258,7 @@ func TestBoxLongTitle(t *testing.T) {
 }
 
 // TestLogViewSameSize draws the log again at the same size only when the
-// log changed, as the Health tab sizes it on every frame.
+// log changed, so that a page can size it on every layout.
 func TestLogViewSameSize(t *testing.T) {
 	t.Parallel()
 	refreshes := 0

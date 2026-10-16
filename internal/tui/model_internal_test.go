@@ -291,43 +291,32 @@ func TestQuitLeavesTheSandboxRunning(t *testing.T) {
 	}
 }
 
-// TestTabsAndPanes switches tabs with the number keys, moves through the
-// Health tab's checks, and shows the log of the one selected.
-func TestTabsAndPanes(t *testing.T) {
+// TestTabsAndLogs switches tabs with the number keys, shows a log from the
+// list of every log over the screen, and goes back to the tab's own log on
+// esc.
+func TestTabsAndLogs(t *testing.T) {
 	t.Parallel()
 	root := testModel(t)
 	for _, tc := range []struct {
 		key    tea.KeyPressMsg
 		tab    tab
+		shown  overlayKind
 		source string
 	}{
-		{press("4"), tabHealth, state.ContainerSource("", state.AgentContainer)},
-		{press("j"), tabHealth, state.SourceTraffic},
-		{tea.KeyPressMsg{Code: tea.KeyTab}, tabHealth, state.SourceTraffic},
-		{press("3"), tabTraffic, state.SourceTraffic},
-		{press("d"), tabTraffic, state.SourceTrafficAll},
-		{press("t"), tabHealth, state.SourceActivity},
-		{press("1"), tabHome, state.SourceActivity},
+		{press("3"), tabTraffic, overlayNone, state.SourceTraffic},
+		{press("d"), tabTraffic, overlayNone, state.SourceTrafficAll},
+		{press("t"), tabTraffic, overlayLog, state.SourceActivity},
+		{tea.KeyPressMsg{Code: tea.KeyEscape}, tabTraffic, overlayNone, state.SourceTrafficAll},
+		{press("l"), tabTraffic, overlayLogs, state.SourceTrafficAll},
+		{tea.KeyPressMsg{Code: tea.KeyEnter}, tabTraffic, overlayLog, state.ContainerSource("", state.AgentContainer)},
+		{tea.KeyPressMsg{Code: tea.KeyEscape}, tabTraffic, overlayNone, state.SourceTrafficAll},
+		{press("1"), tabHome, overlayNone, state.SourceTrafficAll},
 	} {
 		root.Update(tc.key)
-		if source := root.ui.Logs.Source(); root.tab != tc.tab || source != tc.source {
-			t.Errorf("%s: tab %v, source %q; want %v, %q", tc.key, root.tab, source, tc.tab, tc.source)
+		if source := root.ui.Logs.Source(); root.tab != tc.tab || root.overlay.kind != tc.shown || source != tc.source {
+			t.Errorf("%s: tab %v, overlay %v, source %q; want %v, %v, %q", tc.key, root.tab, root.overlay.kind, source,
+				tc.tab, tc.shown, tc.source)
 		}
-	}
-	root.Update(press("4"))
-	root.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	if root.health.Focus != page.PaneChecks || root.ui.Logs.Source() != state.SourceTrafficAll {
-		t.Errorf("esc from the log: focus %v, source %q; want the requests check", root.health.Focus,
-			root.ui.Logs.Source())
-	}
-	// On the Health tab, a number still switches tabs: the panes have no
-	// numbers.
-	if view := ansi.Strip(root.View().Content); strings.Contains(view, "1 Bring-up") {
-		t.Errorf("the Bring-up pane still shows a number:\n%s", view)
-	}
-	root.Update(press("1"))
-	if root.tab != tabHome {
-		t.Errorf("1 on the Health tab: tab %v, want Home", root.tab)
 	}
 }
 
@@ -359,39 +348,19 @@ func TestViewSizes(t *testing.T) {
 	}
 }
 
-// TestHealthTabShowsTheChecks draws the tabs, the checks, the log pane and
-// the footer's keys.
-func TestHealthTabShowsTheChecks(t *testing.T) {
-	t.Parallel()
-	root := testModel(t)
-	root.screen = screenDashboard
-	root.Update(press("4"))
-	view := ansi.Strip(root.View().Content)
-	for _, want := range []string{
-		"keycard sandbox", "1 Home", "2 Agent", "3 Traffic", "4 Health", "The sandbox is not running",
-		"The agent runs", "Its requests go through Keycard", "Keycard can verify the agent", "The checks pass",
-		"every log", "bring up", "quit",
-	} {
-		if !strings.Contains(view, want) {
-			t.Errorf("Health tab lacks %q:\n%s", want, view)
-		}
-	}
-}
-
 // TestChecksScore counts the passed checks from the checks step's log, and
-// the Health tab shows the score.
+// Home says they need a look.
 func TestChecksScore(t *testing.T) {
 	t.Parallel()
-	root := testModel(t)
+	root := upModel(t)
 	last := len(root.state.Run.Steps) - 1
 	row := root.state.Run.Steps[last]
 	row.Log.Add("  PASS  allowed", "  FAIL  credentialed", "  PASS  denied", "  MANUAL  event log")
 	root.Update(stepStartMsg{index: last})
 	root.Update(stepDoneMsg{index: last, err: sandbox.ErrCheck})
-	root.Update(press("4"))
 	if view := ansi.Strip(root.View().Content); row.Passed != 2 || row.Total != 3 ||
-		!strings.Contains(view, "2/3 passed") {
-		t.Errorf("checks = %d/%d, want 2/3 passed on the Health tab:\n%s", row.Passed, row.Total, view)
+		!strings.Contains(view, "NEEDS A LOOK") || !strings.Contains(view, "Checks: 2 of 3 passed.") {
+		t.Errorf("checks = %d/%d, want Home to say 2 of 3 passed:\n%s", row.Passed, row.Total, view)
 	}
 }
 

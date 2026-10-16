@@ -1,4 +1,4 @@
- keycard sandbox    1 Home   2 Agents   3 Traffic   4 Health               ● up
+ keycard sandbox    1 Home   2 Agents   3 Traffic                          ● up
 
   ┌─ Agent ──────────────────────────────┐ ┌─ Response ────────────────────────┐
   │ ● ada@example.com                    │ │ 200 OK in 412ms · GET https://ap… │

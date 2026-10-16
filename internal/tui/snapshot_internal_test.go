@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -126,7 +127,7 @@ func snapshots() map[string]func(t *testing.T) *model {
 		"a-picker":  snapshotAgentPicker,
 		"w-save":    snapshotSave,
 		"traffic":   snapshotTraffic,
-		"system":    snapshotSystem,
+		"logs":      snapshotLogs,
 		"proxy-log": snapshotProxyLog,
 		"demos":     snapshotDemos,
 		"activity":  snapshotActivity,
@@ -438,11 +439,11 @@ func snapshotTraffic(t *testing.T) *model {
 	return root
 }
 
-func snapshotSystem(t *testing.T) *model {
+// snapshotLogs lists every log.
+func snapshotLogs(t *testing.T) *model {
 	t.Helper()
 	root := snapshotUp(t)
-	root.Update(press("4"))
-	settle(t, root, state.AgentContainer)
+	root.Update(press("l"))
 	return root
 }
 
@@ -470,13 +471,15 @@ func snapshotActivity(t *testing.T) *model {
 	return root
 }
 
-// snapshotProxyLog selects the egress proxy on the Health tab, with a log as
-// the proxy writes it: slog lines and audit records.
+// snapshotProxyLog shows the egress proxy's log from the list of every
+// log, as the proxy writes it: slog lines and audit records.
 func snapshotProxyLog(t *testing.T) *model {
 	t.Helper()
-	root := snapshotSystem(t)
-	row, _ := root.state.Container(state.ProxyContainer)
-	root.Follow(row)
+	root := snapshotUp(t)
+	entries := root.logs.Entries()
+	root.showLog(entries[slices.IndexFunc(entries, func(entry page.LogEntry) bool {
+		return entry.Container == state.ProxyContainer
+	})])
 	log := settle(t, root, state.ProxyContainer)
 	log.Reset()
 	stamp := sampleTime().UTC()
