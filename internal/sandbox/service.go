@@ -75,7 +75,7 @@ func (l *Local) spawnService(name, listen string) error {
 		return fmt.Errorf("%w: finding this program to start %s: %w", ErrService, name, err)
 	}
 	args := []string{name, listenFlag, listen}
-	log, err := openLog(l.serviceFile(name, ".log"))
+	log, err := newLog(l.serviceFile(name, ".log"))
 	if err != nil {
 		return err
 	}
@@ -91,7 +91,8 @@ func (l *Local) spawnService(name, listen string) error {
 	cmd.Env = append(os.Environ(), l.serviceEnv()...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	// The service inherits the locked file, and so holds the lock until it
-	// exits.
+	// exits. Its children, such as cloudflared, inherit it too, which is why
+	// StopService signals the whole process group.
 	cmd.ExtraFiles = []*os.File{lock}
 	if err = cmd.Start(); err != nil {
 		return fmt.Errorf("%w: starting %s: %w", ErrService, name, err)
@@ -109,6 +110,28 @@ func (l *Local) spawnService(name, listen string) error {
 		return fmt.Errorf("writing %s: %w", pidFile, err)
 	}
 	return nil
+}
+
+// newLog puts a new, empty file at path in place of the file there. It
+// makes the new file before the old one goes, so that the two never share
+// an inode, and a reader of the old file sees the file change.
+func newLog(path string) (*os.File, error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, dirMode); err != nil {
+		return nil, fmt.Errorf("%w: creating %s: %w", ErrService, dir, err)
+	}
+	file, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*")
+	if err == nil {
+		err = os.Rename(file.Name(), path)
+	}
+	if err != nil {
+		if file != nil {
+			_ = os.Remove(file.Name())
+			_ = file.Close()
+		}
+		return nil, fmt.Errorf("%w: replacing %s: %w", ErrService, path, err)
+	}
+	return file, nil
 }
 
 // lockedPIDFile creates a new file in dir for the pid of the service name,

@@ -324,6 +324,7 @@ func TestSessionTunnel(t *testing.T) {
 	}
 
 	_, first := run(namedTunnel)
+	firstLog := statFile(t, first.LogPath)
 	out, kept := run(namedTunnel)
 	if !strings.Contains(out, "The tunnel "+namedTunnel+" is running.") || kept.PID != first.PID {
 		t.Errorf("second run: pid %d, then %d; output %q; want the running tunnel kept", first.PID, kept.PID, out)
@@ -336,6 +337,19 @@ func TestSessionTunnel(t *testing.T) {
 	if got := waitForFile(t, other.LogPath); got != want {
 		t.Errorf("the tunnel's log = %q, want %q", got, want)
 	}
+	if os.SameFile(firstLog, statFile(t, other.LogPath)) {
+		t.Errorf("the new tunnel's log is the first tunnel's file, want a new file")
+	}
+}
+
+// statFile returns the file info of path.
+func statFile(t *testing.T, path string) os.FileInfo {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info
 }
 
 // waitForFile returns the content of path once it has some, and fails the
