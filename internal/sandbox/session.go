@@ -70,9 +70,9 @@ type Session struct {
 	// agent is the email of the agent Target names, or "" for the one
 	// KEYCARD_LOCAL_USER_EMAIL names.
 	agent string
-	// built is what Status found set up. Status does not check it again
-	// until changed clears it. changes counts the calls to changed, so that
-	// Status does not keep what it read while something changed.
+	// built is what Status found set up. Status keeps it until a step, an
+	// action or Reload clears it. changes goes up each time one does, so
+	// Status drops what it read while something changed.
 	built   built
 	changes int
 }
@@ -499,14 +499,13 @@ type Status struct {
 // until a step or an action of the Session runs. A cluster deleted from
 // outside the Session still shows as existing until then.
 func (s *Session) Status(ctx context.Context) Status {
-	local := s.Local()
+	s.mu.Lock()
+	local, found, changes := s.local, s.built, s.changes
+	s.mu.Unlock()
 	status := Status{
 		Tunnel: local.ServiceStatus(ServiceTunnel),
 		Mirror: local.ServiceStatus(ServiceMirror),
 	}
-	s.mu.Lock()
-	found, changes := s.built, s.changes
-	s.mu.Unlock()
 	if !found.cluster {
 		found.cluster, status.ClusterErr = clusterBuilt(ctx, local)
 	}
