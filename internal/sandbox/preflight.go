@@ -49,8 +49,14 @@ func (s *Session) PreflightItems() []PreflightItem {
 	}
 }
 
+// preflightDocker checks that Docker runs. An existing cluster runs the
+// sandbox and pulls its images, so it does not need Docker.
 func (l *Local) preflightDocker(ctx context.Context) Check {
 	check := Check{Name: "Docker"}
+	if l.Existing() {
+		check.State, check.Detail = CheckNote, "not needed for an existing cluster"
+		return check
+	}
 	out, err := l.runTool(ctx, "docker", "info", "--format", "{{.ServerVersion}}|{{.OperatingSystem}}")
 	if err != nil {
 		check.State, check.Detail = CheckFailed, firstLine(err)
@@ -62,22 +68,30 @@ func (l *Local) preflightDocker(ctx context.Context) Check {
 	return check
 }
 
-// checkTools runs each tool the steps need, through mise.
+// checkTools runs each tool the steps need, through mise. An existing
+// cluster needs only kubectl and helm: there is no k3d cluster to create
+// and no tunnel to start.
 func (l *Local) checkTools(ctx context.Context) Check {
 	check := Check{Name: "Tools"}
+	const version = "version"
+	tools := [][]string{{"kubectl", version, "--client"}, {"helm", version}}
+	if !l.Existing() {
+		tools = [][]string{
+			{"k3d", version}, {"kubectl", version, "--client"}, {"helm", version}, {"cloudflared", "--" + version},
+		}
+	}
+	names := make([]string, 0, len(tools))
 	var broken []string
 	var first error
-	const version = "version"
-	for _, tool := range [][]string{
-		{"k3d", version}, {"kubectl", version, "--client"}, {"helm", version}, {"cloudflared", "--" + version},
-	} {
+	for _, tool := range tools {
+		names = append(names, tool[0])
 		if _, err := l.runTool(ctx, tool[0], tool[1:]...); err != nil {
 			broken = append(broken, tool[0])
 			first = cmp.Or(first, err)
 		}
 	}
 	if len(broken) == 0 {
-		check.Detail = "k3d, kubectl, helm, cloudflared (from mise.toml)"
+		check.Detail = strings.Join(names, ", ") + " (from mise.toml)"
 		return check
 	}
 	check.State, check.Detail = CheckFailed, "cannot run "+strings.Join(broken, ", ")+": "+firstLine(first)

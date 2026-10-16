@@ -55,6 +55,9 @@ func TestPreflightImages(t *testing.T) {
 	}
 }
 
+// The names of the preflight checks the tests run.
+const checkDocker, checkTools = "Docker", "Tools"
+
 // TestPreflightTools fails with the tool's error when Docker or a tool
 // mise.toml pins does not run.
 func TestPreflightTools(t *testing.T) {
@@ -62,12 +65,29 @@ func TestPreflightTools(t *testing.T) {
 	local, _ := newLocal(t, sandbox.Settings{}, `case "$FAKE_TOOL $*" in "docker info"*|"helm version") `+
 		`echo "permission denied" >&2; exit 1 ;; esac`+"\n")
 	for name, want := range map[string]string{
-		"Docker": "exit status 1: permission denied",
-		"Tools":  "cannot run helm: ",
+		checkDocker: "exit status 1: permission denied",
+		checkTools:  "cannot run helm: ",
 	} {
 		check := preflight(t, local, name)
 		if check.State != sandbox.CheckFailed || !strings.Contains(check.Detail, want) {
 			t.Errorf("%s check = %+v, want it failed with %q", name, check, want)
+		}
+	}
+}
+
+// TestPreflightExistingCluster needs neither Docker, nor k3d and
+// cloudflared, for an existing cluster. The fake fails each of them, so
+// running one would fail its check.
+func TestPreflightExistingCluster(t *testing.T) {
+	t.Parallel()
+	local, _ := newLocal(t, sandbox.Settings{sandbox.KeyKubeContext: eksContext},
+		`case "$FAKE_TOOL" in docker|k3d|cloudflared) echo "not installed" >&2; exit 1 ;; esac`+"\n")
+	for name, want := range map[string]sandbox.Check{
+		checkDocker: {Name: checkDocker, State: sandbox.CheckNote, Detail: "not needed for an existing cluster"},
+		checkTools:  {Name: checkTools, State: sandbox.CheckOK, Detail: "kubectl, helm (from mise.toml)"},
+	} {
+		if check := preflight(t, local, name); check != want {
+			t.Errorf("%s check = %+v, want %+v", name, check, want)
 		}
 	}
 }
