@@ -71,8 +71,9 @@ func piEndpoints() []sandbox.ScenarioEndpoint {
 	}
 }
 
-// TestSummarize sorts the requests by endpoint, counts what Keycard
-// refused, and names the blocked hosts without the cluster's own names.
+// TestSummarize sorts the requests by endpoint, counts what got no
+// credential and what the server did not answer, and names the blocked
+// hosts without the cluster's own names.
 func TestSummarize(t *testing.T) {
 	t.Parallel()
 	records := sampleRecords(time.Now())
@@ -83,17 +84,22 @@ func TestSummarize(t *testing.T) {
 	uses, blocked := proxylog.Summarize(records, piEndpoints())
 	got := make([]string, 0, len(uses))
 	for _, use := range uses {
-		got = append(got, fmt.Sprintf("%s %d allowed %d refused", use.Endpoint.Host(), use.Allowed, use.Refused))
+		got = append(got, fmt.Sprintf("%s %d allowed %d refused %d failed", use.Endpoint.Host(), use.Allowed,
+			use.Refused, use.Failed))
 	}
 	want := []string{
-		"api.github.com 1 allowed 0 refused", "github.com 0 allowed 0 refused", "openrouter.ai 0 allowed 1 refused",
-		"pypi.org 1 allowed 0 refused", "files.pythonhosted.org 0 allowed 0 refused",
+		"api.github.com 1 allowed 0 refused 1 failed", "github.com 0 allowed 0 refused 0 failed",
+		"openrouter.ai 0 allowed 1 refused 0 failed", "pypi.org 1 allowed 0 refused 0 failed",
+		"files.pythonhosted.org 0 allowed 0 refused 0 failed",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("uses =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 	if last := uses[2].Last; last == nil || !last.RefusedCredential() {
 		t.Errorf("OpenRouter's last record = %+v, want the refused credential", last)
+	}
+	if last := uses[0].Last; last == nil || !last.Unanswered() {
+		t.Errorf("GitHub's last record = %+v, want the request the server did not answer", last)
 	}
 	if len(blocked) != 2 || blocked[0].Host != "evil.test" || blocked[1].Host != sampleDenied {
 		t.Errorf("blocked = %+v, want evil.test then example.com", blocked)

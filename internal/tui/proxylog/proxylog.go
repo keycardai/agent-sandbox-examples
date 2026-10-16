@@ -95,6 +95,10 @@ func (r Record) RefusedCredential() bool {
 	return false
 }
 
+// Unanswered reports whether the proxy let the request or lookup through,
+// and the server, or the cluster's resolver, did not answer.
+func (r Record) Unanswered() bool { return r.Decision.Reason == reasonUpstreamFailed }
+
 // RoutineLookup reports whether a record is a DNS lookup that says nothing
 // about the agent: one the proxy allowed, or one of the cluster's own names
 // it refused.
@@ -273,11 +277,29 @@ func Count(records []Record) Counts {
 }
 
 // EndpointUse is what the proxy did for one endpoint: how many requests it
-// let through, how many Keycard refused a credential for, and the latest.
+// let through, how many got no credential, how many the server did not
+// answer, and the latest.
 type EndpointUse struct {
-	Endpoint         sandbox.ScenarioEndpoint
-	Allowed, Refused int
-	Last             *Record
+	Endpoint                 sandbox.ScenarioEndpoint
+	Allowed, Refused, Failed int
+	Last                     *Record
+}
+
+// count adds record to the use, unless the proxy refused it for another
+// reason than its credential. It reports whether it did.
+func (u *EndpointUse) count(record *Record) bool {
+	switch {
+	case record.RefusedCredential():
+		u.Refused++
+	case record.Unanswered():
+		u.Failed++
+	case record.Denied():
+		return false
+	default:
+		u.Allowed++
+	}
+	u.Last = record
+	return true
 }
 
 // BlockedHost is a host the agent asked for that no endpoint allows.
@@ -290,7 +312,7 @@ type BlockedHost struct {
 // name it would not look up, which is how a host off the allow list is
 // refused. Lookups of the cluster's own names are left out: the resolver
 // tries them first for every name. A request or lookup the server did not
-// answer is not blocked, and is left out too.
+// answer is not blocked: it counts as Failed for its endpoint.
 func Summarize(records []Record, endpoints []sandbox.ScenarioEndpoint) ([]EndpointUse, []BlockedHost) {
 	uses := make([]EndpointUse, len(endpoints))
 	index := map[string]int{}
@@ -304,13 +326,8 @@ func Summarize(records []Record, endpoints []sandbox.ScenarioEndpoint) ([]Endpoi
 		slot, matched := index[record.Decision.Endpoint]
 		switch {
 		case record.RoutineLookup():
-		case matched && record.RefusedCredential():
-			uses[slot].Refused++
-			uses[slot].Last = record
-		case matched && !record.Denied():
-			uses[slot].Allowed++
-			uses[slot].Last = record
-		case record.Denied() && record.Decision.Reason != reasonUpstreamFailed:
+		case matched && uses[slot].count(record):
+		case record.Denied() && !record.Unanswered():
 			blocked.add(record)
 		}
 	}
