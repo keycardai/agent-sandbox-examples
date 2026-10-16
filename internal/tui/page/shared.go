@@ -160,7 +160,8 @@ func (s *Shared) PageUnder(header, body string, hints []component.Hint) string {
 func (s *Shared) BodyRows() int { return max(s.Height-component.ChromeRows-1, 1) }
 
 // Scenario returns the demo the settings name, or nil when it does not
-// load. It reads the demo once per name.
+// load. It keeps the demo it loaded, and reads it again for another name,
+// or while it does not load.
 func (s *Shared) Scenario() *sandbox.Scenario {
 	name := cmp.Or(s.Session.Local().Settings[sandbox.KeyScenario], sandbox.DefaultScenario)
 	if s.Loaded != nil && s.Loaded.Name == name {
