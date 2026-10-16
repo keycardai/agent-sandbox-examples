@@ -51,13 +51,14 @@ func (s *Sandbox) ResetSteps() {
 }
 
 // StartSteps sets the steps from index from on pending, with empty logs,
-// for a bring-up that runs them.
-func (r *Run) StartSteps(from int) {
-	for _, row := range r.Steps[from:] {
+// for a bring-up that runs them, and keeps the demo it launches.
+func (s *Sandbox) StartSteps(from int) {
+	s.Launched = s.DemoName()
+	for _, row := range s.Run.Steps[from:] {
 		row.State, row.Err = StepPending, nil
 		row.Log.Reset()
 	}
-	r.Cursor = from
+	s.Run.Cursor = from
 }
 
 // StepStarted marks step i running, and the bring-up on it.

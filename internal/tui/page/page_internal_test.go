@@ -33,7 +33,14 @@ const (
 // in a window of width and height.
 func testView(t *testing.T, width, height int) (*UI, *state.Sandbox) {
 	t.Helper()
-	local := &sandbox.Local{Root: t.TempDir(), Settings: sandbox.Settings{}, Out: io.Discard}
+	return testViewWith(t, &sandbox.Local{Root: t.TempDir(), Settings: sandbox.Settings{}, Out: io.Discard},
+		width, height)
+}
+
+// testViewWith is what the pages draw with for local, in a window of
+// width and height.
+func testViewWith(t *testing.T, local *sandbox.Local, width, height int) (*UI, *state.Sandbox) {
+	t.Helper()
 	ui := NewUI()
 	ui.Width, ui.Height = width, height
 	return ui, state.New(local.NewSession("127.0.0.1:8480", time.Second), ui.Logs.Log)
@@ -431,8 +438,10 @@ func (brokenKeychain) Where() string { return "the Secret Service" }
 // keychain does not work, from the answer read with the settings.
 func TestSettingsSayWhyNotSaved(t *testing.T) {
 	t.Parallel()
-	ui, sandboxState := testView(t, 150, 42)
-	sandboxState.Local().Store = sandbox.NewStore(filepath.Join(t.TempDir(), "sandbox.yaml"), nil, brokenKeychain{})
+	ui, sandboxState := testViewWith(t, &sandbox.Local{
+		Root: t.TempDir(), Settings: sandbox.Settings{}, Out: io.Discard,
+		Store: sandbox.NewStore(filepath.Join(t.TempDir(), "sandbox.yaml"), nil, brokenKeychain{}),
+	}, 150, 42)
 	sandboxState.RefreshSettings()
 	view := ansi.Strip(NewSettings(ui, sandboxState).View("back"))
 	if words := strings.Join(strings.Fields(view), " "); !strings.Contains(words,

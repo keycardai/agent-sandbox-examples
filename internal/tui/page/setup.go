@@ -550,11 +550,10 @@ func (s *Setup) questionHint(quest *Question) string {
 // secretGoes says where a typed secret goes: in the keychain when the
 // settings are saved, else in memory until the operator quits.
 func (s *Setup) secretGoes() string {
-	store := s.state.Local().Store
-	switch {
-	case store.Saved():
+	switch saving := s.state.Saving(); {
+	case saving.Saved:
 		return "Setup saves it in your OS keychain."
-	case store.CanSave():
+	case saving.CanSave:
 		return "Saving the settings puts it in your OS keychain."
 	}
 	return "It stays in memory until you quit."
@@ -602,7 +601,7 @@ func (s *Setup) launchPanel(width int) string {
 			"", s.problemList(width), "", theme.KeyChip.Render("e")+" "+theme.Title.Render("Change a setting"))
 	}
 	kept := "Setup saved your answers."
-	if !s.state.Local().Store.Saved() {
+	if !s.state.Saving().Saved {
 		kept = "Setup keeps your answers until you quit."
 	}
 	lines := []string{
@@ -630,7 +629,7 @@ func (s *Setup) launchPanel(width int) string {
 // launchClusterStep says what launching does with the cluster.
 func (s *Setup) launchClusterStep() string {
 	switch {
-	case s.state.Local().Existing():
+	case s.state.Existing():
 		return "Checks your cluster, and puts the sandbox in it"
 	case len(s.state.Run.Steps) > 0 && s.state.Run.Steps[0].Step.ID != sandbox.StepTunnel:
 		return "Creates or checks the local cluster, which Keycard reaches at your issuer's URL"

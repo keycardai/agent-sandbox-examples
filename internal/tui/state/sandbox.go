@@ -91,16 +91,44 @@ func New(session *sandbox.Session, logs func(source string) *component.Log) *San
 	return state
 }
 
-// Local is the session's settings and machine. The pages read the
-// settings through Setting and the facts here, and the root model does the
-// work that changes the sandbox.
-func (s *Sandbox) Local() *sandbox.Local { return s.session.Local() }
-
 // Setting returns the setting of key, or "".
-func (s *Sandbox) Setting(key string) string { return s.Local().Settings[key] }
+func (s *Sandbox) Setting(key string) string { return s.local().Settings[key] }
 
 // StartsTunnel reports whether the bring-up starts a quick tunnel.
-func (s *Sandbox) StartsTunnel() bool { return s.Local().StartsTunnel() }
+func (s *Sandbox) StartsTunnel() bool { return s.local().StartsTunnel() }
+
+// Existing reports whether the settings name a cluster of the operator's,
+// which the sandbox does not create.
+func (s *Sandbox) Existing() bool { return s.local().Existing() }
+
+// Root is the checkout the sandbox runs from.
+func (s *Sandbox) Root() string { return s.local().Root }
+
+// Saving is whether the settings are saved, and whether they can be: the
+// keychain must keep the secrets. File and Keychain are where they are
+// saved.
+type Saving struct {
+	Saved, CanSave bool
+	File, Keychain string
+}
+
+// Saving says whether the settings are saved, and where.
+func (s *Sandbox) Saving() Saving {
+	store := s.local().Store
+	return Saving{Saved: store.Saved(), CanSave: store.CanSave(), File: store.Path(), Keychain: store.KeychainWhere()}
+}
+
+// SetSettings keeps what each section of the settings holds and their
+// problems, as read after work that changed them.
+func (s *Sandbox) SetSettings(describe map[string]string, problems []error) {
+	s.Describe, s.Problems = describe, problems
+}
+
+// SetupStarted forgets why the last setup failed.
+func (s *Sandbox) SetupStarted() { s.SetupErr = nil }
+
+// SetupFailed keeps why the setup failed, until the next one starts.
+func (s *Sandbox) SetupFailed(err error) { s.SetupErr = err }
 
 // RefreshSettings reads the settings, their problems, and whether the
 // keychain works. The store asks the keychain once and keeps the answer.
@@ -108,13 +136,13 @@ func (s *Sandbox) StartsTunnel() bool { return s.Local().StartsTunnel() }
 // unlock the keyring shows before the TUI, and the screens read the answer
 // without waiting on it.
 func (s *Sandbox) RefreshSettings() {
-	s.KeychainErr = s.Local().Store.KeychainErr()
+	s.KeychainErr = s.local().Store.KeychainErr()
 	s.Describe = s.session.Describe()
 	s.Problems = s.session.Problems()
 }
 
 // FirstRun reports whether the settings were never written.
-func (s *Sandbox) FirstRun() bool { return !s.Local().Initialized() }
+func (s *Sandbox) FirstRun() bool { return !s.local().Initialized() }
 
 // Record adds an event to the activity log: the time, a mark and what
 // happened. ✓ is done, ✕ failed, ▸ started and • a note.
@@ -216,7 +244,12 @@ func (s *Sandbox) LoadedDemo() *sandbox.Scenario {
 // name.
 func (s *Sandbox) DemoList() []*sandbox.Scenario {
 	if s.Demos == nil && s.DemosErr == nil {
-		s.Demos, s.DemosErr = sandbox.Scenarios(s.Local().Root)
+		s.Demos, s.DemosErr = sandbox.Scenarios(s.local().Root)
 	}
 	return s.Demos
 }
+
+// local is the session's settings and machine. The pages read the
+// settings through Setting and the facts here, and the root model does the
+// work that changes the sandbox.
+func (s *Sandbox) local() *sandbox.Local { return s.session.Local() }

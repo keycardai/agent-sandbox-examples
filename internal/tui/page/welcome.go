@@ -282,7 +282,7 @@ func (w *Welcome) checkResult(check sandbox.Check) (string, string, string) {
 func (v view) problemList(width int) string {
 	theme := v.ui.Styles
 	wrap := lipgloss.NewStyle().Width(max(width-checkNameWidth-component.BorderCols, 1))
-	root := v.state.Local().Root + "/"
+	root := v.state.Root() + "/"
 	titles := map[string]string{}
 	for _, step := range RailSteps() {
 		titles[step.ID] = step.Title

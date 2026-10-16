@@ -124,7 +124,6 @@ func (m *model) startBringUp(from int, recreate bool) {
 		cancel()
 		return
 	}
-	m.state.Launched = m.state.DemoName()
 	switch {
 	case kind == state.JobChecks:
 		m.state.Record("▸", "Running the checks")
@@ -133,7 +132,7 @@ func (m *model) startBringUp(from int, recreate bool) {
 	default:
 		m.state.Record("▸", "Bring-up started again at: "+m.state.Run.Steps[from].Step.Title)
 	}
-	m.state.Run.StartSteps(from)
+	m.state.StartSteps(from)
 	run := bringUp{session: m.session, out: m.bus, steps: slices.Clone(m.state.Run.Steps), recreate: recreate}
 	m.inBackground(func() tea.Msg {
 		defer cancel()
@@ -441,7 +440,7 @@ func (m *model) stopEverything(quit bool) {
 		m.ui.Notify("Stopping "+what+" first…", false)
 		return
 	case m.state.Run.Job.Is(state.JobSetup):
-		m.state.Run.Job.StopAfter, m.state.Run.Job.QuitAfter = true, quit
+		m.state.Run.StopAfterJob(quit)
 		m.stopSetup()
 		return
 	}
@@ -669,7 +668,7 @@ func (m *model) startSetup(preset map[string]string, ids ...string) {
 		cancel()
 		return
 	}
-	m.state.SetupErr = nil
+	m.state.SetupStarted()
 	log := m.ui.Logs.Log(state.SourceSetup)
 	log.Reset()
 	ask := m.setup.Start(m.bus.Send, preset, log)
@@ -699,7 +698,7 @@ func (m *model) onSetupDone(msg setupDoneMsg) {
 		m.overlay = overlay{}
 	}
 	m.setup.End()
-	m.state.Describe, m.state.Problems = msg.describe, msg.problems
+	m.state.SetSettings(msg.describe, msg.problems)
 	if ended.StopAfter {
 		m.screen = screenDashboard
 		m.stopEverything(ended.QuitAfter)
@@ -710,7 +709,7 @@ func (m *model) onSetupDone(msg setupDoneMsg) {
 		if errors.Is(msg.err, sandbox.ErrInterrupted) || errors.Is(msg.err, context.Canceled) {
 			m.state.Record("•", "Setup stopped without saving")
 		} else {
-			m.state.SetupErr = msg.err
+			m.state.SetupFailed(msg.err)
 			m.state.Record("✕", "Setup failed: "+component.FirstLine(msg.err.Error()))
 			m.ui.Notify("Setup stopped: "+component.FirstLine(msg.err.Error()), true)
 		}

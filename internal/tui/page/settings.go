@@ -88,7 +88,7 @@ func (s *Settings) View(back string) string {
 		{Key: "a", Desc: "change everything"},
 		{Key: "u", Desc: "launch"},
 	}
-	if s.state.Local().Store.Saved() {
+	if s.state.Saving().Saved {
 		hints = append(hints, component.Hint{Key: "F", Desc: "forget saved"})
 	}
 	return s.ui.Page("settings", lipgloss.JoinVertical(lipgloss.Left, parts...),
@@ -97,12 +97,11 @@ func (s *Settings) View(back string) string {
 
 // savedWhere says where the settings are saved, if they are.
 func (s *Settings) savedWhere() string {
-	store := s.state.Local().Store
-	if store.Saved() {
-		return "They are saved in " + sandbox.HomeRelative(store.Path()) + ", with the secrets in " +
-			store.KeychainWhere() + "."
+	saving := s.state.Saving()
+	if saving.Saved {
+		return "They are saved in " + sandbox.HomeRelative(saving.File) + ", with the secrets in " + saving.Keychain + "."
 	}
-	if !store.CanSave() {
+	if !saving.CanSave {
 		why := "They are not saved, and last until you quit."
 		if err := s.state.KeychainErr; err != nil {
 			why += " The keychain cannot keep the secrets: " + component.FirstLine(err.Error()) + "."
