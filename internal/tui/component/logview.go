@@ -7,7 +7,6 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 )
 
 // LogView keeps every log by name, and shows one of them in a viewport:
@@ -235,12 +234,13 @@ func (v *LogView) paintLines(lines []string) []string {
 	return out
 }
 
-// filterLines keeps the lines that hold query, in any case.
+// filterLines keeps the lines that hold query, in any case. A log keeps
+// its lines without escape sequences, so they match as they show.
 func filterLines(lines []string, query string) []string {
 	query = strings.ToLower(query)
 	var kept []string
 	for _, line := range lines {
-		if strings.Contains(strings.ToLower(ansi.Strip(line)), query) {
+		if strings.Contains(strings.ToLower(line), query) {
 			kept = append(kept, line)
 		}
 	}

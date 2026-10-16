@@ -85,8 +85,9 @@ func Parse(line []byte) (Record, bool) {
 // Denied reports whether the proxy refused the record's request.
 func (r Record) Denied() bool { return r.Decision.Verdict == verdictDeny }
 
-// RefusedCredential reports whether Keycard did not give a credential for
-// the request, as opposed to a request no endpoint allows.
+// RefusedCredential reports whether the request got no credential: Keycard
+// refused or did not finish the exchange, or the proxy has no source for
+// the credential. A request no endpoint allows is not one.
 func (r Record) RefusedCredential() bool {
 	switch r.Decision.Reason {
 	case "exchange_denied", "exchange_failed", "credential_unavailable":
