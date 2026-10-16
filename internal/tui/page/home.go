@@ -141,6 +141,8 @@ func (h *Home) down() string {
 	theme := shared.Styles
 	why := "There is no sandbox yet."
 	switch {
+	case shared.Status.ClusterErr != nil:
+		why = "The cluster might exist. Checking it failed: " + component.FirstLine(shared.Status.ClusterErr.Error())
 	case shared.Status.ClusterExists && !shared.Status.Tunnel.Running:
 		why = "The cluster exists, but the tunnel is stopped, so Keycard cannot reach the cluster's issuer. " +
 			"u starts a new tunnel. A quick tunnel gets a new URL, so the bring-up then asks to recreate the cluster."

@@ -152,11 +152,14 @@ func TestHomeStates(t *testing.T) {
 		"%w: the connection to the server was refused",
 		sandbox.ErrPod,
 	)
+	clusterErr := testModel(t)
+	clusterErr.shared.Status.ClusterErr = fmt.Errorf("%w: cannot list k3d clusters", sandbox.ErrDocker)
 	for name, tc := range map[string]struct {
 		root *model
 		want []string
 	}{
 		"down":    {down, []string{"The sandbox is down", "There is no sandbox yet", "Bring it up", "bring up"}},
+		"cluster": {clusterErr, []string{"The sandbox is down", "The cluster might exist", "cannot list k3d clusters"}},
 		"reading": {reading, []string{"Reading the sandbox"}},
 		"pods":    {podsErr, []string{"Cannot read the sandbox's pods", "the connection to the server was refused"}},
 		"coming":  {bringingUp, []string{"Bringing up your sandbox", "Start the issuer mirror", "START THE ISSUER MIRROR"}},
