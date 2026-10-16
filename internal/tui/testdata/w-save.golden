@@ -13,10 +13,11 @@
                    ○  Demo                             Save these settings for next time?
                    │                                   Yes saves them in ~/.config/keycard/sandbox.yaml, and the secrets you typed
                    ○  Credentials                      in the macOS keychain. No keeps them until you quit.
-                   │
-                   ○  Cluster                            Yes     No
-                   │                                   y or n answers it.
-                   ●  Save
+                   │                                   ╭──────────────────────────────────────────────────────────────────────────╮
+                   ○  Cluster                          │ ▸ Yes                                                                    │
+                   │                                   │   No                                                                     │
+                   ●  Save                             ╰──────────────────────────────────────────────────────────────────────────╯
+                                                       y or n answers it.
 
 
 
@@ -38,5 +39,4 @@
 
 
 
-
-  ←→  choose   enter  continue   esc  stop setup
+  ↑↓  choose   enter  continue   esc  stop setup

@@ -8,8 +8,10 @@
   Replace it with "sandbox" when the sandbox runs?
   The zone's active policy set is "default". Only one set can be active. Its
   policies will stop applying to everyone in the zone.
-
-    Yes     No
+  ╭──────────────────────────────────────────────────────────────────────────╮
+  │   Yes                                                                    │
+  │ ▸ No                                                                     │
+  ╰──────────────────────────────────────────────────────────────────────────╯
   y or n answers it.
 
 
@@ -17,6 +19,4 @@
 
 
 
-
-
-  ←→  choose   enter  continue   esc  stop setup
+  ↑↓  choose   enter  continue   esc  stop setup

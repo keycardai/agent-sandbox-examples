@@ -14,9 +14,11 @@
                    │                                   Replace it with "sandbox" when the sandbox runs?
                    ○  Credentials                      The zone's active policy set is "default". Only one set can be active. Its
                    │                                   policies will stop applying to everyone in the zone.
-                   ○  Cluster
-                   │                                     Yes     No
-                   ●  Zone policy                      y or n answers it.
+                   ○  Cluster                          ╭──────────────────────────────────────────────────────────────────────────╮
+                   │                                   │   Yes                                                                    │
+                   ●  Zone policy                      │ ▸ No                                                                     │
+                                                       ╰──────────────────────────────────────────────────────────────────────────╯
+                                                       y or n answers it.
 
 
 
@@ -37,6 +39,4 @@
 
 
 
-
-
-  ←→  choose   enter  continue   esc  stop setup
+  ↑↓  choose   enter  continue   esc  stop setup

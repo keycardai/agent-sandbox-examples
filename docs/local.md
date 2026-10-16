@@ -216,6 +216,14 @@ create the cluster while they exist. The default answer keeps them.
 keeps such a cluster, and it stops at a leftover container. `down` then
 deletes only with `--yes`.
 
+On a terminal, the subcommands draw their questions as the TUI does, on
+standard error, and put the TUI's heading over each part of the setup they
+ask. A yes or no question is a choice of two: `y` and `n` move to the
+answer, and enter gives it. `up` and `run` color the line before each step,
+and `up` the lines that say the sandbox is up or that `up` stopped. With
+`NO_COLOR` set, or when the output is not a terminal, the lines are plain
+text.
+
 `sandbox up --print` prints the commands without running them:
 
     go run ./cmd/sandbox tunnel        # in its own terminal, until you stop it

@@ -217,6 +217,28 @@ esac
 	}
 }
 
+// TestUpPaints colors Up's progress lines through Paint: the command
+// before a step, the line that says Up stopped, and the commands left.
+func TestUpPaints(t *testing.T) {
+	t.Parallel()
+	settings := sandbox.Settings{sandbox.KeyCluster: cluster, sandbox.KeyIssuer: testIssuer}
+	local, _ := newLocal(t, settings, clusterTool("FAIL", "", ""))
+	out := &bytes.Buffer{}
+	local.Out = out
+	local.Paint = func(tone sandbox.Tone, text string) string { return fmt.Sprintf("<%d>%s</%d>", tone, text, tone) }
+	err := local.Up(t.Context(), sandbox.UpOptions{Listen: listen, IssuerWait: time.Minute})
+	checkErr(t, err, []error{sandbox.ErrDocker}, "")
+	for _, want := range []string{
+		"\n<0>$ go run ./cmd/sandbox bootstrap</0>\n",
+		"\n<3>Up stopped.</3> To finish by hand, run these commands from the repository root:\n",
+		"\n  <0>go run ./cmd/sandbox bootstrap</0>\n",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output = %q, want it to contain %q", out, want)
+		}
+	}
+}
+
 // TestUpRecreates checks that Up asks down's question before it deletes a
 // cluster with another issuer, or one without a kubeconfig context, and
 // deletes it only on yes. Up prints why, but not Bootstrap's advice to run

@@ -240,6 +240,36 @@ func commands(msg tea.Msg) ([]tea.Cmd, bool) {
 	return cmds, true
 }
 
+// TestYesNoIsAChoice answers a yes-or-no question as any other choice: ↓
+// moves to the other answer and enter takes the one under the cursor. y and
+// n answer it at once.
+func TestYesNoIsAChoice(t *testing.T) {
+	t.Parallel()
+	down, enter := tea.KeyPressMsg{Code: tea.KeyDown}, tea.KeyPressMsg{Code: tea.KeyEnter}
+	for _, tc := range []struct {
+		name  string
+		start bool
+		keys  []tea.Msg
+		want  bool
+	}{
+		{"enter keeps yes", true, []tea.Msg{enter}, true},
+		{"down then enter", true, []tea.Msg{down, enter}, false},
+		{"enter keeps no", false, []tea.Msg{enter}, false},
+		{"n", true, []tea.Msg{tea.KeyPressMsg{Code: 'n', Text: "n"}}, false},
+	} {
+		setup := NewSetup(testView(t, 150, 42))
+		quest := &Question{Kind: AskConfirm, Title: "Keep the saved client secret?", Yes: tc.start}
+		answerWith(setup, quest, tc.keys...)
+		if setup.Asking() {
+			t.Errorf("%s: still asking", tc.name)
+			continue
+		}
+		if _, yes := setup.Reply(); yes != tc.want {
+			t.Errorf("%s: answered %t, want %t", tc.name, yes, tc.want)
+		}
+	}
+}
+
 // TestAnswersOnTheRail keeps answers on the rail that read on their own: a
 // secret by what it is, never its value, and a yes or no with its
 // question. The review shows them whole.

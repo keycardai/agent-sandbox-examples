@@ -97,7 +97,7 @@ func (l *Local) Up(ctx context.Context, opts UpOptions) error {
 		state.wg.Wait()
 	}()
 	for i, step := range steps {
-		_, _ = fmt.Fprintf(l.Out, "\n$ %s\n", l.Command(step.args...))
+		_, _ = fmt.Fprintf(l.Out, "\n%s\n", l.paint(ToneCommand, "$ "+l.Command(step.args...)))
 		if err := step.run(serviceCtx, state); err != nil {
 			stopServices()
 			l.printLeft(steps, i, state)
@@ -354,7 +354,8 @@ const (
 // at once. When the operator stops it, it returns state.checks.
 func (l *Local) serve(ctx context.Context, steps []upStep, state *upRun, scenario *Scenario) error {
 	if !l.Existing() {
-		_, _ = fmt.Fprintln(l.Out, "\nThe sandbox is up. Leave this running so the zone can read the cluster's issuer\n"+
+		_, _ = fmt.Fprintln(l.Out, "\n"+l.paint(ToneGood, "The sandbox is up.")+
+			" Leave this running so the zone can read the cluster's issuer\n"+
 			"through the tunnel and the mirror. Ctrl-C stops up. Stopping does not delete the cluster.")
 	}
 	// waiting ends when ctx ends or a background step stops. The step's
@@ -408,7 +409,7 @@ func (l *Local) stopServing(ctx, waiting context.Context, steps []upStep, state 
 // the agent exits, it returns the ErrAgent from Logs. When ctx ends, it
 // returns state.checks.
 func (l *Local) follow(ctx, waiting context.Context, steps []upStep, state *upRun) error {
-	_, _ = fmt.Fprintf(l.Out, "\n$ %s\n", l.Command("logs"))
+	_, _ = fmt.Fprintf(l.Out, "\n%s\n", l.paint(ToneCommand, "$ "+l.Command("logs")))
 	_, _ = fmt.Fprintln(l.Out, "The agent runs in the background. Press Ctrl-C to stop following its log.")
 	target, err := l.CheckTargetFor("", "", "", "")
 	if err != nil {
@@ -457,7 +458,7 @@ func (l *Local) askNext(ctx context.Context, scenario *Scenario) (string, error)
 // openShell runs Shell against the sandbox of the last run, and prints any
 // failure.
 func (l *Local) openShell(ctx context.Context) {
-	_, _ = fmt.Fprintf(l.Out, "\n$ %s\n", l.Command("shell"))
+	_, _ = fmt.Fprintf(l.Out, "\n%s\n", l.paint(ToneCommand, "$ "+l.Command("shell")))
 	target, err := l.CheckTargetFor("", "", "", "")
 	if err != nil {
 		err = fmt.Errorf("finding the sandbox: %w", err)
@@ -490,7 +491,8 @@ func (l *Local) printSteps(steps []upStep) {
 // printLeft prints the commands for steps[from:] and for every background
 // step, since those stopped with Up.
 func (l *Local) printLeft(steps []upStep, from int, state *upRun) {
-	_, _ = fmt.Fprintln(l.Out, "\nUp stopped. To finish by hand, run these commands from the repository root:")
+	_, _ = fmt.Fprintln(l.Out, "\n"+l.paint(ToneWarn, "Up stopped.")+
+		" To finish by hand, run these commands from the repository root:")
 	for i, step := range steps {
 		if i >= from || step.background {
 			l.printStep(step)
@@ -514,7 +516,7 @@ func (l *Local) printLeft(steps []upStep, from int, state *upRun) {
 }
 
 func (l *Local) printStep(step upStep) {
-	line := l.Command(step.args...)
+	line := l.paint(ToneCommand, l.Command(step.args...))
 	if step.note != "" {
 		line += "    # " + step.note
 	}

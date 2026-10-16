@@ -971,5 +971,5 @@ func (l *Local) outDir() string {
 }
 
 func (l *Local) step(title string) {
-	_, _ = fmt.Fprintf(l.Out, "\n==> %s\n", title)
+	_, _ = fmt.Fprintf(l.Out, "\n%s\n", l.paint(ToneStep, "==> "+title))
 }

@@ -75,7 +75,6 @@ type asking struct {
 	question *Question
 	form     *huh.Form
 	text     *string
-	yes      *bool
 	inWizard bool
 }
 
@@ -190,7 +189,10 @@ func (s *Setup) ForgetNotes() { s.notesFrom = 0 }
 
 // Ask shows quest as a form, in the wizard with inWizard, else in a modal.
 func (s *Setup) Ask(quest *Question, inWizard bool) tea.Cmd {
-	text, yes := quest.Value, quest.Yes
+	text := quest.Value
+	if quest.Kind == AskConfirm {
+		text = component.YesNoValue(quest.Yes)
+	}
 	width := component.ModalInnerWidth(s.ui.Width)
 	if inWizard {
 		width = s.panelWidth()
@@ -199,17 +201,17 @@ func (s *Setup) Ask(quest *Question, inWizard bool) tea.Cmd {
 	keys := huh.NewDefaultKeyMap()
 	keys.Select.Filter.SetEnabled(false)
 	// Set the theme first: the width leaves out its border and padding.
-	form := huh.NewForm(huh.NewGroup(questionField(quest, &text, &yes, width))).
+	form := huh.NewForm(huh.NewGroup(questionField(quest, &text, width))).
 		WithKeyMap(keys).
 		WithShowHelp(false).
-		WithTheme(s.ui.Styles.FormTheme(width, quest.Kind != AskConfirm)).
+		WithTheme(s.ui.Styles.FormTheme(width)).
 		WithWidth(width)
 	// Sizing the form now draws the whole field from the first frame.
 	next, _ := form.Update(tea.WindowSizeMsg{Width: s.ui.Width, Height: s.ui.Height})
 	if sized, ok := next.(*huh.Form); ok {
 		form = sized
 	}
-	s.ask = &asking{question: quest, form: form, text: &text, yes: &yes, inWizard: inWizard}
+	s.ask = &asking{question: quest, form: form, text: &text, inWizard: inWizard}
 	return form.Init()
 }
 
@@ -219,16 +221,23 @@ func (s *Setup) Resize() tea.Cmd {
 		return nil
 	}
 	quest := s.ask.question
-	quest.Value, quest.Yes = *s.ask.text, *s.ask.yes
+	quest.Value, quest.Yes = *s.ask.text, *s.ask.text == component.AnswerYes
 	return s.Ask(quest, s.ask.inWizard)
 }
 
 // Answer passes msg to the question's form, and answers the wizard when
-// the form is done. Esc stops the setup.
+// the form is done. Esc stops the setup, and y or n answers a yes-or-no
+// question.
 func (s *Setup) Answer(msg tea.Msg) (tea.Cmd, QuestionState) {
-	if key, ok := msg.(tea.KeyPressMsg); ok && key.String() == component.KeyEsc {
-		s.ask = nil
-		return nil, Stopped
+	if key, ok := msg.(tea.KeyPressMsg); ok {
+		switch answer, yesNo := map[string]string{"y": component.AnswerYes, "n": component.AnswerNo}[key.String()]; {
+		case key.String() == component.KeyEsc:
+			s.ask = nil
+			return nil, Stopped
+		case yesNo && s.ask.question.Kind == AskConfirm:
+			*s.ask.text = answer
+			return nil, s.answered()
+		}
 	}
 	next, cmd := s.ask.form.Update(msg)
 	if form, ok := next.(*huh.Form); ok {
@@ -236,12 +245,7 @@ func (s *Setup) Answer(msg tea.Msg) (tea.Cmd, QuestionState) {
 	}
 	switch s.ask.form.State {
 	case huh.StateCompleted:
-		quest := s.ask.question
-		got := answer{text: *s.ask.text, yes: *s.ask.yes}
-		s.recordAnswer(quest, got)
-		s.last = got
-		s.ask = nil
-		return cmd, Answered
+		return cmd, s.answered()
 	case huh.StateAborted:
 		s.ask = nil
 		return cmd, Stopped
@@ -309,6 +313,17 @@ func (s *Setup) QuestionModal(title string) string {
 		parts...))
 }
 
+// answered sends the form's answer to the wizard, and puts it under the
+// current step.
+func (s *Setup) answered() QuestionState {
+	quest := s.ask.question
+	got := answer{text: *s.ask.text, yes: quest.Kind == AskConfirm && *s.ask.text == component.AnswerYes}
+	s.recordAnswer(quest, got)
+	s.last = got
+	s.ask = nil
+	return Answered
+}
+
 // recordAnswer puts the answer under the current step, readable on its own.
 func (s *Setup) recordAnswer(quest *Question, got answer) {
 	shown := got.text
@@ -350,10 +365,8 @@ func (s *Setup) wizardHints() []component.Hint {
 		return []component.Hint{stop}
 	}
 	switch s.ask.question.Kind {
-	case AskChoose:
+	case AskChoose, AskConfirm:
 		return []component.Hint{{Key: "↑↓", Desc: wordChoose}, next, stop}
-	case AskConfirm:
-		return []component.Hint{{Key: "←→", Desc: wordChoose}, next, stop}
 	case AskInput, AskSecret:
 	}
 	return []component.Hint{next, stop}
@@ -470,9 +483,6 @@ func (s *Setup) questionBlock(width int) string {
 	parts := []string{para.Render(theme.Title.Render(title))}
 	if about != "" {
 		parts = append(parts, para.Render(theme.Muted.Render(about)))
-	}
-	if quest.Kind == AskConfirm {
-		parts = append(parts, "")
 	}
 	parts = append(parts, s.ask.form.View())
 	if hint := s.questionHint(quest); hint != "" {
@@ -635,12 +645,14 @@ func sentencesOf(text string) []string {
 	return append(sentences, text[start:])
 }
 
+// yesNoRows is how many options a yes-or-no question has.
+const yesNoRows = 2
+
 // questionField returns the form field for a question, without its words,
-// which the setup page draws around it. The answer goes in text, or in yes
-// for a confirmation.
+// which the setup page draws around it. The answer goes in text.
 //
 //nolint:ireturn // huh builds a form from its Field interface.
-func questionField(quest *Question, text *string, yes *bool, width int) huh.Field {
+func questionField(quest *Question, text *string, width int) huh.Field {
 	options := make([]huh.Option[string], 0, len(quest.Options))
 	for _, option := range quest.Options {
 		options = append(options, huh.NewOption(option.Label, option.Value))
@@ -654,7 +666,7 @@ func questionField(quest *Question, text *string, yes *bool, width int) huh.Fiel
 		return huh.NewSelect[string]().Options(options...).Value(text).
 			Height(min(quest.rows, maxSelectHeight) + selectTitleRows)
 	case AskConfirm:
-		return huh.NewConfirm().Value(yes).Affirmative("Yes").Negative("No")
+		return component.YesNo(text).Height(yesNoRows + selectTitleRows)
 	case AskInput:
 	}
 	return huh.NewInput().Prompt("").Value(text).Validate(validator(quest.Check))

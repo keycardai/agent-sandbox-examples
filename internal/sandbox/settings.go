@@ -94,6 +94,9 @@ type Local struct {
 	Tool func(ctx context.Context, name string, args ...string) (*exec.Cmd, error)
 	// Out receives progress lines and the output of long-running tools.
 	Out io.Writer
+	// Paint colors a progress line for its tone, for a terminal. If it is
+	// nil, the progress lines are plain text.
+	Paint func(tone Tone, text string) string
 	// Stdin is the input of the command Shell runs in the agent container.
 	// If it is nil, the command reads no input.
 	Stdin io.Reader
@@ -128,12 +131,12 @@ func (l *Local) Existing() bool {
 	return l.Settings[KeyKubeContext] != ""
 }
 
-// WithIO returns a copy of the checkout that writes to out and asks with
-// ask, which may be nil. Work in the background, such as a TUI step or a
-// service, runs on such a copy.
+// WithIO returns a copy of the checkout that writes plain text to out and
+// asks with ask, which may be nil. Work in the background, such as a TUI
+// step or a service, runs on such a copy.
 func (l *Local) WithIO(out io.Writer, ask Asker) *Local {
 	copied := *l
-	copied.Out, copied.Ask = out, ask
+	copied.Out, copied.Ask, copied.Paint = out, ask, nil
 	return &copied
 }
 

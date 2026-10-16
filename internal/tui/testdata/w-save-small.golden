@@ -7,8 +7,10 @@
   Save these settings for next time?
   Yes saves them in ~/.config/keycard/sandbox.yaml, and the secrets you typed
   in the macOS keychain. No keeps them until you quit.
-
-    Yes     No
+  ╭──────────────────────────────────────────────────────────────────────────╮
+  │ ▸ Yes                                                                    │
+  │   No                                                                     │
+  ╰──────────────────────────────────────────────────────────────────────────╯
   y or n answers it.
 
 
@@ -17,6 +19,4 @@
 
 
 
-
-
-  ←→  choose   enter  continue   esc  stop setup
+  ↑↓  choose   enter  continue   esc  stop setup

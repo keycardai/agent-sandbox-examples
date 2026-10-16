@@ -109,22 +109,18 @@ func New(isDark bool) Styles {
 }
 
 // FormTheme styles a setup question's field of width columns to match the
-// console: iris for the cursor and the chosen button, red for an error. A
-// boxed field, for text and choices, sits in a rounded box in iris, the way
-// the console draws a focused input. Yes and no are buttons, and do not
-// need a box. The option under a choice's cursor fills its row with the selection
-// color, as the console's active row does.
+// console: iris for the cursor, red for an error. A field sits in a rounded
+// box in iris, the way the console draws a focused input. The option under
+// a choice's cursor fills its row with the selection color, as the
+// console's active row does.
 //
 //nolint:ireturn // huh takes a form's theme as its Theme interface.
-func (st Styles) FormTheme(width int, boxed bool) huh.Theme {
+func (st Styles) FormTheme(width int) huh.Theme {
 	pal := st.Colors
 	return huh.ThemeFunc(func(isDark bool) *huh.Styles {
 		theme := huh.ThemeBase(isDark)
 		focused := &theme.Focused
-		focused.Base = lipgloss.NewStyle()
-		if boxed {
-			focused.Base = focused.Base.Border(lipgloss.RoundedBorder()).BorderForeground(pal.AccentFill).Padding(0, 1)
-		}
+		focused.Base = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(pal.AccentFill).Padding(0, 1)
 		focused.Title = focused.Title.Foreground(pal.Text).Bold(true)
 		focused.Description = focused.Description.Foreground(pal.Muted)
 		focused.ErrorIndicator = focused.ErrorIndicator.Foreground(pal.Fail)
@@ -134,8 +130,6 @@ func (st Styles) FormTheme(width int, boxed bool) huh.Theme {
 		focused.SelectedOption = lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Selection).
 			Width(max(width-FieldFrame-SelectorWidth, 1))
 		focused.UnselectedOption = focused.UnselectedOption.Foreground(pal.Muted)
-		focused.FocusedButton = focused.FocusedButton.Foreground(pal.OnAccent).Background(pal.AccentFill).Bold(true)
-		focused.BlurredButton = focused.BlurredButton.Foreground(pal.Text).Background(pal.Line)
 		focused.TextInput.Cursor = focused.TextInput.Cursor.Foreground(pal.Accent)
 		focused.TextInput.Prompt = focused.TextInput.Prompt.Foreground(pal.Accent)
 		focused.TextInput.Text = focused.TextInput.Text.Foreground(pal.Text)

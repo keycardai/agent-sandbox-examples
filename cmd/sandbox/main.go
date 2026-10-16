@@ -28,6 +28,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -553,8 +554,23 @@ func loadLocal(cmd *cli.Command, strict bool, use terminalUse) (*sandbox.Local, 
 		Root: root, Settings: sandbox.SettingsFrom(config, os.Getenv), Store: sandbox.NewStore(path, config, keychain),
 		Tool: sandbox.Tool, Out: cmd.Writer, Stdin: os.Stdin, Getenv: os.Getenv,
 	}
-	if use == forCLI && onTerminal() {
-		local.Ask = terminalAsker{}
+	// The TUI draws the whole terminal, so its steps neither ask nor paint.
+	if use == forCLI {
+		useTerminal(local, cmd.Writer)
 	}
 	return local, nil
+}
+
+// useTerminal lets local's steps ask on the terminal, when there is one,
+// and paint their lines when out is one.
+func useTerminal(local *sandbox.Local, out io.Writer) {
+	if onTerminal() {
+		// huh draws the questions on standard error, so the headings go
+		// there too, in the look of that terminal.
+		local.Ask = terminalAsker{look: terminalLook(os.Stderr), out: os.Stderr}
+	}
+	if file, ok := out.(*os.File); ok && term.IsTerminal(file.Fd()) {
+		paintLook := terminalLook(file)
+		local.Paint = func(tone sandbox.Tone, text string) string { return paintLook().paint(tone, text) }
+	}
 }
