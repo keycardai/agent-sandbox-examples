@@ -27,6 +27,9 @@ const (
 	scopeRequest   = "request"
 	credentialKey  = "credential"
 	urlKey         = "url"
+	// reasonUnanswered is the reason on a request the server did not
+	// answer.
+	reasonUnanswered = "upstream_failed"
 )
 
 // piScenario is the pi demo's endpoints, under the default demo's name so
@@ -217,4 +220,39 @@ func TestServerErrorAfterCredential(t *testing.T) {
 			t.Errorf("Home lacks %q:\n%s", want, view)
 		}
 	}
+}
+
+// TestUnansweredRequests counts the requests the server did not answer:
+// on their own for an endpoint with no other request, and after the
+// answered ones otherwise.
+func TestUnansweredRequests(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	stamp := sampleTime().Add(5 * time.Second)
+	root.shared.Traffic.Add(newRecord(stamp, scopeRequest, "github.com", "/org/repo.git/info/refs", verdictDeny,
+		reasonUnanswered, "github.com:443/"))
+	root.shared.Traffic.Add(newRecord(stamp, scopeRequest, githubHost, "/user", verdictDeny, reasonUnanswered,
+		githubEndpoint))
+	view := ansi.Strip(root.View().Content)
+	for target, wants := range map[string][]string{
+		" github.com ":     {"✕ GitHub git", "1 request, the server did not answer"},
+		" api.github.com ": {"✓ GitHub", "1 request, credential added, 1 not answered"},
+	} {
+		line := lineWith(view, target)
+		for _, want := range wants {
+			if !strings.Contains(line, want) {
+				t.Errorf("Home says %q for%s, want %q", line, target, want)
+			}
+		}
+	}
+}
+
+// lineWith returns the first line of view that holds text, or "".
+func lineWith(view, text string) string {
+	for line := range strings.Lines(view) {
+		if strings.Contains(line, text) {
+			return line
+		}
+	}
+	return ""
 }

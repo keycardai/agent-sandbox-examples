@@ -52,15 +52,14 @@ func (s *Shared) useLine(use proxylog.EndpointUse) string {
 
 // useDetail marks what came of the requests to an endpoint, and says it:
 // how many went through, whether Keycard refused the last one's
-// credential, what the server answered when that was an error, and when
-// the last one was. A server's error comes after Keycard's part: the
-// credential was added, and the server refused the request.
+// credential, or that the server answered none of them. useRest says the
+// rest. A server's error comes after Keycard's part: the credential was
+// added, and the server refused the request.
 func (s *Shared) useDetail(use proxylog.EndpointUse) (string, string) {
 	theme := s.Styles
-	refusedLast := use.Last != nil && use.Last.RefusedCredential()
 	icon, detail := theme.Faint.Render("·"), theme.Dim.Render("not used yet")
 	switch {
-	case refusedLast:
+	case refusedLast(use):
 		icon = theme.Failed.Render("✕")
 		detail = theme.Failed.Render("No credential: " + proxylog.ReasonText(use.Last.Decision.Reason))
 	case use.Allowed > 0 && use.Endpoint.Credential:
@@ -69,14 +68,35 @@ func (s *Shared) useDetail(use proxylog.EndpointUse) (string, string) {
 	case use.Allowed > 0:
 		icon, detail = theme.OK.Render("✓"), theme.Text.Render(component.Plural(use.Allowed, "request")+
 			", no credential needed")
+	case use.Failed > 0:
+		icon = theme.Failed.Render("✕")
+		detail = theme.Failed.Render(component.Plural(use.Failed, "request") + ", the server did not answer")
 	}
-	if use.Refused > 0 && !refusedLast {
-		detail += theme.Warn.Render(fmt.Sprintf(", %d refused", use.Refused))
+	return icon, detail + s.useRest(use)
+}
+
+// useRest says how many requests Keycard refused and how many the server
+// did not answer, where useDetail did not say so, what the server answered
+// the last one when that was an error, and when the last one was.
+func (s *Shared) useRest(use proxylog.EndpointUse) string {
+	theme := s.Styles
+	rest := ""
+	if use.Refused > 0 && !refusedLast(use) {
+		rest += theme.Warn.Render(fmt.Sprintf(", %d refused", use.Refused))
+	}
+	if use.Failed > 0 && (use.Allowed > 0 || refusedLast(use)) {
+		rest += theme.Warn.Render(fmt.Sprintf(", %d not answered", use.Failed))
 	}
 	if use.Last != nil {
-		detail += theme.Warn.Render(serverError(use.Last)) + theme.Dim.Render(" · "+proxylog.Clock(use.Last))
+		rest += theme.Warn.Render(serverError(use.Last)) + theme.Dim.Render(" · "+proxylog.Clock(use.Last))
 	}
-	return icon, detail
+	return rest
+}
+
+// refusedLast reports whether Keycard refused the credential of the last
+// request to the endpoint.
+func refusedLast(use proxylog.EndpointUse) bool {
+	return use.Last != nil && use.Last.RefusedCredential()
 }
 
 // serverError says what the server answered an allowed request, when that
