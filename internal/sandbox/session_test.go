@@ -405,6 +405,40 @@ func TestSessionZoneIssuer(t *testing.T) {
 	checkErr(t, err, []error{sandbox.ErrIssuer}, "no issuer")
 }
 
+// TestSessionStatusCluster lists the k3d clusters on each Status until the
+// cluster exists, and again after the Session changes something. A list
+// that fails is the status's ClusterErr.
+func TestSessionStatusCluster(t *testing.T) {
+	t.Parallel()
+	settings := sandbox.Settings{sandbox.KeyCluster: "asp"}
+	local, calls := newLocal(t, settings, `[[ "$*" == "cluster list -o json" ]] && cat "${CALLS%/*}/list"`+"\n")
+	local.Getenv = func(key string) string { return settings[key] }
+	local.Store = sandbox.NewStore(sandbox.NoConfig, &sandbox.Config{}, nil)
+	session := local.NewSession("127.0.0.1:8480", time.Second)
+	status := func(list string, want bool, wantLists int) sandbox.Status {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(filepath.Dir(calls), "list"), []byte(list), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got := session.Status(t.Context())
+		if lists := strings.Count(readCalls(t, calls), "cluster list"); got.ClusterExists != want || lists != wantLists {
+			t.Errorf("with %s: ClusterExists %t after %d lists, want %t after %d",
+				list, got.ClusterExists, lists, want, wantLists)
+		}
+		return got
+	}
+
+	status(`[]`, false, 1)
+	status(`[]`, false, 2)
+	status(`[{"name":"asp"}]`, true, 3)
+	status(`[]`, true, 3)
+	session.Reload()
+	status(`[{"name":"asp"}]`, true, 4)
+	session.Reload()
+	got := status(`not a list`, false, 5)
+	checkErr(t, got.ClusterErr, []error{sandbox.ErrDocker}, "something other than a cluster list")
+}
+
 // TestSessionReload reloads the settings while other goroutines read what
 // runs, as the TUI does. The race detector fails it when a reload changes
 // settings that a reader reads.

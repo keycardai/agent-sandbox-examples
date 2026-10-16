@@ -61,15 +61,26 @@ type Session struct {
 	// ReplaceActive lets zone-setup replace the zone's active policy set.
 	ReplaceActive bool
 
-	// mu guards local, output and agent. Reload and the steps write them,
-	// and the TUI reads them from other goroutines. Reload replaces local
-	// instead of changing it.
+	// mu guards local, output, agent, built and changes. Reload and the
+	// steps write them, and the TUI reads them from other goroutines. Reload
+	// replaces local instead of changing it.
 	mu     sync.Mutex
 	local  *Local
 	output *zonesetup.Output
 	// agent is the email of the agent Target names, or "" for the one
 	// KEYCARD_LOCAL_USER_EMAIL names.
 	agent string
+	// built is what Status found set up. Status does not check it again
+	// until changed clears it. changes counts the calls to changed, so that
+	// Status does not keep what it read while something changed.
+	built   built
+	changes int
+}
+
+// built is what the bring-up set up and only the Session's steps and
+// actions take down.
+type built struct {
+	cluster, deployed bool
 }
 
 // NewSession returns a Session for the settings.
@@ -95,6 +106,8 @@ func (s *Session) Reload() {
 	local := *s.local
 	local.UseConfig()
 	s.local, s.output = &local, nil
+	s.built = built{}
+	s.changes++
 }
 
 // Steps returns the steps for the settings. An existing cluster publishes
@@ -137,6 +150,7 @@ func (s *Session) Run(ctx context.Context, stepID StepID, out io.Writer) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrStep, stepID)
 	}
+	defer s.changed()
 	return run(ctx, &local)
 }
 
@@ -144,6 +158,7 @@ func (s *Session) Run(ctx context.Context, stepID StepID, out io.Writer) error {
 // current issuer. Run it when StepCluster fails with ErrOtherIssuer or
 // ErrBrokenCluster.
 func (s *Session) RecreateCluster(ctx context.Context, out io.Writer) error {
+	defer s.changed()
 	local := *s.Local()
 	local.Out = out
 	if err := local.Down(ctx, "", true); err != nil {
@@ -379,6 +394,7 @@ func (s *Session) RestartAgent(ctx context.Context, out io.Writer) error {
 // Down stops the tunnel and the mirror and deletes the k3d cluster. What
 // zone-setup created in the zone stays.
 func (s *Session) Down(ctx context.Context, out io.Writer) error {
+	defer s.changed()
 	local := *s.Local()
 	local.Out = out
 	for _, name := range []string{ServiceMirror, ServiceTunnel} {
@@ -471,26 +487,53 @@ type Status struct {
 	// ClusterExists reports whether the k3d cluster exists. It is always
 	// true for an existing cluster.
 	ClusterExists bool
+	// ClusterErr is why Status could not tell whether the k3d cluster
+	// exists, such as Docker not running. ClusterExists is false then.
+	ClusterErr error
 	// Deployed reports whether an earlier run wrote local/out/zone-setup.yaml.
 	Deployed bool
 }
 
-// Status reads what runs now. It does not start or change anything.
+// Status reads what runs now. It does not start or change anything. Once
+// the cluster exists, or zone-setup.yaml, Status does not check it again
+// until a step or an action of the Session runs. A cluster deleted from
+// outside the Session still shows as existing until then.
 func (s *Session) Status(ctx context.Context) Status {
 	local := s.Local()
 	status := Status{
 		Tunnel: local.ServiceStatus(ServiceTunnel),
 		Mirror: local.ServiceStatus(ServiceMirror),
 	}
-	status.ClusterExists = local.Existing()
-	if !status.ClusterExists {
-		if cluster, err := local.cluster(""); err == nil {
-			status.ClusterExists, _ = local.clusterExists(ctx, cluster)
-		}
+	s.mu.Lock()
+	found, changes := s.built, s.changes
+	s.mu.Unlock()
+	if !found.cluster {
+		found.cluster, status.ClusterErr = clusterBuilt(ctx, local)
 	}
-	_, err := local.readZoneSetup()
-	status.Deployed = err == nil
+	if !found.deployed {
+		_, err := local.readZoneSetup()
+		found.deployed = err == nil
+	}
+	s.mu.Lock()
+	if s.changes == changes {
+		s.built = found
+	}
+	s.mu.Unlock()
+	status.ClusterExists, status.Deployed = found.cluster, found.deployed
 	return status
+}
+
+// clusterBuilt reports whether the cluster exists. An existing cluster
+// always does. Without a cluster name in the settings, there is no cluster.
+func clusterBuilt(ctx context.Context, local *Local) (bool, error) {
+	if local.Existing() {
+		return true, nil
+	}
+	cluster, err := local.cluster("")
+	if err != nil {
+		return false, nil //nolint:nilerr // No cluster name means no cluster, which is not a failed check.
+	}
+	return local.clusterExists(ctx, cluster)
 }
 
 // Describe says in one line what each setting section holds, for a
@@ -512,6 +555,7 @@ func (s *Session) Describe() map[string]string {
 // creates their sandbox, waits for its pod and runs its checks. The cluster,
 // the tunnel and the other agents stay as they are.
 func (s *Session) DeployAgent(ctx context.Context, email string, out io.Writer) error {
+	defer s.changed()
 	local := *s.Local()
 	local.Out = out
 	if err := s.runZone(ctx, &local); err != nil {
@@ -549,6 +593,7 @@ func (s *Session) DeployAgent(ctx context.Context, email string, out io.Writer) 
 // zone-setup fails, RemoveAgent can run again for them, because
 // local/out/zone-setup.yaml still lists them.
 func (s *Session) RemoveAgent(ctx context.Context, email string, out io.Writer) error {
+	defer s.changed()
 	local := *s.Local()
 	local.Out = out
 	removal, err := s.removal(ctx, &local, email)
@@ -583,6 +628,15 @@ type agentRemoval struct {
 	// with userID.
 	running                    bool
 	cluster, namespace, userID string
+}
+
+// changed makes Status check the cluster and zone-setup.yaml again. A step
+// or an action that can change either calls it as it returns.
+func (s *Session) changed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.built = built{}
+	s.changes++
 }
 
 // removal finds what RemoveAgent changes for email. It refuses when they
