@@ -212,11 +212,12 @@ func (s *Shared) FailedStep() *StepRow {
 	return nil
 }
 
-// SandboxUp reports whether the sandbox runs: the zone was set up, and the
-// zone reaches the cluster's issuer. A local cluster needs the tunnel for
-// that, and an existing cluster publishes its issuer itself.
+// SandboxUp reports whether the sandbox runs: the zone was set up, the
+// cluster exists, and the zone reaches the cluster's issuer. A local
+// cluster needs the tunnel for that, and an existing cluster publishes its
+// issuer itself.
 func (s *Shared) SandboxUp() bool {
-	return s.Status.Deployed && (s.Status.Tunnel.Running || s.Session.Local().Existing())
+	return s.Status.Deployed && s.Status.ClusterExists && (s.Status.Tunnel.Running || s.Session.Local().Existing())
 }
 
 // ResumeIndex is where a bring-up starts again: at the step that failed,

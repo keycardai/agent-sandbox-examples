@@ -10,8 +10,8 @@ import (
 )
 
 // Init shows Home. When the bring-up starts with the tunnel, Init brings
-// the sandbox up, unless the tunnel already runs: then the sandbox is up
-// from before, and the TUI only shows it. Without a tunnel step, as on an
+// the sandbox up, unless the tunnel already runs: then the sandbox may be
+// up from before, and the TUI only shows what runs. Without a tunnel step, as on an
 // existing cluster, the bring-up waits for u.
 func (m *model) Init() tea.Cmd {
 	shared := m.shared
@@ -21,8 +21,8 @@ func (m *model) Init() tea.Cmd {
 	case shared.Steps[0].Step.ID != sandbox.StepTunnel:
 		shared.Notify("Press u to bring the sandbox up.", false)
 	case shared.Session.Local().ServiceStatus(sandbox.ServiceTunnel).Running:
-		shared.Record("•", "Found the sandbox running from before")
-		shared.Notify("Showing the sandbox from before. Press u to bring it up again.", false)
+		shared.Record("•", "Found the tunnel running from before")
+		shared.Notify("Found the tunnel from before. Press u to bring the sandbox up again.", false)
 	default:
 		m.startBringUp(0, false)
 	}
