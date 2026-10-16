@@ -84,6 +84,19 @@ func (s *Scenario) EndpointList() []ScenarioEndpoint {
 	return endpoints
 }
 
+// EndpointFor returns the endpoint a request to address goes to: the one
+// with the longest URL that address starts with.
+func EndpointFor(endpoints []ScenarioEndpoint, address string) (ScenarioEndpoint, bool) {
+	var found ScenarioEndpoint
+	for _, endpoint := range endpoints {
+		prefix := strings.TrimRight(endpoint.URL, "/")
+		if (address == prefix || strings.HasPrefix(address, prefix+"/")) && len(prefix) > len(found.URL) {
+			found = ScenarioEndpoint{URL: prefix, Credential: endpoint.Credential, Name: endpoint.Name}
+		}
+	}
+	return found, found.URL != ""
+}
+
 // AgentResponse is what a request the agent sent got back.
 type AgentResponse struct {
 	Status int

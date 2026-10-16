@@ -40,7 +40,7 @@ them.
 | Tab | What it shows |
 |---|---|
 | 1 Home | the bring-up as it runs, or where it stopped and why. Once the agent runs: what needs a look, such as a mirror that stopped or checks that failed, what Keycard did for each of the demo's endpoints, which hosts the proxy blocked, what to try next, and the latest activity. |
-| 2 Agents | three panes. Top left, the agent every tab shows and how its pod is. Enter there lists every agent to switch to. Under it, the requests the agent can send, one per endpoint, and one to a host the demo does not allow. ↑↓ chooses one, and Enter sends it from the agent through the egress proxy. The pane on the right shows the agent's log, or with the requests in focus, the last response: its status, its body, whether the proxy got the person's credential from Keycard, and the `curl` command the agent ran. Tab goes round the panes. |
+| 2 Agents | three panes. Top left, the agent every tab shows and how its pod is. Enter there lists every agent to switch to. Under it, the requests the demo lists under `try`, and one to a host the demo does not allow. ↑↓ chooses one, and Enter sends it from the agent through the egress proxy. The pane on the right shows the agent's log, or with the requests in focus, the last response: its status, its body, whether the proxy got the person's credential from Keycard, and the `curl` command the agent ran. Tab goes round the panes. |
 | 3 Traffic | the same summary as Home, over every decision of the egress proxy as it makes it. `d` adds the DNS lookups. |
 
 `u` brings the sandbox up, or starts again at the step that failed. `a`
@@ -254,6 +254,7 @@ keys:
 | `inputs` | the questions `sandbox init` asks, in order. Each has an `id` of lowercase letters, digits and dashes, and a `kind`. |
 | `resources` | the zone-setup resources. Each has an `identifier`, a `name`, and a `credential` that names a `secret` or `github` input. `sandbox init` writes each with `prefix: true`. |
 | `endpoints` | the sandbox chart's `endpoints`, as `sandbox/values.yaml` documents them |
+| `try` | the requests the TUI's Agents tab offers to send from the agent. Each has a `method`, a `url` under one of the endpoints, and an optional `body`. |
 | `agent.args` | the agent container's args, which the sandbox-base entrypoint runs |
 | `agent.env` | the agent's environment. `{id}` in a value is the answer to the text input `id`. |
 | `run.mode` | what `sandbox up` does once the sandbox is up. `checks` runs the checks. `shell` runs the checks, then `run.command` in the agent container, attached to your terminal. `background` runs the checks, then follows the log of the agent that `agent.args` starts. |

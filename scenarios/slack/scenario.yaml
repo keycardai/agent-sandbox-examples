@@ -34,6 +34,12 @@ endpoints:
   # Allowed without a credential. The checks fetch pypi.org.
   - url: https://pypi.org
   - url: https://files.pythonhosted.org
+# The requests the TUI's Agents tab offers to send from the agent.
+try:
+  - {method: GET, url: https://slack.com/api/auth.test}
+  - {method: GET, url: https://api.github.com/user}
+  - {method: POST, url: https://api.linear.app/graphql, body: '{"query":"{ viewer { name email } }"}'}
+  - {method: GET, url: https://pypi.org/pypi/requests/json}
 agent:
   args: [slack-agent]
   env:

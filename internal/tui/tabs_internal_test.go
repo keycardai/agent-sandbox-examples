@@ -78,6 +78,11 @@ func piScenario() *sandbox.Scenario {
 			map[string]any{urlKey: "https://pypi.org"},
 			map[string]any{urlKey: "https://files.pythonhosted.org"},
 		},
+		Try: []sandbox.ScenarioTry{
+			{Method: http.MethodGet, URL: "https://api.github.com/user"},
+			{Method: http.MethodGet, URL: "https://openrouter.ai/api/v1/key"},
+			{Method: http.MethodGet, URL: "https://pypi.org/pypi/requests/json"},
+		},
 		Title: samplePi,
 		Run:   sandbox.ScenarioRun{Mode: sandbox.ModeShell, Command: []string{"pi-session"}},
 	}

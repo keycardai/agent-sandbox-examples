@@ -25,6 +25,11 @@ endpoints:
   # Allowed without a credential. The checks fetch pypi.org.
   - url: https://pypi.org
   - url: https://files.pythonhosted.org
+# The requests the TUI's Agents tab offers to send from the agent.
+try:
+  - {method: GET, url: https://api.github.com/user}
+  - {method: GET, url: https://openrouter.ai/api/v1/key}
+  - {method: GET, url: https://pypi.org/pypi/requests/json}
 agent:
   args: [sleep, infinity]
 run:

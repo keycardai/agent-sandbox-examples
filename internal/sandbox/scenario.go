@@ -62,9 +62,12 @@ type Scenario struct {
 	Inputs    []ScenarioInput    `yaml:"inputs"`
 	Resources []ScenarioResource `yaml:"resources"`
 	// Endpoints go to the sandbox chart's endpoints as written.
-	Endpoints []any         `yaml:"endpoints"`
-	Agent     ScenarioAgent `yaml:"agent"`
-	Run       ScenarioRun   `yaml:"run"`
+	Endpoints []any `yaml:"endpoints"`
+	// Try lists the requests the TUI offers to send from the agent, each to
+	// one of the endpoints. They stay out of the chart's values.
+	Try   []ScenarioTry `yaml:"try"`
+	Agent ScenarioAgent `yaml:"agent"`
+	Run   ScenarioRun   `yaml:"run"`
 	// Image is the agent image `sandbox run` builds from the scenario's
 	// Dockerfile, or "" when the scenario has none and runs sandbox-base.
 	// NameImage sets it.
@@ -99,6 +102,14 @@ type ScenarioResource struct {
 	// Credential is the id of the secret or github input that gives the
 	// resource its credential.
 	Credential string `yaml:"credential"`
+}
+
+// ScenarioTry is a request to try from the agent: its method, its URL, and
+// its body, if any.
+type ScenarioTry struct {
+	Method string `yaml:"method"`
+	URL    string `yaml:"url"`
+	Body   string `yaml:"body"`
 }
 
 // ScenarioAgent is the agent container.
@@ -326,7 +337,25 @@ func (s *Scenario) check() error {
 	if err = s.checkEnv(kinds); err != nil {
 		return err
 	}
+	if err = s.checkTry(); err != nil {
+		return err
+	}
 	return s.checkRun()
+}
+
+// checkTry checks that each request to try has a method, and goes to one
+// of the endpoints, which the proxy lets through.
+func (s *Scenario) checkTry() error {
+	endpoints := s.EndpointList()
+	for i, try := range s.Try {
+		if try.Method == "" {
+			return fmt.Errorf("%w: try[%d].method is required", ErrScenario, i)
+		}
+		if _, ok := EndpointFor(endpoints, try.URL); !ok {
+			return fmt.Errorf("%w: try[%d].url %q is not under any of the endpoints", ErrScenario, i, try.URL)
+		}
+	}
+	return nil
 }
 
 // checkRun checks the run mode and the keys it needs.

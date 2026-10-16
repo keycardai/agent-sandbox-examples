@@ -157,6 +157,18 @@ func TestLoadScenario(t *testing.T) {
 			wantText: "run.command is required in shell mode and not allowed in other modes",
 		},
 		{
+			name: "try off the endpoints",
+			body: head + "endpoints: [{url: https://api.example.com/v1}]\n" +
+				"try: [{method: GET, url: https://api.example.com/v2/me}]\nrun: {mode: checks}\n",
+			wantText: `try[0].url "https://api.example.com/v2/me" is not under any of the endpoints`,
+		},
+		{
+			name: "try without a method",
+			body: head + "endpoints: [{url: https://api.example.com}]\n" +
+				"try: [{url: https://api.example.com/me}]\nrun: {mode: checks}\n",
+			wantText: "try[0].method is required",
+		},
+		{
 			name:     "default on a secret",
 			body:     "title: T\ninputs: [{id: key, kind: secret, prompt: Key, default: x}]\nrun: {mode: checks}\n",
 			wantText: "inputs[0].default is only for a text input",

@@ -358,7 +358,7 @@ func (a *Agents) PickerView() string {
 
 // trials offers a request for each of the demo's endpoints that says
 // something on its own.
-func (a *Agents) trials() []trial { return trialsFor(a.endpoints()) }
+func (a *Agents) trials() []trial { return trialsFor(a.state.LoadedDemo()) }
 
 // agentReady reports whether the agent's container runs and is ready.
 func (a *Agents) agentReady() bool {
@@ -777,37 +777,24 @@ func (t trial) path() string {
 	return parsed.Path
 }
 
-// trialsFor offers one request for each endpoint that says something on its
-// own, then one to a host no demo allows. A request to an endpoint with a
-// credential asks who the credential belongs to.
-func trialsFor(endpoints []sandbox.ScenarioEndpoint) []trial {
-	known := map[string]trial{
-		"api.github.com:443/":      {method: http.MethodGet, url: "https://api.github.com/user"},
-		"openrouter.ai:443/api/v1": {method: http.MethodGet, url: "https://openrouter.ai/api/v1/key"},
-		"slack.com:443/api":        {method: http.MethodGet, url: "https://slack.com/api/auth.test"},
-		"api.linear.app:443/": {
-			method: http.MethodPost, url: "https://api.linear.app/graphql", body: `{"query":"{ viewer { name email } }"}`,
-		},
-		"pypi.org:443/": {method: http.MethodGet, url: "https://pypi.org/pypi/requests/json"},
+// trialsFor offers the demo's requests to try, then one to a host no demo
+// allows. A request to an endpoint with a credential names the resource
+// whose credential the proxy adds.
+func trialsFor(scenario *sandbox.Scenario) []trial {
+	blocked := trial{method: http.MethodGet, url: "https://example.com/", blocked: true}
+	if scenario == nil {
+		return []trial{blocked}
 	}
-	// Git over HTTPS and file downloads say little in one request.
-	skipped := map[string]bool{"github.com:443/": true, "files.pythonhosted.org:443/": true}
-	trials := make([]trial, 0, len(endpoints)+1)
-	for _, endpoint := range endpoints {
-		item, ok := known[endpoint.ID()]
-		switch {
-		case ok:
-		case skipped[endpoint.ID()] || !endpoint.Credential:
-			continue
-		default:
-			item = trial{method: http.MethodGet, url: endpoint.URL}
-		}
-		if endpoint.Credential {
+	endpoints := scenario.EndpointList()
+	trials := make([]trial, 0, len(scenario.Try)+1)
+	for _, try := range scenario.Try {
+		item := trial{method: try.Method, url: try.URL, body: try.Body}
+		if endpoint, ok := sandbox.EndpointFor(endpoints, try.URL); ok && endpoint.Credential {
 			item.name = endpoint.Name
 		}
 		trials = append(trials, item)
 	}
-	return append(trials, trial{method: http.MethodGet, url: "https://example.com/", blocked: true})
+	return append(trials, blocked)
 }
 
 // excerpt returns the first rows lines of a body, indented when it is

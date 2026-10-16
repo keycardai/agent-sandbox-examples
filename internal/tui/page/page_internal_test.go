@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -454,28 +455,37 @@ func TestSavedSettingsWithoutAKeychain(t *testing.T) {
 	}
 }
 
-// TestTrialsFor offers a request per endpoint that says something alone,
-// and one the proxy refuses.
+// TestTrialsFor offers the demo's requests to try, each with the resource
+// whose credential the proxy adds, then one the proxy refuses.
 func TestTrialsFor(t *testing.T) {
 	t.Parallel()
-	endpoints := []sandbox.ScenarioEndpoint{
-		{URL: "https://api.github.com", Credential: true, Name: "GitHub"},
-		{URL: "https://github.com", Credential: true, Name: "GitHub git"},
-		{URL: "https://openrouter.ai/api/v1", Credential: true, Name: "OpenRouter"},
-		{URL: "https://pypi.org"},
-		{URL: "https://files.pythonhosted.org"},
-		{URL: "https://api.example.dev/v2", Credential: true, Name: "Dev"},
+	const urlKey, credentialKey = "url", "credential"
+	header := map[string]any{"placement": map[string]any{"kind": "header"}}
+	scenario := &sandbox.Scenario{
+		Resources: []sandbox.ScenarioResource{
+			{Identifier: "https://api.github.com", Name: "GitHub"},
+			{Identifier: "https://api.example.dev/v2", Name: "Dev"},
+		},
+		Endpoints: []any{
+			map[string]any{urlKey: "https://api.github.com", credentialKey: header},
+			map[string]any{urlKey: "https://pypi.org"},
+			map[string]any{urlKey: "https://api.example.dev/v2", credentialKey: header},
+		},
+		Try: []sandbox.ScenarioTry{
+			{Method: http.MethodGet, URL: "https://api.github.com/user"},
+			{Method: http.MethodGet, URL: "https://pypi.org/pypi/requests/json"},
+			{Method: http.MethodPost, URL: "https://api.example.dev/v2/graphql", Body: "{}"},
+		},
 	}
-	trials := trialsFor(endpoints)
+	trials := trialsFor(scenario)
 	got := make([]string, 0, len(trials))
 	for _, item := range trials {
 		got = append(got, item.method+" "+item.url+" "+item.name)
 	}
 	want := []string{
 		"GET https://api.github.com/user GitHub",
-		"GET https://openrouter.ai/api/v1/key OpenRouter",
 		"GET https://pypi.org/pypi/requests/json ",
-		"GET https://api.example.dev/v2 Dev",
+		"POST https://api.example.dev/v2/graphql Dev",
 		"GET https://example.com/ ",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
