@@ -303,6 +303,25 @@ func TestRecreateWaitsForTheQuitDialog(t *testing.T) {
 	}
 }
 
+// TestPollSkipsPodsWhenDown does not run kubectl for the pods while the
+// last read found no cluster or no zone step.
+func TestPollSkipsPodsWhenDown(t *testing.T) {
+	t.Parallel()
+	root := quietModel(t)
+	root.shared.Read, root.shared.Status = true, sandbox.Status{ClusterExists: true}
+	root.shared.Session.Local().Tool = func(ctx context.Context, name string, _ ...string) (*exec.Cmd, error) {
+		t.Errorf("the poll ran %s while the sandbox is down", name)
+		return exec.CommandContext(ctx, "false"), nil
+	}
+	batch, ok := root.poll()().(tea.BatchMsg)
+	if !ok || len(batch) != pollReads {
+		t.Fatalf("poll = %v, want %d reads", batch, pollReads)
+	}
+	if msg, ok := batch[1]().(podsMsg); !ok || msg.rows != nil || msg.err != nil {
+		t.Errorf("pods read = %+v, want no pods and no error", msg)
+	}
+}
+
 // TestNothingToStopOnAnExistingCluster says that D has nothing to stop on
 // an existing cluster, and does not ask to delete a k3d cluster.
 func TestNothingToStopOnAnExistingCluster(t *testing.T) {

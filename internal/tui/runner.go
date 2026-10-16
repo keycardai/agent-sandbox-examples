@@ -423,19 +423,28 @@ func (m *model) onActionDone(msg actionDoneMsg) tea.Cmd {
 }
 
 // poll reads the services and the pods in the background, unless a read
-// is on its way. Once both reads come back, polled plans the next poll.
+// is on its way. It reads the pods only while the last read found the
+// sandbox deployed in its cluster. Once both reads come back, polled plans
+// the next poll.
 func (m *model) poll() tea.Cmd {
 	if m.polling > 0 {
 		return nil
 	}
 	m.polling = pollReads
 	base, session := m.ctx, m.shared.Session
+	// The pods need the cluster and the zone step. Without them, kubectl
+	// has nothing to list, so the poll skips it.
+	last := m.shared.Status
+	noPods := m.shared.Read && (!last.ClusterExists || !last.Deployed)
 	status := func() tea.Msg {
 		ctx, cancel := context.WithTimeout(base, readTimeout)
 		defer cancel()
 		return statusMsg{status: session.Status(ctx)}
 	}
 	pods := func() tea.Msg {
+		if noPods {
+			return podsMsg{agents: session.Agents()}
+		}
 		ctx, cancel := context.WithTimeout(base, readTimeout)
 		defer cancel()
 		list, err := session.Pods(ctx)
