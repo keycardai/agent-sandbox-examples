@@ -64,6 +64,15 @@ type (
 	}
 )
 
+// The answers a confirmation sends. Each handler checks, when it runs, that
+// the work still applies.
+type (
+	stopBringUpMsg     struct{}
+	recreateClusterMsg struct{ from int }
+	restartPodMsg      struct{}
+	stopAllMsg         struct{}
+)
+
 // errPanic is a background job that panicked. The TUI reports it and keeps
 // running.
 var errPanic = errors.New("internal error")
@@ -184,13 +193,15 @@ func (m *model) onStepDone(msg stepDoneMsg) {
 	if hint := page.StepHint(row, msg.err); hint != "" {
 		row.Log.Add("→ " + hint)
 	}
-	if errors.Is(msg.err, sandbox.ErrOtherIssuer) || errors.Is(msg.err, sandbox.ErrBrokenCluster) {
-		index := msg.index
-		m.confirmLater("Recreate the cluster?", recreateReason(msg.err), func() tea.Cmd {
-			m.startBringUp(index, true)
-			return nil
-		})
+	if recreatable(msg.err) {
+		m.confirmLater("Recreate the cluster?", recreateReason(msg.err), recreateClusterMsg{from: msg.index})
 	}
+}
+
+// recreatable reports whether err is a cluster that only a new one fixes:
+// one made for another issuer, or one kubectl cannot reach.
+func recreatable(err error) bool {
+	return errors.Is(err, sandbox.ErrOtherIssuer) || errors.Is(err, sandbox.ErrBrokenCluster)
 }
 
 // recordStop says in the activity log and in the step's log that the
@@ -256,7 +267,7 @@ func (m *model) onBringUpDone(msg bringUpDoneMsg) tea.Cmd {
 	case errors.Is(msg.err, context.Canceled):
 		// The step that ran says where the operator stopped the bring-up.
 	case msg.err != nil:
-		if !errors.Is(msg.err, sandbox.ErrOtherIssuer) && !errors.Is(msg.err, sandbox.ErrBrokenCluster) {
+		if !recreatable(msg.err) {
 			shared.Notify("The bring-up stopped: "+component.FirstLine(msg.err.Error()), true)
 		}
 		shared.Record("✕", "Bring-up stopped")
@@ -300,10 +311,53 @@ func (m *model) toggleBringUp() {
 		return
 	}
 	m.confirm("Stop the bring-up?", "The step that runs now is canceled.\n"+
-		"Press u again later to start again from that step.", func() tea.Cmd {
-		m.shared.CancelJob()
-		return nil
-	})
+		"Press u again later to start again from that step.", stopBringUpMsg{})
+}
+
+// updateAnswers acts on the answer a confirmation sent, and reports whether
+// msg was one. A question that waited opens after it.
+func (m *model) updateAnswers(msg tea.Msg) bool {
+	switch msg := msg.(type) {
+	case stopBringUpMsg:
+		if m.shared.Job.Is(page.JobBringUp) {
+			m.shared.CancelJob()
+		}
+	case recreateClusterMsg:
+		m.recreateCluster(msg.from)
+	case restartPodMsg:
+		m.restartPod()
+	case stopAllMsg:
+		m.stopAllNow()
+	default:
+		return false
+	}
+	m.openWaiting()
+	return true
+}
+
+// stopAllNow stops everything, unless a job other than a bring-up runs.
+func (m *model) stopAllNow() {
+	if !m.shared.Job.Is(page.JobBringUp) && m.shared.Busy() {
+		return
+	}
+	m.stopEverything(false)
+}
+
+// recreateCluster deletes the cluster and brings the sandbox up again from
+// step from, while that step still failed for a cluster that only a new one
+// fixes. Once D stopped everything, or a later bring-up passed the step, the
+// question no longer applies.
+func (m *model) recreateCluster(from int) {
+	shared := m.shared
+	if from >= len(shared.Steps) || shared.Steps[from].State != page.StepFailed ||
+		!recreatable(shared.Steps[from].Err) {
+		shared.Notify("The cluster does not need to be recreated now.", false)
+		return
+	}
+	if shared.Busy() {
+		return
+	}
+	m.startBringUp(from, true)
 }
 
 // runChecks runs the checks step again, against the running sandbox.
@@ -338,13 +392,18 @@ func (m *model) restartAgent() {
 	if m.shared.Busy() || m.isDown() {
 		return
 	}
-	name, session := m.shared.AgentName(), m.shared.Session
-	m.confirm("Restart "+name+"'s pod?", "This deletes the pod, and the controller creates it again\n"+
-		"with the current images and settings. The agent loses what it kept in the pod.",
-		func() tea.Cmd {
-			m.runAction(page.Job{Kind: page.JobAction, Name: "Restarting " + name + "'s pod"}, session.RestartAgent)
-			return nil
-		})
+	m.confirm("Restart "+m.shared.AgentName()+"'s pod?", "This deletes the pod, and the controller creates it again\n"+
+		"with the current images and settings. The agent loses what it kept in the pod.", restartPodMsg{})
+}
+
+// restartPod restarts the selected agent's pod, while nothing else runs and
+// the sandbox is up.
+func (m *model) restartPod() {
+	if m.shared.Busy() || m.isDown() {
+		return
+	}
+	job := page.Job{Kind: page.JobAction, Name: "Restarting " + m.shared.AgentName() + "'s pod"}
+	m.runAction(job, m.shared.Session.RestartAgent)
 }
 
 // stopAll asks, then stops everything. A running bring-up stops first.
@@ -358,10 +417,7 @@ func (m *model) stopAll() {
 		return
 	}
 	m.confirm("Stop everything?", "This stops the tunnel and the mirror and deletes the k3d cluster.\n"+
-		"What the sandbox created in your Keycard zone stays.", func() tea.Cmd {
-		m.stopEverything(false)
-		return nil
-	})
+		"What the sandbox created in your Keycard zone stays.", stopAllMsg{})
 }
 
 // stopEverything stops the tunnel and the mirror and deletes the cluster,

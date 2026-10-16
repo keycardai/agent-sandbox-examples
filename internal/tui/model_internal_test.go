@@ -53,6 +53,14 @@ func press(text string) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: []rune(text)[0], Text: text}
 }
 
+// answerYes presses y in a confirmation, and hands the answer it sends to
+// Update, as the program does.
+func answerYes(root *model) {
+	if _, cmd := root.Update(press("y")); cmd != nil {
+		root.Update(cmd())
+	}
+}
+
 // TestStepsFollowTheBringUp marks steps as the runner reports them, and
 // starts again at the step that failed.
 func TestStepsFollowTheBringUp(t *testing.T) {
@@ -205,7 +213,7 @@ func TestOneJobAtATime(t *testing.T) {
 	}{
 		{"an action", "pod is running", func(root *model) {
 			root.Update(press("R"))
-			root.Update(press("y"))
+			answerYes(root)
 		}, busyKeys()},
 		{
 			"a bring-up", "bring-up is running", func(root *model) { root.shared.Job = page.Job{Kind: page.JobBringUp} },
@@ -457,9 +465,9 @@ func TestQuitAfterAFailedStop(t *testing.T) {
 func TestQuitNamesTheAction(t *testing.T) {
 	t.Parallel()
 	root := quietModel(t)
-	for _, key := range []string{"R", "y", "q"} {
-		root.Update(press(key))
-	}
+	root.Update(press("R"))
+	answerYes(root)
+	root.Update(press("q"))
 	if modal := ansi.Strip(root.quitModal()); !strings.Contains(modal, "pod is running") {
 		t.Errorf("quit while an action runs:\n%s", modal)
 	}
@@ -520,5 +528,30 @@ func TestShutdownStopsTheWork(t *testing.T) {
 	root.shutdown(cancel)
 	if !ended.Load() {
 		t.Error("shutdown returned before the action ended")
+	}
+}
+
+// TestRecreateQuestionGoesWithD drops the question to recreate the cluster
+// that came while the D dialog was open, once D is confirmed. An answer that
+// comes after everything stopped does not recreate the cluster.
+func TestRecreateQuestionGoesWithD(t *testing.T) {
+	t.Parallel()
+	root := testModel(t)
+	cluster := slices.IndexFunc(root.shared.Steps, func(row *page.StepRow) bool {
+		return row.Step.ID == sandbox.StepCluster
+	})
+	root.shared.Job = page.Job{Kind: page.JobBringUp}
+	root.Update(press("D"))
+	root.Update(stepDoneMsg{index: cluster, err: sandbox.ErrOtherIssuer})
+	answerYes(root)
+	if root.overlay.kind != overlayNone || root.waiting != nil || !root.shared.Job.StopAfter {
+		t.Errorf("after D: overlay %v, waiting %v, job %+v; want the question gone and everything to stop",
+			root.overlay.kind, root.waiting != nil, root.shared.Job)
+	}
+	root.shared.Job = page.Job{}
+	root.shared.ResetSteps()
+	root.Update(recreateClusterMsg{from: cluster})
+	if root.shared.Job.Busy() || !strings.Contains(root.shared.Toast.Text, "does not need to be recreated") {
+		t.Errorf("a late answer: job %+v, notice %q; want no bring-up", root.shared.Job, root.shared.Toast.Text)
 	}
 }

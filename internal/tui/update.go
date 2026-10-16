@@ -57,6 +57,9 @@ func (m *model) updateBackground(msg tea.Msg) (tea.Cmd, bool) {
 	if cmd, handled := m.updateJobs(msg); handled {
 		return cmd, true
 	}
+	if m.updateAnswers(msg) {
+		return nil, true
+	}
 	switch msg := msg.(type) {
 	case frameMsg:
 		m.shared.Frame++
@@ -95,11 +98,13 @@ func (m *model) updateJobs(msg tea.Msg) (tea.Cmd, bool) {
 	return nil, true
 }
 
-// keyPress routes a key: to the overlay when one is open, else to Home.
+// keyPress routes a key: to the overlay when one is open, else to Home. A
+// question that waited opens once the overlay closed, or once the answer
+// it sent is handled.
 func (m *model) keyPress(msg tea.KeyPressMsg) tea.Cmd {
 	if cmd, handled := m.overlayKeys(msg); handled {
-		if m.overlay.kind == overlayNone && m.waiting != nil {
-			m.overlay, m.waiting = *m.waiting, nil
+		if cmd == nil {
+			m.openWaiting()
 		}
 		return cmd
 	}
@@ -173,30 +178,37 @@ func (m *model) quitKeys(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
-// confirm asks a yes or no question, and runs yes on y. Any other key,
-// enter too, says no.
-func (m *model) confirm(title, body string, yes func() tea.Cmd) {
-	m.overlay = overlay{kind: overlayConfirm, title: title, body: body, confirm: yes}
+// confirm asks a yes or no question. y sends yes to Update, which acts on
+// it then. Any other key, enter too, says no.
+func (m *model) confirm(title, body string, yes tea.Msg) {
+	m.overlay = overlay{kind: overlayConfirm, title: title, body: body, yes: yes}
 }
 
 // confirmLater is confirm for a question from background work. While
 // another overlay is open, the question waits for it to close, so that a
 // key meant for that overlay does not answer it.
-func (m *model) confirmLater(title, body string, yes func() tea.Cmd) {
+func (m *model) confirmLater(title, body string, yes tea.Msg) {
 	if m.overlay.kind == overlayNone {
 		m.confirm(title, body, yes)
 		return
 	}
-	m.waiting = &overlay{kind: overlayConfirm, title: title, body: body, confirm: yes}
+	m.waiting = &overlay{kind: overlayConfirm, title: title, body: body, yes: yes}
+}
+
+// openWaiting opens the question that waited, once no overlay is open.
+func (m *model) openWaiting() {
+	if m.overlay.kind == overlayNone && m.waiting != nil {
+		m.overlay, m.waiting = *m.waiting, nil
+	}
 }
 
 func (m *model) confirmKeys(msg tea.KeyPressMsg) tea.Cmd {
-	yes := m.overlay.confirm
+	yes := m.overlay.yes
 	m.overlay = overlay{}
 	if msg.String() != "y" && msg.String() != "Y" {
 		return nil
 	}
-	return yes()
+	return func() tea.Msg { return yes }
 }
 
 // dashboardKeys handles a key on Home: the actions on the sandbox, then

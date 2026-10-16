@@ -75,12 +75,13 @@ type model struct {
 }
 
 // overlay is what covers the screen: nothing, the help, a confirmation or
-// the quit dialog.
+// the quit dialog. It holds data only: a confirmation's yes is the message
+// that y sends, which Update acts on then.
 type overlay struct {
-	kind    overlayKind
-	title   string
-	body    string
-	confirm func() tea.Cmd
+	kind  overlayKind
+	title string
+	body  string
+	yes   tea.Msg
 	// keepsRunning is set on the quit dialog when part of the sandbox runs
 	// and stays up after the quit.
 	keepsRunning bool
