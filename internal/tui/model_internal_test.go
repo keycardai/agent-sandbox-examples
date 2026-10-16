@@ -254,7 +254,7 @@ func TestStopWhileAToolRuns(t *testing.T) {
 		return exec.CommandContext(ctx, "sleep", "30"), nil
 	}
 	ctx, cancel := context.WithCancel(t.Context())
-	run := bringUp{session: root.shared.Session, out: newBus(), steps: root.shared.Steps}
+	run := bringUp{session: root.shared.Session, out: newBus(t.Context()), steps: root.shared.Steps}
 	stop := time.AfterFunc(200*time.Millisecond, cancel)
 	defer stop.Stop()
 	runSteps(ctx, cancel, run, 0)
@@ -363,6 +363,30 @@ func TestAgentKeysWhileDown(t *testing.T) {
 			t.Errorf("%s while down: command %v, overlay %v, notice %q; want only a notice that it is down",
 				key, cmd != nil, root.overlay.kind, root.shared.Toast.Text)
 		}
+	}
+}
+
+// TestBusEndsWithTheTUI stops waiting on the bus, and drops what comes,
+// once the TUI's context ends.
+func TestBusEndsWithTheTUI(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	queue := newBus(ctx)
+	cancel()
+	for range busSize + 1 {
+		queue.Send(pollMsg{})
+	}
+	done := make(chan struct{})
+	go func() {
+		for range busSize + 1 {
+			queue.next()()
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the bus still waits after the TUI stopped")
 	}
 }
 

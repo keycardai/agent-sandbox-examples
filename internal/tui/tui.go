@@ -109,6 +109,8 @@ const (
 // never waits for the TUI.
 type bus struct {
 	ch chan tea.Msg
+	// done ends a wait on the bus once the TUI stops.
+	done <-chan struct{}
 }
 
 // busMsg is a message that came through the bus.
@@ -131,7 +133,7 @@ func Run(ctx context.Context, opts Options) error {
 // in ctx.
 func newModel(ctx context.Context, session *sandbox.Session) *model {
 	shared := page.NewShared(session)
-	root := &model{shared: shared, bus: newBus(), help: help.New(), ctx: ctx}
+	root := &model{shared: shared, bus: newBus(ctx), help: help.New(), ctx: ctx}
 	root.home = page.NewHome(shared)
 	return root
 }
@@ -151,16 +153,27 @@ func (m *model) shutdown(cancel context.CancelFunc) {
 	}
 }
 
-func newBus() *bus {
-	return &bus{ch: make(chan tea.Msg, busSize)}
+// newBus returns a bus whose waits end with ctx.
+func newBus(ctx context.Context) *bus {
+	return &bus{ch: make(chan tea.Msg, busSize), done: ctx.Done()}
 }
 
-// Send queues msg for Update.
+// Send queues msg for Update, or drops it once the TUI stopped.
 func (b *bus) Send(msg any) {
-	b.ch <- msg
+	select {
+	case b.ch <- msg:
+	case <-b.done:
+	}
 }
 
-// next waits for the next queued message.
+// next waits for the next queued message, or for the TUI to stop.
 func (b *bus) next() tea.Cmd {
-	return func() tea.Msg { return busMsg{msg: <-b.ch} }
+	return func() tea.Msg {
+		select {
+		case msg := <-b.ch:
+			return busMsg{msg: msg}
+		case <-b.done:
+			return nil
+		}
+	}
 }
