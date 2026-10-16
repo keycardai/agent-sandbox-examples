@@ -128,6 +128,14 @@ func (l *Local) Existing() bool {
 	return l.Settings[KeyKubeContext] != ""
 }
 
+// StartsTunnel reports whether the bring-up starts a tunnel for the
+// cluster's issuer: on a local cluster, unless KEYCARD_LOCAL_ISSUER names an
+// issuer the operator publishes without one. KEYCARD_LOCAL_TUNNEL always
+// starts one.
+func (l *Local) StartsTunnel() bool {
+	return !l.Existing() && (l.Settings[KeyTunnel] != "" || l.Settings[KeyIssuer] == "")
+}
+
 // cluster returns flag, or the setting when flag is empty. For an existing
 // cluster, the name is a kubeconfig context from KEYCARD_LOCAL_KUBE_CONTEXT.
 // Otherwise it is a k3d cluster from KEYCARD_LOCAL_CLUSTER: at most 32

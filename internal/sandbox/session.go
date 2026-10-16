@@ -127,7 +127,7 @@ func (s *Session) Steps() []Step {
 		return slices.Concat([]Step{{StepIssuer, "Check the cluster's issuer"}}, deploy)
 	}
 	var steps []Step
-	if local.Settings[KeyTunnel] != "" || local.Settings[KeyIssuer] == "" {
+	if local.StartsTunnel() {
 		steps = append(steps, Step{StepTunnel, "Start the tunnel"})
 	}
 	return slices.Concat(steps, []Step{
