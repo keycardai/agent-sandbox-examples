@@ -177,6 +177,17 @@ func TestQuitDialogFollowsTheJob(t *testing.T) {
 	}
 }
 
+// TestStartsWithoutTellingToBringUp leaves what to do to Home on a sandbox
+// without a tunnel step, which may be up already: the first read says.
+func TestStartsWithoutTellingToBringUp(t *testing.T) {
+	t.Parallel()
+	root := quietModel(t)
+	root.Init()
+	if root.ui.Toast.Text != "" || root.state.Job.Busy() {
+		t.Errorf("Init: notice %q, job %+v; want neither", root.ui.Toast.Text, root.state.Job)
+	}
+}
+
 // TestRecreateAsks offers to recreate a cluster made for another issuer
 // URL, or one the kubeconfig has no context for, and says which. Recreating
 // deletes the cluster, so only y says yes: enter says no.

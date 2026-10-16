@@ -12,17 +12,16 @@ import (
 
 // Init shows Home. When the bring-up starts with the tunnel, Init brings
 // the sandbox up, unless the tunnel already runs: then the sandbox may be
-// up from before, and the TUI only shows what runs. Without a tunnel step, as on an
-// existing cluster, the bring-up waits for u.
+// up from before, and the TUI only shows what runs. Without a tunnel step,
+// as on an existing cluster, the bring-up waits for u. Home says what to
+// do once the first read comes back, since the sandbox may be up.
 func (m *model) Init() tea.Cmd {
 	cmds := []tea.Cmd{frameTick(), m.poll(), m.bus.next(), tea.RequestWindowSize, tea.RequestBackgroundColor}
 	switch {
-	case len(m.state.Steps) == 0:
-	case m.state.Steps[0].Step.ID != sandbox.StepTunnel:
-		m.ui.Notify("Press u to bring the sandbox up.", false)
+	case len(m.state.Steps) == 0, m.state.Steps[0].Step.ID != sandbox.StepTunnel:
 	case m.session.Local().ServiceStatus(sandbox.ServiceTunnel).Running:
 		m.state.Record("•", "Found the tunnel running from before")
-		m.ui.Notify("Found the tunnel from before. Press u to bring the sandbox up again.", false)
+		m.ui.Notify("Found the tunnel from before.", false)
 	default:
 		m.startBringUp(0, false)
 	}
