@@ -175,10 +175,13 @@ func (s *Store) keepTyped(names []string) error {
 	return nil
 }
 
+// setConfig replaces the config. The config file does not hold the new one
+// until save writes it.
 func (s *Store) setConfig(config *Config) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.config = config
+	s.saved = false
 }
 
 // secret returns the secret name: one typed this session, or else the one

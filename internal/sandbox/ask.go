@@ -23,6 +23,14 @@ type Asker interface {
 	Confirm(ctx context.Context, question string, value bool) (bool, error)
 }
 
+// SectionAsker is an Asker that Init tells which part of the settings it
+// asks about next. Init calls Section before the first question of each
+// part it asks.
+type SectionAsker interface {
+	Asker
+	Section(id string)
+}
+
 // Option is one choice. Choose shows Label and returns Value.
 type Option struct {
 	Label, Value string
