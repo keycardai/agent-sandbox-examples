@@ -204,12 +204,12 @@ type Agent struct {
 func (s *Session) Agents() []Agent {
 	local := s.Local()
 	users := local.previousValues().values.Users
-	output, err := s.zoneOutput()
+	output, outputErr := s.zoneOutput()
 	agents := make([]Agent, 0, len(users))
 	for _, user := range users {
 		agent := Agent{Email: user.Email, Default: user.Email == local.Settings[KeyUserEmail]}
-		if err == nil {
-			if access, found := userAccess(output, user.Email); found == nil {
+		if outputErr == nil {
+			if access, err := userAccess(output, user.Email); err == nil {
 				agent.Pod = access.UserID
 			}
 		}
