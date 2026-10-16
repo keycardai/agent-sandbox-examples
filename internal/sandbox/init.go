@@ -459,12 +459,12 @@ func (w *wizard) envAccount() bool {
 // or the sign-in fails, it calls login.
 func (w *wizard) signInAgain(ctx context.Context) error {
 	w.keepAccount()
-	account := w.out.ManagementServiceAccount
-	envSecret, _ := w.l.envSecret()
-	clientID := cmp.Or(w.l.getenv(EnvClientID), account.ClientID)
-	secret := cmp.Or(envSecret, w.l.keptSecret(account.ClientSecretEnv))
+	clientID, secret, err := w.l.accountSecret(w.out.ManagementServiceAccount)
+	if err != nil || w.out.ManagementAPIURL == "" {
+		return w.login(ctx)
+	}
 	roots, err := rootsFrom(w.env[KeyCAFile])
-	if err != nil || secret == "" || w.out.ManagementAPIURL == "" {
+	if err != nil {
 		return w.login(ctx)
 	}
 	w.roots = roots

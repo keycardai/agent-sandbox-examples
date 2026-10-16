@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -306,6 +307,29 @@ func (l *Local) keptSecret(name string) string {
 	}
 	secret, _ := l.Store.secret(secretName(name))
 	return secret
+}
+
+// accountSecret returns the client ID and the secret to sign in with the
+// service account: the environment's when it has a secret, or else
+// account's ID and the secret this session or the keychain keeps. It fails
+// when there is no secret, or the keychain refuses to read it.
+func (l *Local) accountSecret(account zonesetup.ManagementServiceAccountValues) (string, string, error) {
+	clientID := cmp.Or(l.getenv(EnvClientID), account.ClientID)
+	if secret, _ := l.envSecret(); secret != "" {
+		return clientID, secret, nil
+	}
+	name := account.ClientSecretEnv
+	if secret := l.getenv(name); name != "" && secret != "" {
+		return clientID, secret, nil
+	}
+	secret, err := l.Store.secret(secretName(name))
+	switch {
+	case err != nil && !errors.Is(err, ErrNoSecret):
+		return "", "", err
+	case secret == "":
+		return "", "", fmt.Errorf("%w: there is no client secret for the service account", zonesetup.ErrMissingSecret)
+	}
+	return clientID, secret, nil
 }
 
 // getenv reads the environment through Getenv, if it is set.

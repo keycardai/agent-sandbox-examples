@@ -173,10 +173,10 @@ func (s *Session) ZoneEventsURL(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	account := values.ManagementServiceAccount
-	envSecret, _ := local.envSecret()
-	clientID := cmp.Or(local.getenv(EnvClientID), account.ClientID)
-	secret := cmp.Or(envSecret, local.keptSecret(account.ClientSecretEnv))
+	clientID, secret, err := local.accountSecret(values.ManagementServiceAccount)
+	if err != nil {
+		return "", fmt.Errorf("signing in to find the zone's organization: %w", err)
+	}
 	roots, err := rootsFrom(local.Settings[KeyCAFile])
 	if err != nil {
 		return "", err

@@ -485,6 +485,31 @@ func TestSessionStatusClusterName(t *testing.T) {
 	}
 }
 
+// TestZoneEventsURLSecret fails before signing in when there is no client
+// secret, or the keychain refuses to read it.
+func TestZoneEventsURLSecret(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, refuse string
+		want         []error
+	}{
+		{name: "no secret", want: []error{zonesetup.ErrMissingSecret}},
+		{name: "keychain refuses", refuse: managementName, want: []error{sandbox.ErrKeychain, errRefused}},
+	} {
+		local, _ := newLocal(t, nil, "")
+		keychain := newTestKeychain()
+		keychain.getRefuse = tc.refuse
+		local.Store = sandbox.NewStore(sandbox.NoConfig, &sandbox.Config{
+			Account: sandbox.ConfigAccount{APIURL: "https://api.keycard.test", ClientID: "sa-events", Secret: managementName},
+			Zone:    sandbox.ConfigZone{ID: zoneID, URL: zoneURL},
+		}, keychain)
+		local.Getenv = func(string) string { return "" }
+		local.UseConfig()
+		_, err := local.NewSession("127.0.0.1:8480", time.Second).ZoneEventsURL(t.Context())
+		checkErr(t, err, tc.want, "signing in to find the zone's organization")
+	}
+}
+
 // TestSessionReload reloads the settings while other goroutines read what
 // runs, as the TUI does. The race detector fails it when a reload changes
 // settings that a reader reads.
