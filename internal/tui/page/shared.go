@@ -97,6 +97,8 @@ type Shared struct {
 	StepCursor int
 	Running    bool
 	RunFrom    int
+	// Stopping is set while D stops the services and deletes the cluster.
+	Stopping bool
 
 	// Status is the sandbox as the TUI last read it. Read is set once the
 	// first read came back.

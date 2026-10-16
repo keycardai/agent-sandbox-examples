@@ -40,6 +40,8 @@ func (h *Home) View() string {
 	switch {
 	case shared.Running:
 		return h.bringUp()
+	case shared.Stopping:
+		return shared.Styles.Muted.Render(shared.spinner() + " Stopping everything…")
 	case failed != nil:
 		return h.failed(failed)
 	case !shared.Read:
@@ -60,6 +62,8 @@ func (h *Home) Hints() []component.Hint {
 			{Key: "?", Desc: wordKeys},
 			{Key: "q", Desc: wordQuit},
 		}
+	case shared.Stopping:
+		return []component.Hint{{Key: "?", Desc: wordKeys}, {Key: "q", Desc: wordQuit}}
 	case shared.FailedStep() != nil:
 		return []component.Hint{
 			{Key: "u", Desc: "try again"},

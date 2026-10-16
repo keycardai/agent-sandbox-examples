@@ -373,6 +373,7 @@ func (m *model) down() {
 	// The bring-up that stopped or failed before is gone with the sandbox,
 	// and so is a question about its cluster.
 	m.waiting = nil
+	m.shared.Stopping = true
 	m.runActionThen("Stopping everything", m.shared.Session.Down, m.shared.ResetSteps)
 }
 
@@ -402,7 +403,7 @@ func (m *model) runActionThen(what string, work func(ctx context.Context, out io
 
 func (m *model) onActionDone(msg actionDoneMsg) tea.Cmd {
 	shared := m.shared
-	m.acting = ""
+	m.acting, shared.Stopping = "", false
 	if msg.err != nil {
 		shared.Notify(msg.what+" failed: "+component.FirstLine(msg.err.Error()), true)
 		shared.Record("✕", msg.what+" failed: "+component.FirstLine(msg.err.Error()))

@@ -272,13 +272,18 @@ func TestStopWhileAToolRuns(t *testing.T) {
 	}
 }
 
-// TestDownForgetsTheFailedStep forgets the bring-up that failed once
-// everything stopped, so Home no longer says where it stopped.
+// TestDownForgetsTheFailedStep says that everything stops while it does,
+// and then forgets the bring-up that failed, so Home no longer says where
+// it stopped.
 func TestDownForgetsTheFailedStep(t *testing.T) {
 	t.Parallel()
 	root := quietModel(t)
 	root.Update(stepDoneMsg{index: 0, err: sandbox.ErrDocker})
 	root.down()
+	if view := ansi.Strip(root.View().Content); !strings.Contains(view, "Stopping everything…") ||
+		!strings.Contains(view, "stopping") {
+		t.Errorf("while it stops, Home and the band do not say so:\n%s", view)
+	}
 	root.Update(<-root.bus.ch)
 	for _, row := range root.shared.Steps {
 		if row.State != page.StepPending {

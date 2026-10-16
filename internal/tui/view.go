@@ -74,6 +74,9 @@ func (m *model) statusBadge() string {
 			m.progressBar(done, len(shared.Steps)) + theme.BandLabel.Render(" "+strconv.Itoa(done)+"/"+
 			strconv.Itoa(len(shared.Steps)))
 	}
+	if shared.Stopping {
+		return theme.BandBusy.Render(component.Spinner(shared.Frame) + " stopping")
+	}
 	if row := shared.FailedStep(); row != nil {
 		return theme.BandFail.Render("✕ stopped at " + row.Step.Title)
 	}
@@ -89,7 +92,7 @@ func (m *model) shortBadge() string {
 	shared := m.shared
 	theme := shared.Styles
 	if !shared.Running {
-		if shared.FailedStep() != nil {
+		if !shared.Stopping && shared.FailedStep() != nil {
 			return theme.BandFail.Render("✕ stopped")
 		}
 		return m.statusBadge()
