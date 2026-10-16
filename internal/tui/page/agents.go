@@ -56,6 +56,14 @@ const (
 	agentPaneCount
 )
 
+// FollowMsg asks the root model to follow a container's log in the log
+// pane.
+type FollowMsg struct{ Row state.ContainerRow }
+
+// ShowAgentsMsg asks the root model to open the list of agents, which the
+// Agents tab draws.
+type ShowAgentsMsg struct{}
+
 // SendRequestMsg asks the root model to send a request from agent's
 // container, and to answer with a RequestDoneMsg. Seq numbers the request.
 type SendRequestMsg struct {
@@ -112,7 +120,6 @@ type requestState struct {
 type Agents struct {
 	view
 
-	host Host
 	// focus is the pane with focus, and showResponse is set when the pane
 	// on the right shows the last response, and not the agent's log.
 	focus        AgentPane
@@ -127,8 +134,8 @@ type Agents struct {
 }
 
 // NewAgents returns the Agents tab.
-func NewAgents(ui *UI, sandbox *state.Sandbox, host Host) *Agents {
-	return &Agents{ui: ui, state: sandbox, host: host}
+func NewAgents(ui *UI, sandbox *state.Sandbox) *Agents {
+	return &Agents{ui: ui, state: sandbox}
 }
 
 // View draws the panes.
@@ -177,17 +184,15 @@ func (a *Agents) Keys(msg tea.KeyPressMsg) tea.Cmd {
 	keys := a.ui.Keys
 	switch {
 	case key.Matches(msg, keys.NextPane), msg.String() == "right":
-		a.FocusPane((a.focus + 1) % agentPaneCount)
+		return follow(a.FocusPane((a.focus + 1) % agentPaneCount))
 	case key.Matches(msg, keys.PrevPane), msg.String() == "left":
-		a.FocusPane((a.focus + agentPaneCount - 1) % agentPaneCount)
+		return follow(a.FocusPane((a.focus + agentPaneCount - 1) % agentPaneCount))
 	case a.focus == AgentPaneAgent:
 		return a.agentPaneKeys(msg)
 	case a.focus == AgentPaneRequests:
 		return a.requestPaneKeys(msg)
-	default:
-		return a.rightPaneKeys(msg)
 	}
-	return nil
+	return a.rightPaneKeys(msg)
 }
 
 // Layout sizes the log pane on the right, under the response's caption
@@ -202,8 +207,9 @@ func (a *Agents) Layout() {
 
 // FocusPane gives pane the focus. The pane on the right shows the agent's
 // log for the agent pane, and the last response for the requests. With
-// focus itself, it keeps what it showed.
-func (a *Agents) FocusPane(pane AgentPane) {
+// focus itself, it keeps what it showed. It returns the container whose
+// log the pane shows, for the root model to follow.
+func (a *Agents) FocusPane(pane AgentPane) (state.ContainerRow, bool) {
 	a.focus = pane
 	switch pane {
 	case AgentPaneAgent:
@@ -212,23 +218,34 @@ func (a *Agents) FocusPane(pane AgentPane) {
 		a.showResponse = true
 	case AgentPaneRight, agentPaneCount:
 	}
-	a.ShowRight()
+	return a.ShowRight()
 }
 
-// FocusLog gives the pane on the right the focus, with the agent's log.
-func (a *Agents) FocusLog() {
+// FocusLog gives the pane on the right the focus, with the agent's log, and
+// returns the agent's container to follow.
+func (a *Agents) FocusLog() (state.ContainerRow, bool) {
 	a.showResponse = false
-	a.FocusPane(AgentPaneRight)
+	return a.FocusPane(AgentPaneRight)
 }
 
-// ShowRight points the pane on the right at what it shows.
-func (a *Agents) ShowRight() {
+// ShowRight points the pane on the right at what it shows: the last
+// response, or the agent's log. It returns the agent's container, for the
+// root model to follow its log.
+func (a *Agents) ShowRight() (state.ContainerRow, bool) {
+	defer a.Layout()
 	if a.showResponse {
 		a.ui.Logs.Show(state.SourceResponse)
-	} else if row, ok := a.state.Container(state.AgentContainer); ok {
-		a.host.Follow(row)
+		return state.ContainerRow{}, false
 	}
-	a.Layout()
+	return a.state.Container(state.AgentContainer)
+}
+
+// follow asks the root model to follow row's log, when ok.
+func follow(row state.ContainerRow, ok bool) tea.Cmd {
+	if !ok {
+		return nil
+	}
+	return func() tea.Msg { return FollowMsg{Row: row} }
 }
 
 // Reset forgets the last request, as for an agent, a pod or a demo that is
@@ -260,10 +277,10 @@ func (a *Agents) Send() tea.Cmd {
 		command: sandbox.AgentCurl(item.method, item.url, item.body),
 	}
 	a.ui.Logs.Log(state.SourceResponse).Reset()
-	a.FocusPane(AgentPaneRequests)
+	focus := follow(a.FocusPane(AgentPaneRequests))
 	a.state.Record("▸", agent+"'s agent sent "+item.method+" "+item.url)
 	request := SendRequestMsg{Agent: agent, Seq: a.sent, Method: item.method, URL: item.url, Body: item.body}
-	return func() tea.Msg { return request }
+	return tea.Batch(focus, func() tea.Msg { return request })
 }
 
 // OnRequestDone records what came back. It shows it while it answers the
@@ -701,11 +718,9 @@ func (a *Agents) rightPaneKeys(msg tea.KeyPressMsg) tea.Cmd {
 		return a.ui.Logs.Keys(msg, a.ui.Keys)
 	}
 	if a.showResponse {
-		a.FocusPane(AgentPaneRequests)
-	} else {
-		a.FocusPane(AgentPaneAgent)
+		return follow(a.FocusPane(AgentPaneRequests))
 	}
-	return nil
+	return follow(a.FocusPane(AgentPaneAgent))
 }
 
 // agentPaneKeys opens the list of agents to switch to, and goes down to
@@ -718,13 +733,11 @@ func (a *Agents) agentPaneKeys(msg tea.KeyPressMsg) tea.Cmd {
 			return nil
 		}
 		a.OpenPicker()
-		a.host.ShowAgentList()
+		return func() tea.Msg { return ShowAgentsMsg{} }
 	case key.Matches(msg, a.ui.Keys.Down):
-		a.FocusPane(AgentPaneRequests)
-	default:
-		return a.ui.Logs.Keys(msg, a.ui.Keys)
+		return follow(a.FocusPane(AgentPaneRequests))
 	}
-	return nil
+	return a.ui.Logs.Keys(msg, a.ui.Keys)
 }
 
 // requestPaneKeys chooses a request and sends it. Up from the first goes
@@ -733,7 +746,7 @@ func (a *Agents) requestPaneKeys(msg tea.KeyPressMsg) tea.Cmd {
 	keys := a.ui.Keys
 	switch {
 	case key.Matches(msg, keys.Up) && a.trial == 0:
-		a.FocusPane(AgentPaneAgent)
+		return follow(a.FocusPane(AgentPaneAgent))
 	case key.Matches(msg, keys.Up):
 		a.trial--
 	case key.Matches(msg, keys.Down):

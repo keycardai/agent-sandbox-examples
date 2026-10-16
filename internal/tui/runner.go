@@ -409,7 +409,7 @@ func (m *model) agent() tea.Cmd {
 	}
 	if scenario.Run.Mode == sandbox.ModeBackground {
 		m.openTab(tabAgent)
-		m.agents.FocusLog()
+		m.follow(m.agents.FocusLog())
 		return nil
 	}
 	return m.openAgent(false)
@@ -597,7 +597,7 @@ func (m *model) onPods(msg podsMsg) {
 	case m.stream != "" || len(m.state.SelectedPods()) == 0, m.ui.Logs.Source() == state.SourceAction:
 	case m.tab == tabAgent:
 		if row, ok := m.state.Container(state.AgentContainer); ok {
-			m.Follow(row)
+			m.follow(row, true)
 		}
 	}
 }
@@ -620,7 +620,7 @@ func (m *model) agentSwitched() {
 	m.startTraffic()
 	switch m.tab {
 	case tabAgent:
-		m.agents.ShowRight()
+		m.follow(m.agents.ShowRight())
 	case tabHome, tabTraffic, tabCount:
 	}
 	m.layout()

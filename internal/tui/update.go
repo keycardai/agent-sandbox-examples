@@ -76,9 +76,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// Follow follows the log of a pod's container in the log pane, and stops
-// following the one before.
-func (m *model) Follow(row state.ContainerRow) {
+// follow follows the log of a pod's container in the log pane, when ok,
+// and stops following the one before.
+func (m *model) follow(row state.ContainerRow, ok bool) {
+	if !ok {
+		return
+	}
 	name := state.ContainerSource(row.Pod, row.Container.Name)
 	if m.stream != name {
 		m.stopStream()
@@ -91,14 +94,6 @@ func (m *model) Follow(row state.ContainerRow) {
 	}
 	m.ui.Logs.Show(name)
 }
-
-// ShowAgentList opens the list of agents, which the Agents tab draws.
-func (m *model) ShowAgentList() {
-	m.overlay = overlay{kind: overlayAgents}
-}
-
-// Context is the TUI's context, which ends when it quits.
-func (m *model) Context() context.Context { return m.ctx }
 
 func (m *model) updateBackground(msg tea.Msg) (tea.Cmd, bool) {
 	if cmd, handled := m.updateJobs(msg); handled {
@@ -139,17 +134,22 @@ func (m *model) onFrame() tea.Cmd {
 	return tea.Batch(frameTick(), m.welcomeGlint())
 }
 
-// updateRequests handles a request the Agents tab asks to send, and what
-// came back.
+// updateRequests handles what the Agents tab asks for: a log to follow,
+// the list of agents, a request to send, and what came back.
 func (m *model) updateRequests(msg tea.Msg) (tea.Cmd, bool) {
 	switch msg := msg.(type) {
+	case page.FollowMsg:
+		m.follow(msg.Row, true)
+	case page.ShowAgentsMsg:
+		m.overlay = overlay{kind: overlayAgents}
 	case page.SendRequestMsg:
 		return m.sendRequest(msg), true
 	case page.RequestDoneMsg:
 		m.agents.OnRequestDone(msg)
-		return nil, true
+	default:
+		return nil, false
 	}
-	return nil, false
+	return nil, true
 }
 
 // updateJobs handles what the jobs and the agent report.
@@ -389,7 +389,7 @@ func (m *model) openTab(next tab) {
 	m.ui.Logs.ClearFilter()
 	switch next {
 	case tabAgent:
-		m.agents.ShowRight()
+		m.follow(m.agents.ShowRight())
 	case tabTraffic:
 		m.traffic.Show()
 	case tabHome, tabCount:
@@ -473,7 +473,7 @@ func (m *model) showLog(entry page.LogEntry) {
 	m.logs.Shown = entry
 	m.ui.Logs.ClearFilter()
 	if row, ok := m.state.Container(entry.Container); ok && entry.Container != "" {
-		m.Follow(row)
+		m.follow(row, true)
 	} else {
 		m.ui.Logs.Show(cmp.Or(entry.Source, state.ContainerSource("", entry.Container)))
 	}

@@ -274,7 +274,7 @@ func TestUpToTheAgent(t *testing.T) {
 		root.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	}
 	for range 4 {
-		root.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+		act(root, tea.KeyPressMsg{Code: tea.KeyUp})
 	}
 	if view := ansi.Strip(root.View().Content); focusedPane(view) != paneAgent ||
 		!strings.Contains(view, "▸ GET api.github.com/user") || !strings.Contains(view, "Container log") {

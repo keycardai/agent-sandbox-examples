@@ -242,7 +242,7 @@ func newModel(ctx context.Context, session *sandbox.Session) *model {
 	root.setup = page.NewSetup(pageUI, sandbox)
 	root.settings = page.NewSettings(pageUI, sandbox)
 	root.home = page.NewHome(pageUI, sandbox)
-	root.agents = page.NewAgents(pageUI, sandbox, root)
+	root.agents = page.NewAgents(pageUI, sandbox)
 	root.traffic = page.NewTraffic(pageUI, sandbox)
 	root.logs = page.NewLogs(pageUI, sandbox)
 	root.demos = page.NewDemos(pageUI, sandbox)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/component"
+	"github.com/keycardai/agent-sandbox-examples/internal/tui/page"
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/state"
 )
 
@@ -48,7 +49,7 @@ func TestAgentsList(t *testing.T) {
 			t.Errorf("Agents tab lacks %q:\n%s", want, view)
 		}
 	}
-	if root.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); root.overlay.kind != overlayAgents {
+	if act(root, tea.KeyPressMsg{Code: tea.KeyEnter}); root.overlay.kind != overlayAgents {
 		t.Fatalf("enter on the agent: overlay %v, want the list of agents", root.overlay.kind)
 	}
 	view = ansi.Strip(root.View().Content)
@@ -102,7 +103,7 @@ func TestSwitchAgent(t *testing.T) {
 
 // pick opens the list of agents, moves down steps and switches.
 func pick(root *model, steps int) {
-	root.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	act(root, tea.KeyPressMsg{Code: tea.KeyEnter})
 	for range steps {
 		root.Update(press("j"))
 	}
@@ -187,6 +188,34 @@ func snapshotAgents(t *testing.T) *model {
 func snapshotAgentPicker(t *testing.T) *model {
 	t.Helper()
 	root := snapshotAgents(t)
-	root.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	act(root, tea.KeyPressMsg{Code: tea.KeyEnter})
 	return root
+}
+
+// act gives msg to root, then the intents a page answers with, such as a
+// log to follow, as the program does.
+func act(root *model, msg tea.Msg) {
+	_, cmd := root.Update(msg)
+	for _, intent := range intents(cmd) {
+		root.Update(intent)
+	}
+}
+
+// intents runs cmd, and returns the intents of the pages it sends. Other
+// messages, such as a tick, are left out.
+func intents(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	switch msg := cmd().(type) {
+	case tea.BatchMsg:
+		var out []tea.Msg
+		for _, next := range msg {
+			out = append(out, intents(next)...)
+		}
+		return out
+	case page.FollowMsg, page.ShowAgentsMsg:
+		return []tea.Msg{msg}
+	}
+	return nil
 }

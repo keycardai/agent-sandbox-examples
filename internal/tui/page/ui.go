@@ -34,16 +34,6 @@ const (
 	wordAgent  = "agent"
 )
 
-// Host is what a page asks of the root model, which owns the work in the
-// background and the overlays.
-type Host interface {
-	// Follow follows the log of a pod's container in the log pane, and
-	// stops following the one before.
-	Follow(row state.ContainerRow)
-	// ShowAgentList opens the list of agents, which the Agents tab draws.
-	ShowAgentList()
-}
-
 // UI is what the pages draw with. The root model sets it.
 type UI struct {
 	Styles style.Styles
