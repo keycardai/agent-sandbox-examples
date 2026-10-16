@@ -286,6 +286,28 @@ func TestServiceStatus(t *testing.T) {
 	}
 }
 
+// TestStopServiceURLFile deletes the quick tunnel's URL file the stopped
+// tunnel left, and keeps one that another tunnel holds.
+func TestStopServiceURLFile(t *testing.T) {
+	t.Parallel()
+	for _, held := range []bool{false, true} {
+		local, _ := newLocal(t, sandbox.Settings{}, "")
+		startStandIn(t, filepath.Join(local.Root, "local", "out", sandbox.ServiceTunnel+".pid"))
+		const url = "https://quick-brown-fox.trycloudflare.com\n"
+		if held {
+			holdIssuerFile(t, local.QuickIssuerFile(), url)
+		} else {
+			writeFile(t, local.QuickIssuerFile(), url)
+		}
+		if err := local.StopService(t.Context(), sandbox.ServiceTunnel); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(local.QuickIssuerFile()); held != (err == nil) {
+			t.Errorf("held = %t: the URL file after the stop: %v; want it kept only while held", held, err)
+		}
+	}
+}
+
 // TestServiceStatusUnlocked does not count a pid file that no service
 // locks, whatever program runs with that pid, and StopService leaves that
 // program alone.

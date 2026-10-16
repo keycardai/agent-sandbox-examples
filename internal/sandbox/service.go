@@ -173,12 +173,22 @@ func (l *Local) StopService(ctx context.Context, name string) error {
 		}
 	}
 	if name == ServiceTunnel {
-		// A tunnel killed before it cleaned up leaves its URL behind.
-		if err := os.Remove(l.QuickIssuerFile()); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			_, _ = fmt.Fprintf(l.Out, "Could not delete %s, which the tunnel left: %v\n", l.QuickIssuerFile(), err)
-		}
+		l.removeLeftURL()
 	}
 	return nil
+}
+
+// removeLeftURL deletes the quick tunnel's URL file that a tunnel killed
+// before it cleaned up leaves behind. It keeps the file while another
+// tunnel, such as sandbox up's, holds it.
+func (l *Local) removeLeftURL() {
+	file := l.QuickIssuerFile()
+	if _, running, err := readQuickIssuer(file); err != nil || running {
+		return
+	}
+	if err := os.Remove(file); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		_, _ = fmt.Fprintf(l.Out, "Could not delete %s, which the tunnel left: %v\n", file, err)
+	}
 }
 
 // signalService sends sig, named name, to the service's process group, and
