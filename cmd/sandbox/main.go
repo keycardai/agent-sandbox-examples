@@ -368,18 +368,7 @@ func downCommand() *cli.Command {
 			&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "delete without asking"},
 		},
 		Action: step(func(ctx context.Context, cmd *cli.Command, local *sandbox.Local) error {
-			// Down asks first, so an answer of no leaves everything running.
-			if err := local.Down(ctx, cmd.String("cluster"), cmd.Bool("yes")); err != nil {
-				return err //nolint:wrapcheck // Down's errors say what failed, as the other steps' do.
-			}
-			for _, name := range []string{sandbox.ServiceMirror, sandbox.ServiceTunnel} {
-				if err := local.StopService(ctx, name); err == nil {
-					_, _ = fmt.Fprintf(cmd.Writer, "Stopped the %s.\n", name)
-				} else if !errors.Is(err, sandbox.ErrNotRunning) {
-					return fmt.Errorf("stopping the %s: %w", name, err)
-				}
-			}
-			return nil
+			return local.DownAll(ctx, cmd.String("cluster"), cmd.Bool("yes"))
 		}),
 	}
 }

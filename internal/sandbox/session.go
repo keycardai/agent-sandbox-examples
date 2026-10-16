@@ -397,14 +397,8 @@ func (s *Session) Down(ctx context.Context, out io.Writer) error {
 	defer s.changed()
 	local := *s.Local()
 	local.Out = out
-	for _, name := range []string{ServiceMirror, ServiceTunnel} {
-		err := local.StopService(ctx, name)
-		switch {
-		case err == nil:
-			_, _ = fmt.Fprintf(out, "Stopped the %s.\n", name)
-		case !errors.Is(err, ErrNotRunning):
-			return err
-		}
+	if err := local.StopServices(ctx); err != nil {
+		return err
 	}
 	if local.Existing() {
 		return nil

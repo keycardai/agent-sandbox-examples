@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -326,6 +327,35 @@ func TestDown(t *testing.T) {
 				t.Fatalf("calls = %q, want %q", got, tc.wantCalls)
 			}
 		})
+	}
+}
+
+// TestDownAll stops the tunnel and the mirror after it deletes the
+// settings' cluster, and leaves them running for another cluster. It reads
+// what DownAll did from its output: TestServiceStatus checks the stop.
+func TestDownAll(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		cluster  string
+		wantStop bool
+	}{
+		{cluster: "", wantStop: true},
+		{cluster: cluster, wantStop: true},
+		{cluster: "other", wantStop: false},
+	} {
+		local, _ := newLocal(t, sandbox.Settings{sandbox.KeyCluster: cluster}, clusterTool("[]", "", ""))
+		out := &bytes.Buffer{}
+		local.Out = out
+		startStandIn(t, filepath.Join(local.Root, "local", "out", sandbox.ServiceTunnel+".pid"))
+		if err := local.DownAll(t.Context(), tc.cluster, true); err != nil {
+			t.Fatal(err)
+		}
+		if stopped := strings.Contains(out.String(), "Stopped the tunnel."); stopped != tc.wantStop {
+			t.Errorf("down --cluster %q: stopped the tunnel = %t, want %t\n%s", tc.cluster, stopped, tc.wantStop, out)
+		}
+		if !tc.wantStop && !local.ServiceStatus(sandbox.ServiceTunnel).Running {
+			t.Errorf("down --cluster %q: the tunnel stopped, want it running", tc.cluster)
+		}
 	}
 }
 

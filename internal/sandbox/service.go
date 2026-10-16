@@ -191,6 +191,21 @@ func (l *Local) removeLeftURL() {
 	}
 }
 
+// StopServices stops the mirror and then the tunnel, and says on l.Out
+// which it stopped. A service that does not run is not an error.
+func (l *Local) StopServices(ctx context.Context) error {
+	for _, name := range []string{ServiceMirror, ServiceTunnel} {
+		err := l.StopService(ctx, name)
+		switch {
+		case err == nil:
+			_, _ = fmt.Fprintf(l.Out, "Stopped the %s.\n", name)
+		case !errors.Is(err, ErrNotRunning):
+			return err
+		}
+	}
+	return nil
+}
+
 // signalService sends sig, named name, to the service's process group, and
 // says on l.Out when that fails.
 func (l *Local) signalService(state ServiceState, sig syscall.Signal, name string) {

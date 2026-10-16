@@ -211,6 +211,19 @@ func (l *Local) Down(ctx context.Context, cluster string, yes bool) error {
 	return nil
 }
 
+// DownAll deletes the k3d cluster as Down does, and then stops the tunnel
+// and the mirror. They serve the settings' cluster, so they keep running
+// when cluster names another one, or when Down does not delete.
+func (l *Local) DownAll(ctx context.Context, cluster string, yes bool) error {
+	if err := l.Down(ctx, cluster, yes); err != nil {
+		return err
+	}
+	if cluster != "" && cluster != l.Settings[KeyCluster] {
+		return nil
+	}
+	return l.StopServices(ctx)
+}
+
 // confirmDelete asks whether to delete cluster. The default answer is no. It
 // returns ErrConfirm unless the operator answers yes.
 func (l *Local) confirmDelete(ctx context.Context, cluster string) error {
