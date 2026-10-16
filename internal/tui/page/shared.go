@@ -165,19 +165,26 @@ func (s *Shared) PageUnder(header, body string, hints []component.Hint) string {
 func (s *Shared) BodyRows() int { return max(s.Height-component.ChromeRows-1, 1) }
 
 // Scenario returns the demo the settings name, or nil when it does not
+// load.
+func (s *Shared) Scenario() *sandbox.Scenario {
+	scenario, _ := s.LoadScenario()
+	return scenario
+}
+
+// LoadScenario returns the demo the settings name, or why it does not
 // load. It keeps the demo it loaded, and reads it again for another name,
 // or while it does not load.
-func (s *Shared) Scenario() *sandbox.Scenario {
+func (s *Shared) LoadScenario() (*sandbox.Scenario, error) {
 	name := cmp.Or(s.Session.Local().Settings[sandbox.KeyScenario], sandbox.DefaultScenario)
 	if s.Loaded != nil && s.Loaded.Name == name {
-		return s.Loaded
+		return s.Loaded, nil
 	}
 	scenario, err := s.Session.Scenario()
 	if err != nil {
-		return nil
+		return nil, err //nolint:wrapcheck // The session names the scenario file that does not load.
 	}
 	s.Loaded = scenario
-	return scenario
+	return scenario, nil
 }
 
 // SelectedAgent returns the agent the session has selected, and its index

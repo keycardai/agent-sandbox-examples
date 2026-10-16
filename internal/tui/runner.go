@@ -375,9 +375,8 @@ func (m *model) runChecks() {
 // agent opens the scenario's command in the agent, such as pi, or shows the
 // agent's log for an agent that runs in the background.
 func (m *model) agent() tea.Cmd {
-	scenario := m.shared.Scenario()
-	if scenario == nil {
-		_, err := m.shared.Session.Scenario()
+	scenario, err := m.shared.LoadScenario()
+	if err != nil {
 		m.shared.Notify(component.FirstLine(err.Error()), true)
 		return nil
 	}
