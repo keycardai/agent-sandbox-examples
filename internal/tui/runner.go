@@ -130,6 +130,11 @@ func runSteps(ctx context.Context, cancel context.CancelFunc, run bringUp, from 
 		} else {
 			err = run.session.Run(ctx, row.Step.ID, row.Log)
 		}
+		// A tool that ctx killed fails with its own error, such as signal:
+		// killed. The step reports the stop instead.
+		if err != nil && ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		run.out.Send(stepDoneMsg{index: i, err: err})
 		if err != nil && row.Step.ID != sandbox.StepChecks {
 			run.out.Send(bringUpDoneMsg{err: err})

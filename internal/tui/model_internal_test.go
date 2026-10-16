@@ -244,6 +244,33 @@ func TestDownWaitsForTheBringUp(t *testing.T) {
 	}
 }
 
+// TestStopWhileAToolRuns reports a bring-up stopped while a tool runs as
+// stopped, though the tool that the stop killed fails with its own error.
+func TestStopWhileAToolRuns(t *testing.T) {
+	t.Parallel()
+	root := quietModel(t)
+	root.shared.Session.Local().Tool = func(ctx context.Context, _ string, _ ...string) (*exec.Cmd, error) {
+		return exec.CommandContext(ctx, "sleep", "30"), nil
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	run := bringUp{session: root.shared.Session, out: newBus(), steps: root.shared.Steps}
+	stop := time.AfterFunc(200*time.Millisecond, cancel)
+	defer stop.Stop()
+	runSteps(ctx, cancel, run, 0)
+	for range 3 {
+		switch msg := (<-run.out.ch).(type) {
+		case stepDoneMsg:
+			if !errors.Is(msg.err, context.Canceled) {
+				t.Errorf("the step ended with %v, want context.Canceled", msg.err)
+			}
+		case bringUpDoneMsg:
+			if !errors.Is(msg.err, context.Canceled) {
+				t.Errorf("the bring-up ended with %v, want context.Canceled", msg.err)
+			}
+		}
+	}
+}
+
 // TestNothingToStopOnAnExistingCluster says that D has nothing to stop on
 // an existing cluster, and does not ask to delete a k3d cluster.
 func TestNothingToStopOnAnExistingCluster(t *testing.T) {
