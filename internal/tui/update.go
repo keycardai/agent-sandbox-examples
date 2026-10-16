@@ -146,6 +146,8 @@ func (m *model) quit() tea.Cmd {
 	switch job := m.state.Job; job.Kind {
 	case state.JobBringUp:
 		m.overlay.body = "A bring-up is running, and quitting stops it where it is.\n" + m.overlay.body
+	case state.JobChecks:
+		m.overlay.body = "The checks are running, and quitting stops them where they are.\n" + m.overlay.body
 	case state.JobAction, state.JobStop:
 		m.overlay.body = job.Name + " is running, and quitting stops it where it is.\n" + m.overlay.body
 	case state.JobNone:
@@ -170,7 +172,7 @@ func (m *model) quitKeys(msg tea.KeyPressMsg) tea.Cmd {
 		m.state.CancelJob()
 		return tea.Quit
 	case "D":
-		if !keepsRunning || !m.state.Job.Is(state.JobBringUp) && m.busy() {
+		if !keepsRunning || !m.state.Job.RunsSteps() && m.busy() {
 			return nil
 		}
 		m.askStopAll(true)

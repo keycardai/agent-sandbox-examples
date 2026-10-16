@@ -86,6 +86,7 @@ func TestPhase(t *testing.T) {
 	}{
 		{"reading", func(known *Sandbox) { known.Read = false }, PhaseReading},
 		{"bringing up", func(known *Sandbox) { known.Job = Job{Kind: JobBringUp} }, PhaseBringingUp},
+		{"checking", func(known *Sandbox) { known.Job = Job{Kind: JobChecks} }, PhaseChecking},
 		{"stopping", func(known *Sandbox) { known.Job = Job{Kind: JobStop} }, PhaseStopping},
 		{"stopped", func(known *Sandbox) {
 			known.Steps[0].State, known.Steps[0].Err = StepFailed, context.Canceled

@@ -71,6 +71,8 @@ func (m *model) statusBadge() string {
 		return theme.BandBusy.Render(component.Spinner(m.ui.Frame)+" bringing up ") +
 			m.progressBar(done, len(m.state.Steps)) + theme.BandLabel.Render(" "+strconv.Itoa(done)+"/"+
 			strconv.Itoa(len(m.state.Steps)))
+	case state.PhaseChecking:
+		return theme.BandBusy.Render(component.Spinner(m.ui.Frame) + " running the checks")
 	case state.PhaseStopping:
 		return theme.BandBusy.Render(component.Spinner(m.ui.Frame) + " stopping")
 	case state.PhaseStopped:
@@ -94,6 +96,8 @@ func (m *model) shortBadge() string {
 	case state.PhaseBringingUp:
 		return theme.BandBusy.Render(component.Spinner(m.ui.Frame) + " " + strconv.Itoa(m.stepsDone()) + "/" +
 			strconv.Itoa(len(m.state.Steps)))
+	case state.PhaseChecking:
+		return theme.BandBusy.Render(component.Spinner(m.ui.Frame) + " checks")
 	case state.PhaseStopped:
 		return theme.BandDown.Render("○ stopped")
 	case state.PhaseFailed:
@@ -139,7 +143,8 @@ func (m *model) progress() *tea.ProgressBar {
 		return tea.NewProgressBar(tea.ProgressBarError, done*percent/len(steps))
 	case state.PhaseBringingUp:
 		return tea.NewProgressBar(tea.ProgressBarDefault, done*percent/len(steps))
-	case state.PhaseReading, state.PhaseStopping, state.PhaseStopped, state.PhaseUp, state.PhaseDown:
+	case state.PhaseReading, state.PhaseChecking, state.PhaseStopping, state.PhaseStopped, state.PhaseUp,
+		state.PhaseDown:
 	}
 	return nil
 }

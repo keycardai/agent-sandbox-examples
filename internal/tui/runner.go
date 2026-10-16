@@ -89,19 +89,27 @@ func pollTick() tea.Cmd {
 // startBringUp runs the steps from index from on, one after another, in the
 // background. With recreate, the cluster step deletes the cluster and
 // creates it again. A failed step stops the run, except the checks: the
-// sandbox is up even when a check fails.
+// sandbox is up even when a check fails. From the checks, the last step, it
+// runs the checks alone.
 func (m *model) startBringUp(from int, recreate bool) {
 	if from >= len(m.state.Steps) {
 		return
 	}
+	kind := state.JobBringUp
+	if m.state.Steps[from].Step.ID == sandbox.StepChecks {
+		kind = state.JobChecks
+	}
 	ctx, cancel := context.WithCancel(m.ctx)
-	if !m.state.StartJob(state.Job{Kind: state.JobBringUp, From: from}, cancel) {
+	if !m.state.StartJob(state.Job{Kind: kind, From: from}, cancel) {
 		cancel()
 		return
 	}
-	if from == 0 {
+	switch {
+	case kind == state.JobChecks:
+		m.state.Record("▸", "Running the checks")
+	case from == 0:
 		m.state.Record("▸", "Bring-up started")
-	} else {
+	default:
 		m.state.Record("▸", "Bring-up started again at: "+m.state.Steps[from].Step.Title)
 	}
 	m.state.StartSteps(from)
@@ -234,7 +242,7 @@ func (m *model) onBringUpDone(msg bringUpDoneMsg) tea.Cmd {
 			m.ui.Notify("The bring-up stopped: "+component.FirstLine(msg.err.Error()), true)
 		}
 		m.state.Record("✕", "Bring-up stopped")
-	case m.state.Steps[ended.From].Step.ID == sandbox.StepChecks:
+	case ended.Is(state.JobChecks):
 	default:
 		m.state.Record("✓", "The sandbox is up")
 		m.notifyUp()
@@ -261,6 +269,10 @@ func (m *model) notifyUp() {
 }
 
 func (m *model) toggleBringUp() {
+	if m.state.Job.Is(state.JobChecks) {
+		m.confirm("Stop the checks?", "The check that runs now is canceled.", stopBringUpMsg{})
+		return
+	}
 	if !m.state.Job.Is(state.JobBringUp) {
 		if m.busy() {
 			return
@@ -281,7 +293,7 @@ func (m *model) toggleBringUp() {
 func (m *model) updateAnswers(msg tea.Msg) bool {
 	switch msg := msg.(type) {
 	case stopBringUpMsg:
-		if m.state.Job.Is(state.JobBringUp) {
+		if m.state.Job.RunsSteps() {
 			m.state.CancelJob()
 		}
 	case recreateClusterMsg:
@@ -298,9 +310,9 @@ func (m *model) updateAnswers(msg tea.Msg) bool {
 }
 
 // stopAllNow stops everything, then quits with quit, unless a job other
-// than a bring-up runs.
+// than a bring-up or the checks runs.
 func (m *model) stopAllNow(quit bool) {
-	if !m.state.Job.Is(state.JobBringUp) && m.busy() {
+	if !m.state.Job.RunsSteps() && m.busy() {
 		return
 	}
 	m.stopEverything(quit)
@@ -367,10 +379,11 @@ func (m *model) restartPod() {
 	m.runAction(job, m.session.RestartAgent)
 }
 
-// stopAll asks, then stops everything. A running bring-up stops first.
-// On an existing cluster, the TUI did not start anything that D stops.
+// stopAll asks, then stops everything. A running bring-up or checks run
+// stops first. On an existing cluster, the TUI did not start anything that
+// D stops.
 func (m *model) stopAll() {
-	if !m.state.Job.Is(state.JobBringUp) && m.busy() {
+	if !m.state.Job.RunsSteps() && m.busy() {
 		return
 	}
 	if m.session.Local().Existing() {
@@ -392,15 +405,19 @@ func (m *model) askStopAll(quit bool) {
 }
 
 // stopEverything stops the tunnel and the mirror and deletes the cluster,
-// then quits with quit. A running bring-up stops first, and
+// then quits with quit. A running bring-up or checks run stops first, and
 // onBringUpDone stops everything once it has.
 func (m *model) stopEverything(quit bool) {
 	// A question about the cluster's issuer is gone with the cluster.
 	m.waiting = nil
-	if m.state.Job.Is(state.JobBringUp) {
+	if m.state.Job.RunsSteps() {
+		what := "the bring-up"
+		if m.state.Job.Is(state.JobChecks) {
+			what = "the checks"
+		}
 		m.state.StopAfterJob(quit)
 		m.state.CancelJob()
-		m.ui.Notify("Stopping the bring-up first…", false)
+		m.ui.Notify("Stopping "+what+" first…", false)
 		return
 	}
 	m.runAction(state.Job{Kind: state.JobStop, Name: "Stopping everything", QuitAfter: quit}, m.session.Down)

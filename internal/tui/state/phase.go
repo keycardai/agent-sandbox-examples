@@ -9,6 +9,9 @@ const (
 	PhaseReading Phase = iota
 	// PhaseBringingUp is a bring-up that runs.
 	PhaseBringingUp
+	// PhaseChecking is the checks running alone, against the sandbox as it
+	// is.
+	PhaseChecking
 	// PhaseStopping is D stopping everything.
 	PhaseStopping
 	// PhaseStopped is a bring-up the operator stopped at a step.
@@ -28,6 +31,8 @@ func (s *Sandbox) Phase() (Phase, *StepRow) {
 	switch {
 	case s.Job.Is(JobBringUp):
 		return PhaseBringingUp, nil
+	case s.Job.Is(JobChecks):
+		return PhaseChecking, nil
 	case s.Job.Is(JobStop):
 		return PhaseStopping, nil
 	}

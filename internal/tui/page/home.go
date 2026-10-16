@@ -37,7 +37,7 @@ func NewHome(ui *UI, sandbox *state.Sandbox) *Home { return &Home{view{ui: ui, s
 // View draws Home for how the sandbox is.
 func (h *Home) View() string {
 	switch phase, row := h.state.Phase(); phase {
-	case state.PhaseBringingUp:
+	case state.PhaseBringingUp, state.PhaseChecking:
 		return h.bringUp()
 	case state.PhaseStopping:
 		return h.ui.Styles.Muted.Render(h.ui.spinner() + " Stopping everything…")
@@ -55,7 +55,7 @@ func (h *Home) View() string {
 // Hints lists Home's keys for how the sandbox is.
 func (h *Home) Hints() []component.Hint {
 	switch phase, _ := h.state.Phase(); phase {
-	case state.PhaseBringingUp:
+	case state.PhaseBringingUp, state.PhaseChecking:
 		return []component.Hint{
 			{Key: "u", Desc: "stop"},
 			{Key: "?", Desc: wordKeys},
@@ -102,7 +102,7 @@ func (h *Home) bringUp() string {
 		title += " from: " + h.state.Steps[from].Step.Title
 	}
 	lines := []string{}
-	if current.Step.ID == sandbox.StepChecks && h.state.Job.From == h.state.Cursor {
+	if h.state.Job.Is(state.JobChecks) {
 		title, note = "Running the checks", "Each check sends a request from the agent and reads what came back."
 	} else {
 		lines = append(lines, "")

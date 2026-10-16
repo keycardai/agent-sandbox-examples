@@ -93,6 +93,43 @@ func TestStepsFollowTheBringUp(t *testing.T) {
 	}
 }
 
+// TestChecksAlone says that the checks run, and not a bring-up, when c
+// runs them on a sandbox that is up: in the band, the terminal's progress,
+// Home, the quit dialog and the question u asks. The model's context ends
+// at once, so the checks' work stops and the test reads only the screens.
+func TestChecksAlone(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	root := newModel(ctx, testSession(t))
+	root.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	root.state.Status = sandbox.Status{Deployed: true, ClusterExists: true}
+	root.state.Status.Tunnel.Running, root.state.Read = true, true
+	root.Update(press("c"))
+	if !root.state.Job.Is(state.JobChecks) {
+		t.Fatalf("job = %+v, want the checks", root.state.Job)
+	}
+	badge := ansi.Strip(root.statusBadge())
+	if !strings.Contains(badge, "running the checks") || strings.Contains(badge, "bringing up") {
+		t.Errorf("badge = %q, want it to say the checks run", badge)
+	}
+	if bar := root.progress(); bar != nil {
+		t.Errorf("progress = %+v, want none for the checks", bar)
+	}
+	if view := ansi.Strip(root.View().Content); !strings.Contains(view, "Running the checks") {
+		t.Errorf("Home does not say the checks run:\n%s", view)
+	}
+	root.Update(press("q"))
+	if view := ansi.Strip(root.View().Content); !strings.Contains(view, "The checks are running") {
+		t.Errorf("the quit dialog does not say the checks run:\n%s", view)
+	}
+	root.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	root.Update(press("u"))
+	if root.overlay.title != "Stop the checks?" {
+		t.Errorf("u asks %q, want it to ask to stop the checks", root.overlay.title)
+	}
+}
+
 // TestRecreateAsks offers to recreate a cluster made for another issuer
 // URL, or one the kubeconfig has no context for, and says which. Recreating
 // deletes the cluster, so only y says yes: enter says no.
@@ -186,7 +223,7 @@ func TestChecksThatDidNotRun(t *testing.T) {
 			root.state.Job, root.ui.Toast.Text)
 	}
 	last := len(root.state.Steps) - 1
-	root.state.Job = state.Job{Kind: state.JobBringUp, From: last}
+	root.state.Job = state.Job{Kind: state.JobChecks, From: last}
 	root.Update(stepStartMsg{index: last})
 	root.Update(stepDoneMsg{index: last, err: sandbox.ErrPod})
 	root.Update(bringUpDoneMsg{})
