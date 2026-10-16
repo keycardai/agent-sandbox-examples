@@ -70,7 +70,7 @@ func (m *model) updateBackground(msg tea.Msg) (tea.Cmd, bool) {
 	}
 	switch msg := msg.(type) {
 	case style.GlintMsg:
-		return m.welcome.Glint.Move(msg.Now, m.screen == screenWelcome && m.welcome.Checking()), true
+		return m.welcome.Glint.Move(msg.Now, m.screen == screenWelcome && m.state.Preflight.Checking()), true
 	case frameMsg:
 		m.ui.Frame++
 		return tea.Batch(frameTick(), m.welcomeGlint()), true
@@ -116,8 +116,8 @@ func (m *model) updateJobs(msg tea.Msg) (tea.Cmd, bool) {
 // updateOnboarding handles what the machine checks and the setup report.
 func (m *model) updateOnboarding(msg tea.Msg) (tea.Cmd, bool) {
 	switch msg := msg.(type) {
-	case page.CheckDoneMsg:
-		return m.welcome.OnCheck(msg), true
+	case checkDoneMsg:
+		return m.onCheck(msg), true
 	case page.SectionMsg:
 		m.setup.OnSection(msg)
 	case setupDoneMsg:
@@ -135,7 +135,7 @@ func (m *model) updateOnboarding(msg tea.Msg) (tea.Cmd, bool) {
 // welcomeGlint starts the sheen across the mark while the welcome screen
 // checks the machine, however the screen came to show.
 func (m *model) welcomeGlint() tea.Cmd {
-	if m.screen != screenWelcome || !m.welcome.Checking() {
+	if m.screen != screenWelcome || !m.state.Preflight.Checking() {
 		return nil
 	}
 	return m.welcome.Glint.Start()
@@ -400,10 +400,10 @@ func (m *model) switchDemo(name string) {
 func (m *model) welcomeKeys(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case msg.String() == component.KeyEnter:
-		m.startWizard(screenWelcome, nil, m.welcome.Fix...)
+		m.startWizard(screenWelcome, nil, m.state.FixSections()...)
 	case key.Matches(msg, m.ui.Keys.Setup) && !m.state.FirstRun():
 		m.showSettings(screenWelcome)
-	case msg.String() == "r" && !m.welcome.Checking():
+	case msg.String() == "r" && !m.state.Preflight.Checking():
 		return m.checkAgain()
 	}
 	return nil
@@ -417,7 +417,7 @@ func (m *model) checkAgain() tea.Cmd {
 		m.screen = screenReview
 		return nil
 	}
-	return m.welcome.Open()
+	return m.startPreflight()
 }
 
 // reviewKeys handles a key on the review screen.
@@ -463,7 +463,7 @@ func (m *model) settingsKeys(msg tea.KeyPressMsg) tea.Cmd {
 // problems the settings have.
 func (m *model) openWelcome() tea.Cmd {
 	m.screen = screenWelcome
-	return m.welcome.Open()
+	return m.startPreflight()
 }
 
 // startWizard lays the rail out and starts the setup for the sections, or

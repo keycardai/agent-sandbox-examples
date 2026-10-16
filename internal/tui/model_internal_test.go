@@ -307,9 +307,13 @@ func TestFirstRunWelcome(t *testing.T) {
 	t.Parallel()
 	root := testModel(t)
 	root.screen = screenWelcome
-	root.welcome.Preflight([]sandbox.PreflightItem{{Name: sampleCheck}, {Name: sampleTools}})
+	root.preflight([]sandbox.PreflightItem{{Name: sampleCheck}, {Name: sampleTools}})
 	root.Update(
-		page.CheckDoneMsg{Run: root.welcome.Run(), Index: 0, Check: sandbox.Check{Name: sampleCheck, Detail: sampleDocker}},
+		checkDoneMsg{
+			run:   root.state.Preflight.Run,
+			index: 0,
+			check: sandbox.Check{Name: sampleCheck, Detail: sampleDocker},
+		},
 	)
 	mark := style.Logo(root.ui.Styles, root.ui.Background, style.Glint{})
 	view := ansi.Strip(root.View().Content)

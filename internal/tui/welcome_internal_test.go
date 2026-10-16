@@ -20,9 +20,9 @@ func welcomeModel(t *testing.T, width, height int, checks ...sandbox.Check) *mod
 	t.Helper()
 	root := testModel(t)
 	root.screen = screenWelcome
-	root.welcome.Preflight([]sandbox.PreflightItem{{Name: sampleCheck}, {Name: sampleTools}})
+	root.preflight([]sandbox.PreflightItem{{Name: sampleCheck}, {Name: sampleTools}})
 	for i, check := range checks {
-		root.Update(page.CheckDoneMsg{Run: root.welcome.Run(), Index: i, Check: check})
+		root.Update(checkDoneMsg{run: root.state.Preflight.Run, index: i, check: check})
 	}
 	root.Update(tea.WindowSizeMsg{Width: width, Height: height})
 	return root
@@ -180,9 +180,9 @@ func TestQuitWithNothingRunning(t *testing.T) {
 func TestWelcomeDropsAnEarlierRun(t *testing.T) {
 	t.Parallel()
 	root := welcomeModel(t, 120, 40)
-	earlier := root.welcome.Run()
-	root.welcome.Preflight([]sandbox.PreflightItem{{Name: sampleCheck}, {Name: sampleTools}})
-	root.Update(page.CheckDoneMsg{Run: earlier, Index: 0, Check: sandbox.Check{Name: sampleCheck, Detail: "stale"}})
+	earlier := root.state.Preflight.Run
+	root.preflight([]sandbox.PreflightItem{{Name: sampleCheck}, {Name: sampleTools}})
+	root.Update(checkDoneMsg{run: earlier, index: 0, check: sandbox.Check{Name: sampleCheck, Detail: "stale"}})
 	if view := ansi.Strip(root.View().Content); strings.Contains(view, "stale") {
 		t.Errorf("the screen shows a result from the earlier run:\n%s", view)
 	}

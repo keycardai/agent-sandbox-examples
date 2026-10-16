@@ -42,6 +42,8 @@ type Sandbox struct {
 	Problems    []error
 	KeychainErr error
 	SetupErr    error
+	// Preflight is the last run of the machine checks.
+	Preflight Preflight
 
 	// Loaded is the demo the settings name, once it loaded. Demos is every
 	// demo in the checkout that loads, read once, and DemosErr says why any
@@ -113,9 +115,6 @@ func (s *Sandbox) RefreshSettings() {
 
 // FirstRun reports whether the settings were never written.
 func (s *Sandbox) FirstRun() bool { return !s.Local().Initialized() }
-
-// PreflightItems are the machine checks the bring-up needs.
-func (s *Sandbox) PreflightItems() []sandbox.PreflightItem { return s.session.PreflightItems() }
 
 // Record adds an event to the activity log: the time, a mark and what
 // happened. ✓ is done, ✕ failed, ▸ started and • a note.

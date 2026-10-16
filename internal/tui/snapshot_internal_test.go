@@ -146,7 +146,7 @@ func snapshotChecks() []sandbox.PreflightItem {
 // checked reports the results of the machine checks, from the first.
 func checked(root *model, checks ...sandbox.Check) {
 	for i, check := range checks {
-		root.Update(page.CheckDoneMsg{Run: root.welcome.Run(), Index: i, Check: check})
+		root.Update(checkDoneMsg{run: root.state.Preflight.Run, index: i, check: check})
 	}
 }
 
@@ -156,7 +156,7 @@ func snapshotWelcome(t *testing.T) *model {
 	t.Helper()
 	root := snapshotModel(t)
 	root.screen = screenWelcome
-	root.welcome.Preflight(snapshotChecks())
+	root.preflight(snapshotChecks())
 	checked(root, sandbox.Check{Name: sampleCheck, Detail: sampleDocker},
 		sandbox.Check{Name: sampleImages, Detail: "the release v0.2.1 from ghcr.io/keycardai"})
 	root.ui.Background = snapshotBackground
@@ -182,7 +182,7 @@ func readyChecks() []sandbox.Check {
 func snapshotReady(t *testing.T) *model {
 	t.Helper()
 	root := snapshotWelcome(t)
-	root.welcome.Preflight(snapshotChecks())
+	root.preflight(snapshotChecks())
 	checked(root, readyChecks()...)
 	return root
 }
@@ -196,7 +196,7 @@ func snapshotNotReady(t *testing.T) *model {
 		Name: sampleCheck, State: sandbox.CheckFailed, Detail: "Docker is not running",
 		Fix: "Start OrbStack or Docker Desktop.",
 	}
-	root.welcome.Preflight(snapshotChecks())
+	root.preflight(snapshotChecks())
 	checked(root, checks...)
 	return root
 }
@@ -224,10 +224,10 @@ func snapshotFix(t *testing.T) *model {
 		t.Fatal("ParseValues passed, want the error about resources[2]")
 	}
 	root.state.Problems = []error{fmt.Errorf("zone-setup.yaml: %w", err)}
-	root.Update(page.CheckDoneMsg{Run: root.welcome.Run(), Index: 2, Check: sandbox.Check{
+	root.Update(checkDoneMsg{run: root.state.Preflight.Run, index: 2, check: sandbox.Check{
 		Name: sampleTools, Detail: "k3d, kubectl, helm and cloudflared, as mise.toml pins them",
 	}})
-	root.Update(page.CheckDoneMsg{Run: root.welcome.Run(), Index: 3, Check: sandbox.Check{
+	root.Update(checkDoneMsg{run: root.state.Preflight.Run, index: 3, check: sandbox.Check{
 		Name: sampleAccount, Detail: "KEYCARD_CLIENT_ID and KEYCARD_CLIENT_SECRET are set",
 	}})
 	return root

@@ -93,6 +93,10 @@ type model struct {
 	stale       bool
 	// trafficStop stops following the proxy's audit log.
 	trafficStop context.CancelFunc
+	// preflightCtx is what the machine checks of the last run go on in, and
+	// preflightStop ends it.
+	preflightCtx  context.Context //nolint:containedctx // The checks of one run go on across messages.
+	preflightStop context.CancelFunc
 	// shownPod is the selected agent's pod, which Home shows.
 	shownPod string
 
@@ -169,7 +173,7 @@ func newModel(ctx context.Context, session *sandbox.Session) *model {
 func (m *model) shutdown(cancel context.CancelFunc) {
 	cancel()
 	m.stopSetup()
-	m.welcome.Stop()
+	m.stopPreflight()
 	done := make(chan struct{})
 	go func() {
 		m.jobs.Wait()

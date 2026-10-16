@@ -2,14 +2,10 @@ package page
 
 import (
 	"cmp"
-	"context"
 	"errors"
-	"slices"
 	"strconv"
 	"strings"
-	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
@@ -24,10 +20,6 @@ const (
 	checkNameWidth = 18
 	// markGap is the space between the Keycard mark and the text beside it.
 	markGap = 4
-	// minCheck is the least time a machine check shows its spinner.
-	minCheck = 350 * time.Millisecond
-	// checkTimeout bounds one machine check.
-	checkTimeout = 10 * time.Second
 	// stepColumns is the most columns the setup's steps take on the welcome
 	// screen, and stepGap the space after each.
 	stepColumns = 3
@@ -55,90 +47,20 @@ const (
 	detailLeast
 )
 
-// CheckDoneMsg is one machine check's result.
-type CheckDoneMsg struct {
-	// Run is the run of the checks the check is part of.
-	Run   int
-	Index int
-	Check sandbox.Check
-}
-
 // Welcome greets a first run, or says what the settings lack. It shows
 // the Keycard mark beside what the sandbox does, checks the machine, and
 // lists the setup's steps.
 type Welcome struct {
 	view
 
-	// Fix lists the sections setup asks to fix the problems. Empty asks
-	// every section, as on a first run.
-	Fix []string
 	// Glint is the sheen across the Keycard mark while the machine checks
 	// run.
-	Glint    style.Glint
-	items    []sandbox.PreflightItem
-	checks   []sandbox.Check
-	checking bool
-	// run counts the runs of the checks, so that a result from an earlier
-	// run is dropped. The checks of the run go on in ctx, and stop ends it.
-	run  int
-	ctx  context.Context //nolint:containedctx // The checks of one run go on across messages.
-	stop context.CancelFunc
+	Glint style.Glint
 }
 
 // NewWelcome returns the welcome screen.
 func NewWelcome(ui *UI, sandbox *state.Sandbox) *Welcome {
 	return &Welcome{ui: ui, state: sandbox}
-}
-
-// Open finds the sections that fix the settings' problems, and runs the
-// machine checks.
-func (w *Welcome) Open() tea.Cmd {
-	w.Fix = nil
-	for _, problem := range w.state.Problems {
-		section := sandbox.ProblemSection(problem)
-		if section == "" {
-			w.Fix = nil
-			break
-		}
-		if !slices.Contains(w.Fix, section) {
-			w.Fix = append(w.Fix, section)
-		}
-	}
-	return w.Preflight(w.state.PreflightItems())
-}
-
-// Preflight runs the machine checks in items one after another in the
-// background, so the screen shows each as it runs. It stops the checks of
-// the run before.
-func (w *Welcome) Preflight(items []sandbox.PreflightItem) tea.Cmd {
-	w.Stop()
-	w.ctx, w.stop = context.WithCancel(context.Background())
-	w.run++
-	w.items, w.checks = items, nil
-	return w.nextCheck()
-}
-
-// Stop ends the machine checks that run.
-func (w *Welcome) Stop() {
-	if w.stop != nil {
-		w.stop()
-	}
-}
-
-// Run is the number of the checks' run, which each CheckDoneMsg of the run
-// carries.
-func (w *Welcome) Run() int { return w.run }
-
-// OnCheck keeps a check's result, and starts the next check. It drops a
-// result from an earlier run.
-func (w *Welcome) OnCheck(msg CheckDoneMsg) tea.Cmd {
-	if msg.Run != w.run || msg.Index != len(w.checks) {
-		return nil
-	}
-	w.checks = append(w.checks, msg.Check)
-	mark := map[sandbox.CheckState]string{sandbox.CheckOK: "✓", sandbox.CheckNote: "•", sandbox.CheckFailed: "✕"}
-	w.state.Record(mark[msg.Check.State], msg.Check.Name+": "+msg.Check.Detail)
-	return w.nextCheck()
 }
 
 // View shows the Keycard mark beside what the sandbox does, checks the
@@ -174,33 +96,6 @@ func (w *Welcome) Hints() []component.Hint {
 		{Key: "e", Desc: "all settings"},
 		{Key: "r", Desc: "check again"},
 		{Key: "q", Desc: wordQuit},
-	}
-}
-
-// Checking reports whether a machine check has no result yet.
-func (w *Welcome) Checking() bool {
-	return w.checking || len(w.checks) < len(w.items)
-}
-
-// nextCheck runs the first check that has no result yet. Each check shows
-// for at least minCheck, so a fast one does not flash past.
-func (w *Welcome) nextCheck() tea.Cmd {
-	index := len(w.checks)
-	if index >= len(w.items) {
-		w.checking = false
-		return nil
-	}
-	w.checking = true
-	item, run, base := w.items[index], w.run, w.ctx
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(base, checkTimeout)
-		defer cancel()
-		started := time.Now()
-		check := item.Run(ctx)
-		if wait := minCheck - time.Since(started); wait > 0 {
-			time.Sleep(wait)
-		}
-		return CheckDoneMsg{Run: run, Index: index, Check: check}
 	}
 }
 
@@ -240,23 +135,12 @@ func (w *Welcome) lead(width, detail int) []string {
 func (w *Welcome) machineTitle() string {
 	theme := w.ui.Styles
 	switch {
-	case w.Checking():
+	case w.state.Preflight.Checking():
 		return theme.SectionTitle.Render("This machine")
-	case w.failedChecks() > 0:
+	case w.state.Preflight.Failed() > 0:
 		return theme.Attention.Bold(true).Render("This machine is not ready")
 	}
 	return theme.SectionTitle.Render("This machine is ready")
-}
-
-// failedChecks counts the machine checks that failed.
-func (w *Welcome) failedChecks() int {
-	failed := 0
-	for _, check := range w.checks {
-		if check.State == sandbox.CheckFailed {
-			failed++
-		}
-	}
-	return failed
 }
 
 // setupPreview lists the steps setup goes through, numbered as the wizard
@@ -291,7 +175,7 @@ func (w *Welcome) setupPreview(width int) string {
 // does not need the machine, so enter works either way.
 func (w *Welcome) action(width int) string {
 	theme := w.ui.Styles
-	if w.Checking() {
+	if w.state.Preflight.Checking() {
 		return theme.Running.Render(w.ui.spinner() + " Checking this machine…")
 	}
 	verb := "Start setup"
@@ -299,7 +183,7 @@ func (w *Welcome) action(width int) string {
 		verb = "Fix the settings"
 	}
 	action := theme.KeyChip.Render(component.KeyEnter) + " " + theme.Title.Render(verb)
-	if w.failedChecks() == 0 {
+	if w.state.Preflight.Failed() == 0 {
 		return action
 	}
 	note := lipgloss.NewStyle().Width(width).Render(theme.Attention.Render(
@@ -358,13 +242,14 @@ func (w *Welcome) diagram() string {
 func (w *Welcome) checkList(width int) string {
 	theme := w.ui.Styles
 	wrap := lipgloss.NewStyle().Width(max(width-checkNameWidth-component.BorderCols, 1))
-	lines := make([]string, 0, len(w.items))
-	for i, item := range w.items {
+	run := w.state.Preflight
+	lines := make([]string, 0, len(run.Items))
+	for i, item := range run.Items {
 		icon, name, text := theme.Faint.Render("·"), theme.Dim.Render(item.Name), theme.Faint.Render("waiting")
 		switch {
-		case i < len(w.checks):
-			icon, name, text = w.checkResult(w.checks[i])
-		case i == len(w.checks) && w.checking:
+		case i < len(run.Results):
+			icon, name, text = w.checkResult(run.Results[i])
+		case i == len(run.Results):
 			icon = theme.Running.Render(w.ui.spinner())
 			name, text = theme.Text.Render(item.Name), theme.Running.Render("checking…")
 		}
