@@ -203,33 +203,52 @@ func ReadableLine(line string) string {
 // Store keeps the proxy's records for one pod. A follower adds them and the
 // TUI reads them, so it locks.
 type Store struct {
-	mu      sync.Mutex
+	mu sync.Mutex
+	// records is a ring of up to maxRecords records, the oldest at start.
 	records []Record
+	start   int
 	pod     string
+	// version counts the changes, so that a reader can tell when the
+	// records changed.
+	version int
 }
 
-// Add keeps a record, and drops the oldest past maxRecords.
+// Add keeps a record. Once the store holds maxRecords, it replaces the
+// oldest.
 func (s *Store) Add(record Record) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.records = append(s.records, record)
-	if over := len(s.records) - maxRecords; over > 0 {
-		s.records = append([]Record(nil), s.records[over:]...)
+	if len(s.records) < maxRecords {
+		s.records = append(s.records, record)
+	} else {
+		s.records[s.start] = record
+		s.start = (s.start + 1) % maxRecords
 	}
+	s.version++
 }
 
 // Reset drops every record, and keeps the records of pod that come after.
 func (s *Store) Reset(pod string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.records, s.pod = nil, pod
+	s.records, s.start, s.pod = nil, 0, pod
+	s.version++
 }
 
-// Snapshot returns the records and the pod they are for.
+// Snapshot returns the records, oldest first, and the pod they are for.
 func (s *Store) Snapshot() ([]Record, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]Record(nil), s.records...), s.pod
+	records := make([]Record, 0, len(s.records))
+	records = append(records, s.records[s.start:]...)
+	return append(records, s.records[:s.start]...), s.pod
+}
+
+// Version returns how many times the records changed.
+func (s *Store) Version() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.version
 }
 
 // Counts are the DNS lookups the proxy answered, and how many of them it
