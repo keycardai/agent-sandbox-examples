@@ -210,9 +210,12 @@ func ReadableLine(line string) string {
 type Store struct {
 	mu sync.Mutex
 	// records is a ring of up to maxRecords records, the oldest at start.
+	// lookups counts the DNS lookups. A routine lookup is counted and not
+	// kept, so that the lookups do not push the requests out.
 	records []Record
 	start   int
 	pod     string
+	lookups Counts
 	// version counts the changes, so that a reader can tell when the
 	// records changed.
 	version int
@@ -220,18 +223,32 @@ type Store struct {
 	err error
 }
 
-// Add keeps a record. Once the store holds maxRecords, it replaces the
-// oldest.
-func (s *Store) Add(record Record) {
+// Add keeps a record of pod's proxy. A record of another pod comes from a
+// follower that stopped, and is dropped. A DNS lookup is counted, and a
+// routine one is not kept. Once the store holds maxRecords, a record
+// replaces the oldest.
+func (s *Store) Add(pod string, record Record) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if pod != s.pod {
+		return
+	}
+	s.version++
+	if record.Scope == ScopeDNS {
+		s.lookups.Lookups++
+		if record.Denied() {
+			s.lookups.LookupsDenied++
+		}
+	}
+	if record.RoutineLookup() {
+		return
+	}
 	if len(s.records) < maxRecords {
 		s.records = append(s.records, record)
 	} else {
 		s.records[s.start] = record
 		s.start = (s.start + 1) % maxRecords
 	}
-	s.version++
 }
 
 // Reset drops every record, and keeps the records of pod that come after.
@@ -242,7 +259,7 @@ func (s *Store) Reset(pod string) {
 	if pod != s.pod {
 		s.err = nil
 	}
-	s.records, s.start, s.pod = nil, 0, pod
+	s.records, s.start, s.pod, s.lookups = nil, 0, pod, Counts{}
 	s.version++
 }
 
@@ -262,7 +279,15 @@ func (s *Store) Err() error {
 	return s.err
 }
 
+// Lookups counts the DNS lookups of the pod since the last Reset.
+func (s *Store) Lookups() Counts {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lookups
+}
+
 // Snapshot returns the records, oldest first, and the pod they are for.
+// Routine DNS lookups are left out.
 func (s *Store) Snapshot() ([]Record, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -282,21 +307,6 @@ func (s *Store) Version() int {
 // refused.
 type Counts struct {
 	Lookups, LookupsDenied int
-}
-
-// Count counts the DNS lookups in records.
-func Count(records []Record) Counts {
-	var counts Counts
-	for _, record := range records {
-		if record.Scope != ScopeDNS {
-			continue
-		}
-		counts.Lookups++
-		if record.Denied() {
-			counts.LookupsDenied++
-		}
-	}
-	return counts
 }
 
 // EndpointUse is what the proxy did for one endpoint: how many requests it

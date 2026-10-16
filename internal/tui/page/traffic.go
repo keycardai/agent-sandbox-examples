@@ -31,7 +31,7 @@ func (v view) keycardLines() []string {
 	for _, use := range uses {
 		lines = append(lines, v.useLine(use))
 	}
-	return append(lines, v.blockedLine(blocked), v.lookupLine(proxylog.Count(records)))
+	return append(lines, v.blockedLine(blocked), v.lookupLine(v.state.Traffic.Lookups()))
 }
 
 // useLine is one endpoint: its resource, where it is, and what came of the

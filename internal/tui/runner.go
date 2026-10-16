@@ -616,7 +616,7 @@ func streamRecords(ctx context.Context, session *sandbox.Session, pod string, st
 	if err != nil {
 		return fmt.Errorf("following the proxy's log: %w", err)
 	}
-	readErr := readRecords(stdout, store)
+	readErr := readRecords(stdout, pod, store)
 	if err = cmd.Wait(); err != nil {
 		if text := strings.TrimSpace(stderr.String()); text != "" {
 			return fmt.Errorf("kubectl logs: %w: %s", err, component.FirstLine(text))
@@ -626,9 +626,9 @@ func streamRecords(ctx context.Context, session *sandbox.Session, pod string, st
 	return readErr
 }
 
-// readRecords reads the proxy's audit records from stdout into store. The
-// first line it reads clears the store's error.
-func readRecords(stdout io.Reader, store *proxylog.Store) error {
+// readRecords reads the audit records of pod's proxy from stdout into
+// store. The first line it reads clears the store's error.
+func readRecords(stdout io.Reader, pod string, store *proxylog.Store) error {
 	reading := false
 	err := component.ReadLines(stdout, func(line string) {
 		if !reading {
@@ -636,7 +636,7 @@ func readRecords(stdout io.Reader, store *proxylog.Store) error {
 			store.SetErr(nil)
 		}
 		if record, ok := proxylog.Parse([]byte(line)); ok {
-			store.Add(record)
+			store.Add(pod, record)
 		}
 	})
 	if err != nil {

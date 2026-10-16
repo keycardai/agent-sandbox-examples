@@ -14,7 +14,7 @@ func TestStoreRing(t *testing.T) {
 	stamp := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
 	const extra = 3
 	for i := range maxRecords + extra {
-		store.Add(Record{TS: stamp.Add(time.Duration(i) * time.Second)})
+		store.Add("", Record{TS: stamp.Add(time.Duration(i) * time.Second)})
 	}
 	records, _ := store.Snapshot()
 	if len(records) != maxRecords || store.Version() != maxRecords+extra {
@@ -29,6 +29,33 @@ func TestStoreRing(t *testing.T) {
 	store.Reset("pod-2")
 	if records, pod := store.Snapshot(); len(records) != 0 || pod != "pod-2" {
 		t.Errorf("after Reset: %d records for %q, want none for pod-2", len(records), pod)
+	}
+}
+
+// TestStoreLookups counts every DNS lookup, keeps only the lookups that say
+// something, and drops the records of a pod the store no longer follows.
+func TestStoreLookups(t *testing.T) {
+	t.Parallel()
+	var store Store
+	store.Reset("pod-1")
+	lookup := func(host, verdict string) Record {
+		record := Record{Scope: ScopeDNS}
+		record.Destination.Host, record.Decision.Verdict = host, verdict
+		return record
+	}
+	store.Add("pod-1", lookup("github.com.", "allow"))
+	store.Add("pod-1", lookup("github.com.svc.cluster.local.", verdictDeny))
+	store.Add("pod-1", lookup("example.com.", verdictDeny))
+	store.Add("pod-2", lookup("example.org.", verdictDeny))
+	records, _ := store.Snapshot()
+	if counts := store.Lookups(); counts != (Counts{Lookups: 3, LookupsDenied: 2}) {
+		t.Errorf("Lookups = %+v, want 3 with 2 refused, and none of pod-2", counts)
+	}
+	if len(records) != 1 || records[0].Destination.Host != "example.com." {
+		t.Errorf("records = %+v, want only the refused lookup of a host on the internet", records)
+	}
+	if store.Reset("pod-1"); store.Lookups() != (Counts{}) {
+		t.Errorf("Lookups after Reset = %+v, want none", store.Lookups())
 	}
 }
 

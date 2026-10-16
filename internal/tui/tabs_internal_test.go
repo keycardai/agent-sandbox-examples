@@ -122,7 +122,7 @@ func upModel(t *testing.T) *model {
 	root.state.Agents = []sandbox.Agent{{Email: sampleUser, Pod: samplePod, Default: true}}
 	root.state.Traffic.Reset(samplePod)
 	for _, record := range sampleRecords(sampleTime()) {
-		root.state.Traffic.Add(record)
+		root.state.Traffic.Add(samplePod, record)
 	}
 	return root
 }
@@ -213,7 +213,7 @@ func TestServerErrorAfterCredential(t *testing.T) {
 	record := newRecord(time.Now(), scopeRequest, routerHost, "/api/v1/messages", verdictAllow, sampleAllowed,
 		routerEndpoint)
 	record.Outcome.Status = http.StatusNotFound
-	root.state.Traffic.Add(record)
+	root.state.Traffic.Add(samplePod, record)
 	view := ansi.Strip(root.View().Content)
 	for _, want := range []string{"1 request, credential added", "but the server answered 404 Not Found"} {
 		if !strings.Contains(view, want) {
@@ -229,9 +229,9 @@ func TestUnansweredRequests(t *testing.T) {
 	t.Parallel()
 	root := upModel(t)
 	stamp := sampleTime().Add(5 * time.Second)
-	root.state.Traffic.Add(newRecord(stamp, scopeRequest, "github.com", "/org/repo.git/info/refs", verdictDeny,
+	root.state.Traffic.Add(samplePod, newRecord(stamp, scopeRequest, "github.com", "/org/repo.git/info/refs", verdictDeny,
 		reasonUnanswered, "github.com:443/"))
-	root.state.Traffic.Add(newRecord(stamp, scopeRequest, githubHost, "/user", verdictDeny, reasonUnanswered,
+	root.state.Traffic.Add(samplePod, newRecord(stamp, scopeRequest, githubHost, "/user", verdictDeny, reasonUnanswered,
 		githubEndpoint))
 	view := ansi.Strip(root.View().Content)
 	for target, wants := range map[string][]string{
