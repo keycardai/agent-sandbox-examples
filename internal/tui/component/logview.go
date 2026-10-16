@@ -16,8 +16,10 @@ import (
 // shows from its first line instead.
 type LogView struct {
 	logs map[string]*Log
-	// paint colors the lines of the log named source.
-	paint func(source string, lines []string) []string
+	// paint colors the lines of the log named source, and painted holds
+	// each line of the log that shows as paint colored it.
+	paint   func(source string, lines []string) []string
+	painted map[string]string
 	// fromTop names the logs that show from their first line.
 	fromTop  map[string]bool
 	viewport viewport.Model
@@ -33,8 +35,9 @@ type LogView struct {
 }
 
 // NewLogView returns a log view that colors each log's lines with paint.
-// Its keys leave out the letters the TUI binds, such as u, which brings the
-// sandbox up.
+// paint must color each line on its own, since the view colors a line once
+// and keeps it. Its keys leave out the letters the TUI binds, such as u,
+// which brings the sandbox up.
 func NewLogView(paint func(source string, lines []string) []string) *LogView {
 	search := textinput.New()
 	search.Prompt = "/"
@@ -85,7 +88,7 @@ func (v *LogView) Show(name string) {
 	if v.source == name {
 		return
 	}
-	v.source, v.follow = name, !v.fromTop[name]
+	v.source, v.follow, v.painted = name, !v.fromTop[name], nil
 	v.Refresh(true)
 	if !v.follow {
 		v.viewport.GotoTop()
@@ -108,7 +111,7 @@ func (v *LogView) Refresh(force bool) {
 	if v.filter != "" {
 		lines = filterLines(lines, v.filter)
 	}
-	v.viewport.SetContentLines(v.paint(v.source, lines))
+	v.viewport.SetContentLines(v.paintLines(lines))
 	switch {
 	case written && v.fromTop[v.source]:
 		v.follow = false
@@ -205,6 +208,32 @@ func (v *LogView) SearchView() string { return v.search.View() }
 
 // View draws the viewport.
 func (v *LogView) View() string { return v.viewport.View() }
+
+// paintLines colors lines. It paints only the lines it has not painted
+// for this log before, and keeps the colored lines for the next refresh.
+func (v *LogView) paintLines(lines []string) []string {
+	var fresh []string
+	for _, line := range lines {
+		if _, ok := v.painted[line]; !ok {
+			fresh = append(fresh, line)
+		}
+	}
+	painted := make(map[string]string, len(lines))
+	for i, line := range v.paint(v.source, fresh) {
+		painted[fresh[i]] = line
+	}
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		text, ok := painted[line]
+		if !ok {
+			text = v.painted[line]
+			painted[line] = text
+		}
+		out[i] = text
+	}
+	v.painted = painted
+	return out
+}
 
 // filterLines keeps the lines that hold query, in any case.
 func filterLines(lines []string, query string) []string {

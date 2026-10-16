@@ -3,12 +3,14 @@ package component
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // TestLog splits writes into lines, keeps a partial line, shows what a
@@ -156,6 +158,35 @@ func TestTailFile(t *testing.T) {
 	waitFor("first|second")
 	write("new\n")
 	waitFor("new")
+}
+
+// TestLogViewPaintsNewLines colors only the lines a refresh has not
+// colored before, and colors every line again for another log.
+func TestLogViewPaintsNewLines(t *testing.T) {
+	t.Parallel()
+	var painted []int
+	view := NewLogView(func(_ string, lines []string) []string {
+		painted = append(painted, len(lines))
+		out := make([]string, len(lines))
+		for i, line := range lines {
+			out[i] = "*" + line
+		}
+		return out
+	})
+	view.SetSize(40, 10)
+	view.Log("a").Add("one", "two", "three")
+	view.Log("b").Add("other")
+	view.Show("a")
+	view.Log("a").Add("four")
+	view.Refresh(false)
+	view.Show("b")
+	if want := []int{3, 1, 1}; !slices.Equal(painted, want) {
+		t.Errorf("painted %v lines at a time, want %v", painted, want)
+	}
+	view.Show("a")
+	if got := ansi.Strip(view.View()); !strings.Contains(got, "*one") || !strings.Contains(got, "*four") {
+		t.Errorf("view = %q, want every line colored", got)
+	}
 }
 
 // TestLogViewSearch shows the lines that hold the search, in any case.
