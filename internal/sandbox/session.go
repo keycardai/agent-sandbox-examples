@@ -526,12 +526,15 @@ func (s *Session) Status(ctx context.Context) Status {
 // clusterBuilt reports whether the cluster exists. An existing cluster
 // always does. Without a cluster name in the settings, there is no cluster.
 func clusterBuilt(ctx context.Context, local *Local) (bool, error) {
-	if local.Existing() {
+	switch {
+	case local.Existing():
 		return true, nil
+	case local.Settings[KeyCluster] == "":
+		return false, nil
 	}
 	cluster, err := local.cluster("")
 	if err != nil {
-		return false, nil //nolint:nilerr // No cluster name means no cluster, which is not a failed check.
+		return false, err
 	}
 	return local.clusterExists(ctx, cluster)
 }

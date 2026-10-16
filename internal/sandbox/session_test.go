@@ -459,6 +459,32 @@ func TestSessionStatusCluster(t *testing.T) {
 	checkErr(t, got.ClusterErr, []error{sandbox.ErrDocker}, "something other than a cluster list")
 }
 
+// TestSessionStatusClusterName tells no cluster name, which means no
+// cluster, from a name k3d refuses, which is a problem to show.
+func TestSessionStatusClusterName(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		wantErr []error
+	}{
+		{"", nil},
+		{"Not_A_Cluster", []error{sandbox.ErrCluster}},
+	} {
+		local, _ := newLocal(t, sandbox.Settings{sandbox.KeyCluster: tc.name}, "")
+		local.Store = sandbox.NewStore(sandbox.NoConfig, &sandbox.Config{}, nil)
+		got := local.NewSession("127.0.0.1:8480", time.Second).Status(t.Context())
+		if got.ClusterExists {
+			t.Errorf("cluster %q: ClusterExists, want no cluster", tc.name)
+		}
+		if tc.wantErr == nil && got.ClusterErr != nil {
+			t.Errorf("cluster %q: ClusterErr = %v, want none", tc.name, got.ClusterErr)
+		}
+		if tc.wantErr != nil {
+			checkErr(t, got.ClusterErr, tc.wantErr, "lowercase letters")
+		}
+	}
+}
+
 // TestSessionReload reloads the settings while other goroutines read what
 // runs, as the TUI does. The race detector fails it when a reload changes
 // settings that a reader reads.
