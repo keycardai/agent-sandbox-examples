@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -667,6 +668,23 @@ func TestInitSaveFails(t *testing.T) {
 	}
 	if _, err = os.Stat(local.Store.Path()); !os.IsNotExist(err) {
 		t.Errorf("stat %s: %v, want no config file", local.Store.Path(), err)
+	}
+}
+
+// TestInitResaveFails reports the settings as not saved when saving them
+// again fails, since the config file still holds the ones saved before.
+func TestInitResaveFails(t *testing.T) {
+	t.Parallel()
+	run := firstRun(t)
+	if err := os.Chmod(run.local.Store.Path(), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	run.local.Ask = &scriptedAsker{t: t, answers: map[string][]string{changeQuestion: {sandbox.SectionCluster}}}
+	result, err := run.local.Init(t.Context())
+	checkErr(t, err, []error{sandbox.ErrNotSaved, fs.ErrPermission}, "")
+	if result.Saved || run.local.Store.Saved() {
+		t.Errorf("result.Saved = %t, Store.Saved = %t; want the settings reported as not saved",
+			result.Saved, run.local.Store.Saved())
 	}
 }
 
