@@ -97,6 +97,9 @@ func (m *model) updateJobs(msg tea.Msg) (tea.Cmd, bool) {
 // keyPress routes a key: to the overlay when one is open, else to Home.
 func (m *model) keyPress(msg tea.KeyPressMsg) tea.Cmd {
 	if cmd, handled := m.overlayKeys(msg); handled {
+		if m.overlay.kind == overlayNone && m.waiting != nil {
+			m.overlay, m.waiting = *m.waiting, nil
+		}
 		return cmd
 	}
 	switch {
@@ -177,6 +180,17 @@ func (m *model) quitKeys(msg tea.KeyPressMsg) tea.Cmd {
 // enter too, says no.
 func (m *model) confirm(title, body string, yes func() tea.Cmd) {
 	m.overlay = overlay{kind: overlayConfirm, title: title, body: body, confirm: yes}
+}
+
+// confirmLater is confirm for a question from background work. While
+// another overlay is open, the question waits for it to close, so that a
+// key meant for that overlay does not answer it.
+func (m *model) confirmLater(title, body string, yes func() tea.Cmd) {
+	if m.overlay.kind == overlayNone {
+		m.confirm(title, body, yes)
+		return
+	}
+	m.waiting = &overlay{kind: overlayConfirm, title: title, body: body, confirm: yes}
 }
 
 func (m *model) confirmKeys(msg tea.KeyPressMsg) tea.Cmd {

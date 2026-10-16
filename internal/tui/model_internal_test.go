@@ -286,6 +286,23 @@ func TestDownForgetsTheFailedStep(t *testing.T) {
 	}
 }
 
+// TestRecreateWaitsForTheQuitDialog keeps the quit dialog open when the
+// bring-up asks to recreate the cluster, and asks once the dialog closes.
+func TestRecreateWaitsForTheQuitDialog(t *testing.T) {
+	t.Parallel()
+	root := quietModel(t)
+	root.Update(press("q"))
+	root.Update(stepDoneMsg{index: 0, err: sandbox.ErrOtherIssuer})
+	if root.overlay.kind != overlayQuit {
+		t.Fatalf("overlay = %v while the quit dialog is open, want the quit dialog", root.overlay.kind)
+	}
+	root.Update(press("esc"))
+	if root.overlay.kind != overlayConfirm || root.overlay.title != "Recreate the cluster?" {
+		t.Errorf("after esc: overlay %v %q, want the question to recreate the cluster", root.overlay.kind,
+			root.overlay.title)
+	}
+}
+
 // TestNothingToStopOnAnExistingCluster says that D has nothing to stop on
 // an existing cluster, and does not ask to delete a k3d cluster.
 func TestNothingToStopOnAnExistingCluster(t *testing.T) {

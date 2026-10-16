@@ -182,7 +182,7 @@ func (m *model) onStepDone(msg stepDoneMsg) {
 	}
 	if errors.Is(msg.err, sandbox.ErrOtherIssuer) || errors.Is(msg.err, sandbox.ErrBrokenCluster) {
 		index := msg.index
-		m.confirm("Recreate the cluster?", recreateReason(msg.err), func() tea.Cmd {
+		m.confirmLater("Recreate the cluster?", recreateReason(msg.err), func() tea.Cmd {
 			m.startBringUp(index, true)
 			return nil
 		})
@@ -369,7 +369,9 @@ func (m *model) down() {
 		m.shared.Notify("Stopping the bring-up first…", false)
 		return
 	}
-	// The bring-up that stopped or failed before is gone with the sandbox.
+	// The bring-up that stopped or failed before is gone with the sandbox,
+	// and so is a question about its cluster.
+	m.waiting = nil
 	m.runActionThen("Stopping everything", m.shared.Session.Down, m.shared.ResetSteps)
 }
 

@@ -57,6 +57,9 @@ type model struct {
 	jobs sync.WaitGroup
 
 	overlay overlay
+	// waiting is a question that came from background work while another
+	// overlay was open. It opens once that overlay closes.
+	waiting *overlay
 
 	home *page.Home
 
