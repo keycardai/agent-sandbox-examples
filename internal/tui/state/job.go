@@ -63,6 +63,10 @@ func (s *Sandbox) StartJob(job Job, cancel context.CancelFunc) bool {
 	return true
 }
 
+// StopAfterJob makes the job that runs stop everything once it ends, and
+// with quit, quit after that.
+func (s *Sandbox) StopAfterJob(quit bool) { s.Job.StopAfter, s.Job.QuitAfter = true, quit }
+
 // EndJob ends the job that runs, and returns it.
 func (s *Sandbox) EndJob() Job {
 	ended := s.Job

@@ -398,7 +398,7 @@ func (m *model) stopEverything(quit bool) {
 	// A question about the cluster's issuer is gone with the cluster.
 	m.waiting = nil
 	if m.state.Job.Is(state.JobBringUp) {
-		m.state.Job.StopAfter, m.state.Job.QuitAfter = true, quit
+		m.state.StopAfterJob(quit)
 		m.state.CancelJob()
 		m.ui.Notify("Stopping the bring-up first…", false)
 		return

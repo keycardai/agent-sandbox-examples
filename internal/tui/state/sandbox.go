@@ -57,9 +57,16 @@ func New(session *sandbox.Session, logs func(source string) *component.Log) *San
 	return state
 }
 
-// Local is the session's settings, for reading them. The root model does
-// the work that changes the sandbox.
+// Local is the session's settings and machine. The pages read the
+// settings through Setting and the facts here, and the root model does the
+// work that changes the sandbox.
 func (s *Sandbox) Local() *sandbox.Local { return s.session.Local() }
+
+// Setting returns the setting of key, or "".
+func (s *Sandbox) Setting(key string) string { return s.Local().Settings[key] }
+
+// StartsTunnel reports whether the bring-up starts a quick tunnel.
+func (s *Sandbox) StartsTunnel() bool { return s.Local().StartsTunnel() }
 
 // Record adds an event to the activity log: the time, a mark and what
 // happened. ✓ is done, ✕ failed, ▸ started and • a note.
@@ -72,7 +79,7 @@ func (s *Sandbox) Record(mark, text string) {
 // starts a tunnel, that needs the tunnel. An existing cluster, or an issuer
 // the operator publishes, needs none.
 func (s *Sandbox) Up() bool {
-	return s.Status.Deployed && s.Status.ClusterExists && (s.Status.Tunnel.Running || !s.Local().StartsTunnel())
+	return s.Status.Deployed && s.Status.ClusterExists && (s.Status.Tunnel.Running || !s.StartsTunnel())
 }
 
 // SetStatus keeps what a read of the services and the cluster found.
@@ -122,7 +129,7 @@ func (s *Sandbox) Container(name string) (ContainerRow, bool) {
 
 // DemoName names the demo the settings name.
 func (s *Sandbox) DemoName() string {
-	return cmp.Or(s.Local().Settings[sandbox.KeyScenario], sandbox.DefaultScenario)
+	return cmp.Or(s.Setting(sandbox.KeyScenario), sandbox.DefaultScenario)
 }
 
 // Demo returns the demo the settings name, or why it does not load. It

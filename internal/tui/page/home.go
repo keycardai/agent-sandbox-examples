@@ -152,7 +152,7 @@ func (h *Home) down() string {
 	switch {
 	case h.state.Status.ClusterErr != nil:
 		why = "The cluster might exist. Checking it failed: " + component.FirstLine(h.state.Status.ClusterErr.Error())
-	case h.state.Status.ClusterExists && h.state.Local().StartsTunnel() && !h.state.Status.Tunnel.Running:
+	case h.state.Status.ClusterExists && h.state.StartsTunnel() && !h.state.Status.Tunnel.Running:
 		why = "The cluster exists, but the tunnel is stopped, so Keycard cannot reach the cluster's issuer. " +
 			"u starts a new tunnel. A quick tunnel gets a new URL, so the bring-up then asks to recreate the cluster."
 	case h.state.Status.ClusterExists:
@@ -216,10 +216,9 @@ func (u *UI) colorActivity(lines []string) []string {
 // does not hold any secrets.
 func (h *Home) agentHeadline() []string {
 	theme := h.ui.Styles
-	settings := h.state.Local().Settings
 	person, _ := h.state.Selected()
 	user := cmp.Or(person.Email, "the zone's user")
-	about := "It acts as " + user + " in zone " + shortHost(settings[sandbox.KeyZoneURL]) + ", and does not " +
+	about := "It acts as " + user + " in zone " + shortHost(h.state.Setting(sandbox.KeyZoneURL)) + ", and does not " +
 		"hold any secrets. The egress proxy asks Keycard for " + user + "'s credential on each request, and adds it on " +
 		"the way out."
 	name := h.agentName()
@@ -284,13 +283,12 @@ func (h *Home) checksScore() string {
 // contextLine names the demo, the zone, the user and the cluster.
 func (h *Home) contextLine() string {
 	theme := h.ui.Styles
-	settings := h.state.Local().Settings
 	parts := make([]string, 0, half*half)
 	for _, item := range [][2]string{
-		{"demo", cmp.Or(settings[sandbox.KeyScenario], sandbox.DefaultScenario)},
-		{"zone", shortHost(settings[sandbox.KeyZoneURL])},
+		{"demo", h.state.DemoName()},
+		{"zone", shortHost(h.state.Setting(sandbox.KeyZoneURL))},
 		{wordAgent, h.agentContext()},
-		{"cluster", cmp.Or(settings[sandbox.KeyKubeContext], settings[sandbox.KeyCluster])},
+		{"cluster", cmp.Or(h.state.Setting(sandbox.KeyKubeContext), h.state.Setting(sandbox.KeyCluster))},
 	} {
 		if item[1] != "" {
 			parts = append(parts, theme.Dim.Render(item[0]+" ")+theme.Muted.Render(item[1]))
