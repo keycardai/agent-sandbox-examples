@@ -138,10 +138,6 @@ func start(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	// Ask the keychain whether it works before the TUI draws. The answer
-	// decides whether setup offers to save, and on Linux the first read can
-	// open a dialog to unlock the keyring.
-	_ = local.Store.KeychainErr()
 	// The TUI draws the whole terminal, so a step must not ask on it. A step
 	// that would ask fails instead, and says what to run.
 	local.Ask = nil
