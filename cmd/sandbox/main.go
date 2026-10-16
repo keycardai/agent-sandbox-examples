@@ -142,6 +142,9 @@ func start(ctx context.Context, cmd *cli.Command) error {
 	// decides whether setup offers to save, and on Linux the first read can
 	// open a dialog to unlock the keyring.
 	_ = local.Store.KeychainErr()
+	// The TUI draws the whole terminal, so a step must not ask on it. A step
+	// that would ask fails instead, and says what to run.
+	local.Ask = nil
 	session := local.NewSession(defaultListen, defaultIssuerWait)
 	if problems := session.Problems(); len(problems) > 0 {
 		return fmt.Errorf("run go run ./cmd/sandbox init first: %w", errors.Join(problems...))
