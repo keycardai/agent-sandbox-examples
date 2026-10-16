@@ -70,7 +70,7 @@ type (
 	stopBringUpMsg     struct{}
 	recreateClusterMsg struct{ from int }
 	restartPodMsg      struct{}
-	stopAllMsg         struct{}
+	stopAllMsg         struct{ quit bool }
 )
 
 // errPanic is a background job that panicked. The TUI reports it and keeps
@@ -327,7 +327,7 @@ func (m *model) updateAnswers(msg tea.Msg) bool {
 	case restartPodMsg:
 		m.restartPod()
 	case stopAllMsg:
-		m.stopAllNow()
+		m.stopAllNow(msg.quit)
 	default:
 		return false
 	}
@@ -335,12 +335,13 @@ func (m *model) updateAnswers(msg tea.Msg) bool {
 	return true
 }
 
-// stopAllNow stops everything, unless a job other than a bring-up runs.
-func (m *model) stopAllNow() {
+// stopAllNow stops everything, then quits with quit, unless a job other
+// than a bring-up runs.
+func (m *model) stopAllNow(quit bool) {
 	if !m.shared.Job.Is(page.JobBringUp) && m.shared.Busy() {
 		return
 	}
-	m.stopEverything(false)
+	m.stopEverything(quit)
 }
 
 // recreateCluster deletes the cluster and brings the sandbox up again from
@@ -415,8 +416,18 @@ func (m *model) stopAll() {
 		m.shared.Notify("On an existing cluster, there is nothing for D to stop.", false)
 		return
 	}
-	m.confirm("Stop everything?", "This stops the tunnel and the mirror and deletes the k3d cluster.\n"+
-		"What the sandbox created in your Keycard zone stays.", stopAllMsg{})
+	m.askStopAll(false)
+}
+
+// askStopAll asks whether to stop everything, and with quit, to quit
+// after.
+func (m *model) askStopAll(quit bool) {
+	title := "Stop everything?"
+	if quit {
+		title = "Stop everything and quit?"
+	}
+	m.confirm(title, "This stops the tunnel and the mirror and deletes the k3d cluster.\n"+
+		"What the sandbox created in your Keycard zone stays.", stopAllMsg{quit: quit})
 }
 
 // stopEverything stops the tunnel and the mirror and deletes the cluster,

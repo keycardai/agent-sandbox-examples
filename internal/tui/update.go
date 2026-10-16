@@ -135,7 +135,8 @@ func (m *model) overlayKeys(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 
 // quit asks how to leave. By default the sandbox keeps running: the
 // tunnel, the mirror and the cluster stay up, and they show again next
-// time. D stops everything first. With nothing running, it only asks.
+// time. D asks, then stops everything first. With nothing running, it
+// only asks.
 func (m *model) quit() tea.Cmd {
 	m.overlay = overlay{kind: overlayQuit, title: "Quit " + style.AppName + "?", keepsRunning: m.anythingRunning()}
 	m.overlay.body = "The sandbox keeps running. The tunnel, the mirror and the cluster stay up,\n" +
@@ -173,7 +174,7 @@ func (m *model) quitKeys(msg tea.KeyPressMsg) tea.Cmd {
 		if !keepsRunning || !m.shared.Job.Is(page.JobBringUp) && m.shared.Busy() {
 			return nil
 		}
-		m.stopEverything(true)
+		m.askStopAll(true)
 	}
 	return nil
 }

@@ -236,14 +236,19 @@ func TestOneJobAtATime(t *testing.T) {
 	}
 }
 
-// TestDownWaitsForTheBringUp stops a running bring-up first, from D in the
-// quit dialog, and stops everything once it has.
+// TestDownWaitsForTheBringUp asks before D in the quit dialog stops
+// everything, stops a running bring-up first, and stops everything once it
+// has.
 func TestDownWaitsForTheBringUp(t *testing.T) {
 	t.Parallel()
 	root := quietModel(t)
 	root.shared.Job = page.Job{Kind: page.JobBringUp}
 	root.Update(press("q"))
 	root.Update(press("D"))
+	if job := root.shared.Job; job.StopAfter || root.overlay.title != "Stop everything and quit?" {
+		t.Errorf("D asked %q and set job = %+v, want it to ask before it stops anything", root.overlay.title, job)
+	}
+	answerYes(root)
 	if job := root.shared.Job; !job.Is(page.JobBringUp) || !job.StopAfter || !job.QuitAfter {
 		t.Errorf("job = %+v while the bring-up runs, want the bring-up, then a stop and a quit", job)
 	}
