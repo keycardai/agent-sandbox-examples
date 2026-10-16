@@ -36,8 +36,8 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 // Spinner is the spinner's frame for the frame count.
 func Spinner(frame int) string { return spinnerFrames[frame%len(spinnerFrames)] }
 
-// Box draws a pane with its title in the top border. A pane with focus
-// gets a heavy iris border. width and height include the border. The panes
+// Box draws a pane with its title in the top border, cut to fit. A pane
+// with focus gets a heavy iris border. width and height include the border. The panes
 // have no numbers: the number keys switch tabs.
 func Box(theme style.Styles, title string, lines []string, width, height int, focused bool) string {
 	border, borderStyle, titleStyle := lipgloss.NormalBorder(), lipgloss.NewStyle().Foreground(theme.Colors.Line),
@@ -47,7 +47,7 @@ func Box(theme style.Styles, title string, lines []string, width, height int, fo
 			lipgloss.NewStyle().Foreground(theme.Colors.AccentFill), theme.PaneTitleFocused
 	}
 	inner := width - BorderCols
-	head := " " + title + " "
+	head := ansi.Truncate(" "+title+" ", max(width-CornerCols-1, 0), "…")
 	fill := max(width-CornerCols-1-lipgloss.Width(head), 0)
 	out := make([]string, 0, height)
 	out = append(out, borderStyle.Render(border.TopLeft+border.Top)+titleStyle.Render(head)+

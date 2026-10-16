@@ -10,7 +10,10 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/keycardai/agent-sandbox-examples/internal/tui/style"
 )
 
 // TestLog splits writes into lines, keeps a partial line, shows what a
@@ -214,5 +217,20 @@ func TestReadLinesPastALongLine(t *testing.T) {
 	err := ReadLines(strings.NewReader(long+"\nnext\n"), func(line string) { lines = append(lines, line) })
 	if err != nil || len(lines) != 2 || len(lines[0]) > maxLineBytes+len("…") || lines[1] != "next" {
 		t.Errorf("ReadLines = %v, %d lines; want the long line cut, then next", err, len(lines))
+	}
+}
+
+// TestBoxLongTitle cuts a title wider than the pane, so that the top
+// border is as wide as the rest of the box.
+func TestBoxLongTitle(t *testing.T) {
+	t.Parallel()
+	const width = 20
+	for _, focused := range []bool{false, true} {
+		box := Box(style.New(true), "Agent log: grace.hopper@example.com", []string{"line"}, width, 4, focused)
+		for i, line := range strings.Split(box, "\n") {
+			if got := lipgloss.Width(line); got != width {
+				t.Errorf("focused = %t: line %d is %d wide, want %d: %q", focused, i, got, width, ansi.Strip(line))
+			}
+		}
 	}
 }
