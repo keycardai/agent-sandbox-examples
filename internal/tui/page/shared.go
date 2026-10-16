@@ -92,6 +92,8 @@ type Shared struct {
 	Keys    component.KeyMap
 	// Width and Height are the window's.
 	Width, Height int
+	// Now is the clock the steps' times come from.
+	Now func() time.Time
 	// Frame counts the redraws, and turns the spinners.
 	Frame int
 	// Logs holds every log.
@@ -126,7 +128,7 @@ type Shared struct {
 // NewShared returns what the pages share for a session, with the steps of
 // its settings.
 func NewShared(session *sandbox.Session) *Shared {
-	shared := &Shared{Session: session, Styles: style.New(true), Keys: component.NewKeyMap()}
+	shared := &Shared{Session: session, Styles: style.New(true), Keys: component.NewKeyMap(), Now: time.Now}
 	shared.Logs = component.NewLogView(func(_ string, lines []string) []string { return lines })
 	shared.ResetSteps()
 	return shared
@@ -340,7 +342,7 @@ func (s *Shared) stepElapsed(row *StepRow) string {
 	}
 	switch row.State {
 	case StepRunning:
-		return theme.Running.Render(component.Duration(time.Since(row.Started)))
+		return theme.Running.Render(component.Duration(s.Now().Sub(row.Started)))
 	case StepDone, StepFailed:
 		return theme.Dim.Render(component.Duration(row.Ended.Sub(row.Started)))
 	case StepPending:

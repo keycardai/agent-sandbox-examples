@@ -161,7 +161,7 @@ func (m *model) trackStep(i int) {
 
 func (m *model) onStepStart(msg stepStartMsg) {
 	row := m.shared.Steps[msg.index]
-	row.State, row.Started, row.Ended = page.StepRunning, time.Now(), time.Time{}
+	row.State, row.Started, row.Ended = page.StepRunning, m.shared.Now(), time.Time{}
 	m.trackStep(msg.index)
 }
 
@@ -171,7 +171,7 @@ func (m *model) onStepStart(msg stepStartMsg) {
 func (m *model) onStepDone(msg stepDoneMsg) {
 	shared := m.shared
 	row := shared.Steps[msg.index]
-	row.Ended, row.Err = time.Now(), msg.err
+	row.Ended, row.Err = m.shared.Now(), msg.err
 	row.State = page.StepDone
 	if row.Step.ID == sandbox.StepChecks {
 		m.recordChecks(row, msg.err)

@@ -138,11 +138,15 @@ func snapshotUp(t *testing.T) *model {
 	return root
 }
 
+// snapshotBringUp is a bring-up that has run the charts step for 41s, on a
+// clock that does not move, so that the step's time draws the same each
+// time.
 func snapshotBringUp(t *testing.T) *model {
 	t.Helper()
 	root := snapshotUp(t)
 	root.shared.Job = page.Job{Kind: page.JobBringUp}
-	now := time.Now()
+	now := sampleTime()
+	root.shared.Now = func() time.Time { return now }
 	for i, row := range root.shared.Steps {
 		switch {
 		case i == 6:
