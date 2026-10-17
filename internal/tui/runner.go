@@ -459,6 +459,7 @@ func (m *model) onActionDone(msg actionDoneMsg) tea.Cmd {
 		m.state.Record("✓", ended.Name+": done")
 		if ended.Is(state.JobStop) {
 			m.state.StoppedAll()
+			m.stopTraffic()
 		}
 	}
 	// A quit that waited for the job does not hide its failure.
@@ -559,11 +560,7 @@ func (m *model) startTraffic() {
 	target, err := m.session.Target()
 	if err != nil || target.Pod == "" {
 		// The selected agent has no pod: its traffic is empty.
-		if m.trafficStop != nil {
-			m.trafficStop()
-			m.trafficStop = nil
-		}
-		m.state.Traffic.Reset("")
+		m.stopTraffic()
 		return
 	}
 	if _, pod := m.state.Traffic.Snapshot(); pod == target.Pod && m.trafficStop != nil {
@@ -577,6 +574,16 @@ func (m *model) startTraffic() {
 	m.state.Traffic.Reset(target.Pod)
 	session, store, pod := m.session, &m.state.Traffic, target.Pod
 	m.jobs.Go(func() { followTraffic(ctx, session, pod, store) })
+}
+
+// stopTraffic stops following the proxy's log, and forgets its records, as
+// for an agent without a pod, or once everything stopped.
+func (m *model) stopTraffic() {
+	if m.trafficStop != nil {
+		m.trafficStop()
+		m.trafficStop = nil
+	}
+	m.state.Traffic.Reset("")
 }
 
 // followTraffic follows the proxy's log in pod until ctx ends, and keeps

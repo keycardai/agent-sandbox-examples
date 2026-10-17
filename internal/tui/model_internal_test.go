@@ -160,6 +160,21 @@ func TestReadFromBeforeAStop(t *testing.T) {
 	}
 }
 
+// TestStopEndsTheTraffic stops following the proxy's log once everything
+// stopped, since the pod it follows is gone with the cluster.
+func TestStopEndsTheTraffic(t *testing.T) {
+	t.Parallel()
+	root := testModel(t)
+	stopped := false
+	root.trafficStop = func() { stopped = true }
+	root.state.Traffic.Reset(samplePod)
+	root.state.StartJob(state.Job{Kind: state.JobStop}, nil)
+	root.Update(actionDoneMsg{})
+	if _, pod := root.state.Traffic.Snapshot(); !stopped || root.trafficStop != nil || pod != "" {
+		t.Errorf("after the stop: follower stopped %v, store of %q; want it stopped and the store empty", stopped, pod)
+	}
+}
+
 // TestQuitDialogFollowsTheJob draws the quit dialog from what runs now: a
 // bring-up that ends while it is open drops out of it.
 func TestQuitDialogFollowsTheJob(t *testing.T) {
