@@ -705,6 +705,7 @@ func (m *model) onSetupDone(msg setupDoneMsg) {
 		return
 	}
 	if msg.err != nil && !errors.Is(msg.err, sandbox.ErrNotSaved) {
+		m.setup.Abandon()
 		m.screen = m.wizardBack
 		if errors.Is(msg.err, sandbox.ErrInterrupted) || errors.Is(msg.err, context.Canceled) {
 			m.state.Record("•", "Setup stopped without saving")

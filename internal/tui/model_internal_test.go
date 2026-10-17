@@ -355,6 +355,27 @@ func TestStoppedSetupGoesBack(t *testing.T) {
 	}
 }
 
+// TestReviewAfterAStoppedSetup shows the settings as they are on the
+// review once a setup stopped, and not the answer it did not keep.
+func TestReviewAfterAStoppedSetup(t *testing.T) {
+	t.Parallel()
+	root := testModel(t)
+	root.screen, root.wizardBack = screenWizard, screenReview
+	root.setup.Begin(sandbox.SectionCluster)
+	root.setup.OnSection(page.SectionMsg{ID: sandbox.SectionCluster})
+	for _, step := range root.setup.Rail {
+		if step.ID == sandbox.SectionCluster {
+			step.Answers = []string{"Your existing cluster prod-ctx"}
+		}
+	}
+	root.Update(setupDoneMsg{err: sandbox.ErrInterrupted})
+	if view := ansi.Strip(root.View().Content); root.screen != screenReview || strings.Contains(view, "prod-ctx") ||
+		strings.Contains(view, "Your existing cluster") {
+		t.Errorf("screen %v; want the review, without the answer the stopped setup did not keep:\n%s",
+			root.screen, view)
+	}
+}
+
 // TestSetupNotSaved shows the review when saving the settings failed, as
 // for settings kept for the session, and the activity says why, whatever
 // the result says.

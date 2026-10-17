@@ -293,6 +293,10 @@ func (s *Setup) End() {
 	s.Drop()
 }
 
+// Abandon forgets the steps of a setup that stopped without keeping its
+// answers, so that the review shows the settings as they are.
+func (s *Setup) Abandon() { s.Rail = nil }
+
 // WizardView draws the steps on the left and the current question on the
 // right, in the middle of the window. A narrow window leaves the steps out:
 // the header still says which step of how many.
