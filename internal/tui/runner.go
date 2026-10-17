@@ -672,19 +672,14 @@ func (m *model) startSetup(preset map[string]string, ids ...string) {
 	log := m.ui.Logs.Log(state.SourceSetup)
 	log.Reset()
 	ask := m.setup.Start(m.bus.Send, preset, log)
-	session, out := m.session, m.bus
+	session := m.session
 	m.state.Record("▸", "Setup started")
-	m.jobs.Go(func() {
-		var done setupDoneMsg
-		defer func() {
-			if r := recover(); r != nil {
-				done.err = fmt.Errorf("%w: %v", errPanic, r)
-			}
-			done.describe, done.problems = session.Describe(), session.Problems()
-			out.Send(done)
-		}()
-		done.result, done.err = session.Setup(ctx, ask, log, ids...)
-	})
+	// The settings are read again after the setup, also after a panic.
+	done := func(result sandbox.InitResult, err error) tea.Msg {
+		return setupDoneMsg{result: result, err: err, describe: session.Describe(), problems: session.Problems()}
+	}
+	m.inBackground(func() tea.Msg { return done(session.Setup(ctx, ask, log, ids...)) },
+		func(err error) tea.Msg { return done(sandbox.InitResult{}, err) })
 }
 
 // onSetupDone takes the new settings and shows the review, also when
