@@ -22,14 +22,12 @@ const (
 	bringUpPrefix = "Bring-up: "
 )
 
-// LogEntry is one log the list offers: its name, the log, the pod's
-// container to follow for it, and what it shows.
+// LogEntry is one log the list offers, and the container to follow for it.
 type LogEntry struct {
 	Name, Source, Container, Caption string
 }
 
-// Logs lists every log the sandbox has, for looking into a problem, and
-// shows the one chosen over the screen.
+// Logs lists every log the sandbox has, and shows the one chosen.
 type Logs struct {
 	view
 
@@ -41,9 +39,7 @@ type Logs struct {
 // NewLogs returns the list of logs.
 func NewLogs(ui *UI, sandbox *state.Sandbox) *Logs { return &Logs{ui: ui, state: sandbox} }
 
-// Entries are every log the sandbox has: the pod's containers, the
-// programs on this machine, each step of the bring-up, and what happened in
-// this session, last.
+// Entries are every log the sandbox has. The activity log comes last.
 func (l *Logs) Entries() []LogEntry {
 	entries := []LogEntry{
 		{"Agent", "", state.AgentContainer, l.agentCaption()},
@@ -73,9 +69,7 @@ func (l *Logs) Entries() []LogEntry {
 		LogEntry{"Activity", state.SourceActivity, "", "What happened in this session, newest last."})
 }
 
-// Open puts the list's cursor on the step that runs, in a bring-up or the
-// checks, or on the one a bring-up stopped at, or else keeps it on a log,
-// since the list can be shorter than when it last showed.
+// Open puts the cursor on the running step, or where a bring-up stopped.
 func (l *Logs) Open() {
 	entries := l.Entries()
 	step := l.state.Run.FailedStep()
@@ -125,8 +119,7 @@ func (l *Logs) ListView() string {
 		component.Hint{Key: component.KeyEsc, Desc: "close"})
 }
 
-// View draws the log chosen over the screen, under the band: what it
-// shows, and the log.
+// View draws the log chosen, under what it shows.
 func (l *Logs) View() string {
 	width, height := l.size()
 	return l.ui.logPane(l.Shown.Name+" · log", l.head(width), waitingText(l.ui.Logs.Source()), width, height, true)

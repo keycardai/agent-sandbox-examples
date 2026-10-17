@@ -146,10 +146,8 @@ func (s *Session) Setup(ctx context.Context, ask Asker, out io.Writer, sections 
 	return result, err
 }
 
-// AddAgent gives one more of the zone's users an agent in the demo the
-// settings name, as Local.AddAgent does, with ask for the questions and
-// out for the notes. It returns their email. The session takes the
-// settings it kept, as after Setup.
+// AddAgent runs Local.AddAgent with ask and out, and returns the user's
+// email. The session then takes the settings it kept, as after Setup.
 func (s *Session) AddAgent(ctx context.Context, ask Asker, out io.Writer) (string, error) {
 	email, err := s.Local().WithIO(out, ask).AddAgent(ctx)
 	s.keepAfterSetup(err)

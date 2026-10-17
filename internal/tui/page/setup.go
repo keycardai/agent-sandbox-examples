@@ -34,8 +34,7 @@ const (
 	// maxSelectHeight bounds the rows a choice shows at once. huh counts a
 	// title row in a choice's height, even without a title.
 	maxSelectHeight, selectTitleRows = 10, 1
-	// modalParts is how many parts a question's modal has besides the
-	// notes.
+	// modalParts is how many parts a question's modal has besides its notes.
 	modalParts = 5
 )
 
@@ -71,8 +70,7 @@ const (
 	Stopped
 )
 
-// asking is the question that shows, its form, where the form keeps the
-// answer, by kind, and whether it shows on the wizard's screen.
+// asking is the question that shows, and its form.
 type asking struct {
 	question *Question
 	form     *huh.Form
@@ -190,12 +188,9 @@ func (s *Setup) Finish() {
 // ForgetNotes starts the notes over, for questions outside the wizard.
 func (s *Setup) ForgetNotes() { s.notesFrom = 0 }
 
-// Ask shows the wizard's question as a form: inWizard on the wizard's
-// screen, and otherwise inside a modal.
+// Ask shows quest as a form, in the wizard with inWizard, else in a modal.
 func (s *Setup) Ask(quest *Question, inWizard bool) tea.Cmd {
 	text, yes := quest.Value, quest.Yes
-	// Outside the wizard, the question draws inside a modal, within its
-	// border and padding.
 	width := component.ModalInnerWidth(s.ui.Width)
 	if inWizard {
 		width = s.panelWidth()
@@ -299,8 +294,7 @@ func (s *Setup) ReviewView() string {
 	))
 }
 
-// QuestionModal draws a setup question outside the wizard, under the
-// wizard's latest notes, titled title.
+// QuestionModal draws a setup question outside the wizard, titled title.
 func (s *Setup) QuestionModal(title string) string {
 	theme := s.ui.Styles
 	width := component.ModalInnerWidth(s.ui.Width)

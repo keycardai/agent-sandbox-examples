@@ -29,8 +29,7 @@ type Job struct {
 	Name string
 	// From is the first step a bring-up runs.
 	From int
-	// Agent is the person whose agent an action makes or restarts, for the
-	// screens to say it comes up.
+	// Agent is the person whose agent an action makes or restarts.
 	Agent string
 	// StopAfter stops everything once the job ends. QuitAfter quits once the
 	// job, and the stop after it, end without an error.
@@ -48,8 +47,7 @@ func (j Job) Is(kind JobKind) bool { return j.Kind == kind }
 // RunsSteps reports whether the job runs steps: a bring-up, or the checks.
 func (j Job) RunsSteps() bool { return j.Kind == JobBringUp || j.Kind == JobChecks }
 
-// Acting reports whether an action runs: one call on the session, or the
-// stop. Its output shows in the action log.
+// Acting reports whether an action or the stop runs.
 func (j Job) Acting() bool { return j.Kind == JobAction || j.Kind == JobStop }
 
 // WaitText says what runs, for work that waits for it, or returns "".

@@ -23,10 +23,8 @@ const (
 	failureRows = 4
 )
 
-// Home is the dashboard's first tab. It says what the sandbox does and
-// what to do next: the bring-up while it runs, where it stopped when it
-// failed, and once it is up, what Keycard did for the agent and what to
-// try.
+// Home is the dashboard's first tab. It shows how the sandbox is and what
+// to do next.
 type Home struct {
 	view
 }
@@ -186,8 +184,7 @@ func (h *Home) up() string {
 	return strings.Join(lines, "\n")
 }
 
-// troubleLines say what keeps the sandbox from working as it should, and
-// what to do about each.
+// troubleLines say what is wrong with the sandbox and how to fix each.
 func (h *Home) troubleLines() []string {
 	theme := h.ui.Styles
 	troubles := h.state.Troubles()

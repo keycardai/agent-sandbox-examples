@@ -76,10 +76,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// follow follows the log of a pod's container in the log pane, when ok,
-// and stops following the one before. A log read once to its end is
-// followed again once its container runs again, as in a pod that a
-// bring-up made anew under the same name.
+// follow follows a container's log when ok, and stops the one before. A
+// finished log is followed again once its container runs again.
 func (m *model) follow(row state.ContainerRow, ok bool) {
 	if !ok {
 		return
@@ -132,8 +130,7 @@ func (m *model) onFrame() tea.Cmd {
 	return tea.Batch(frameTick(), m.welcomeGlint())
 }
 
-// updateRequests handles what the Agents tab asks for: a log to follow,
-// the list of agents, a request to send, and what came back.
+// updateRequests handles what the Agents tab asks for.
 func (m *model) updateRequests(msg tea.Msg) (tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case page.FollowMsg:
@@ -353,8 +350,6 @@ func (m *model) confirmKeys(msg tea.KeyPressMsg) tea.Cmd {
 	return func() tea.Msg { return yes }
 }
 
-// dashboardKeys handles a key on the dashboard: the tabs first, then the
-// actions, then the tab that shows.
 func (m *model) dashboardKeys(msg tea.KeyPressMsg) tea.Cmd {
 	if m.switchTab(msg) {
 		return nil
@@ -380,8 +375,7 @@ func (m *model) switchTab(msg tea.KeyPressMsg) bool {
 	return false
 }
 
-// openTab shows a tab, and points the log pane at the log it shows: the
-// agent's on the Agents tab, and the proxy's decisions on the Traffic tab.
+// openTab shows a tab, and points the log pane at that tab's log.
 func (m *model) openTab(next tab) {
 	m.tab = next
 	m.ui.Logs.ClearFilter()
@@ -395,8 +389,6 @@ func (m *model) openTab(next tab) {
 	m.layout()
 }
 
-// tabKeys gives a key to the tab that shows. X on the Agents tab removes
-// the selected agent.
 func (m *model) tabKeys(msg tea.KeyPressMsg) tea.Cmd {
 	switch m.tab {
 	case tabAgent:
@@ -434,8 +426,7 @@ func (m *model) actionKeys(msg tea.KeyPressMsg) bool {
 	return true
 }
 
-// agentActionKeys handles the keys that work with the agent, and the
-// activity log.
+// agentActionKeys handles the keys for the agent and the logs.
 func (m *model) agentActionKeys(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	keys := m.ui.Keys
 	switch {
@@ -466,9 +457,7 @@ func (m *model) agentActionKeys(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 }
 
 // followFront follows the container whose log the screen in front shows,
-// once its pod has it: the log chosen from the list while it shows over
-// the screen, else the Agents tab's pane, which can show a response
-// instead. The other screens show no container's log.
+// once its pod has it.
 func (m *model) followFront() {
 	switch {
 	case m.overlay.kind == overlayLog:
@@ -480,8 +469,7 @@ func (m *model) followFront() {
 	}
 }
 
-// showLog shows a log from the list of every log over the screen: a
-// container's, followed, or another log.
+// showLog shows a log chosen from the list, and follows a container's log.
 func (m *model) showLog(entry page.LogEntry) {
 	m.logs.Shown = entry
 	m.ui.Logs.ClearFilter()
@@ -494,8 +482,7 @@ func (m *model) showLog(entry page.LogEntry) {
 	m.layout()
 }
 
-// logKeys moves through the log chosen from the list. Esc closes it, and
-// the tab that shows points the log pane at its own log again.
+// logKeys moves through the log chosen from the list. Esc closes it.
 func (m *model) logKeys(msg tea.KeyPressMsg) tea.Cmd {
 	if !key.Matches(msg, m.ui.Keys.Back) || m.ui.Logs.Filter() != "" {
 		return m.ui.Logs.Keys(msg, m.ui.Keys)
@@ -760,8 +747,7 @@ func (m *model) onForgetDone(msg forgetDoneMsg) {
 	m.ui.Notify("Deleted the saved settings. They last until you quit.", false)
 }
 
-// ask shows the setup's question: on the wizard's screen, or else in a
-// modal. A dialog that shows stays on top until it closes. A question from
+// ask shows the setup's question, behind any open dialog. A question from
 // a setup that stopped goes unanswered.
 func (m *model) ask(msg askMsg) tea.Cmd {
 	if !m.asking() {

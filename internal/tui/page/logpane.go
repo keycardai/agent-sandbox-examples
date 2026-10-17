@@ -12,9 +12,7 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/state"
 )
 
-// logPane draws the log that shows, under head, with its follow, wrap and
-// filter state on the line before it, or waiting while it has no line. A
-// pane with focus gets the iris border.
+// logPane draws the shown log under head, or waiting while it has no line.
 func (u *UI) logPane(title string, head []string, waiting string, width, height int, focused bool) string {
 	lines := []string{u.logFlags()}
 	if u.Logs.Searching() {
@@ -29,8 +27,7 @@ func (u *UI) logPane(title string, head []string, waiting string, width, height 
 	return component.Box(u.Styles, title, lines, width, height, focused)
 }
 
-// logFlags says whether the log pane follows its log, wraps it and filters
-// it. A response is not a log to follow, so it is a body.
+// logFlags says whether the log pane follows, wraps and filters its log.
 func (u *UI) logFlags() string {
 	theme := u.Styles
 	flags := []string{}
@@ -51,8 +48,7 @@ func (u *UI) logFlags() string {
 	return strings.Join(flags, theme.Faint.Render("  "))
 }
 
-// paint colors the lines of the log named source: the proxy's decisions by
-// verdict, the activity by mark, and a container's log by level.
+// paint colors the lines of the log named source.
 func (u *UI) paint(source string, lines []string) []string {
 	switch {
 	case source == state.SourceTraffic, source == state.SourceTrafficAll:
@@ -88,9 +84,7 @@ func (u *UI) trafficLine(line string) (string, bool) {
 	return line, false
 }
 
-// colorLog colors a container's log as proxylog.ReadableLine wrote it: a
-// proxy decision by its verdict, and a structured line by its level, with
-// its fields dimmed.
+// colorLog colors a container's log as proxylog.ReadableLine wrote it.
 func (u *UI) colorLog(lines []string) []string {
 	theme := u.Styles
 	levels := map[string]lipgloss.Style{
@@ -125,8 +119,7 @@ func (u *UI) colorLog(lines []string) []string {
 	return out
 }
 
-// isClock reports whether text is a time as proxylog.ReadableLine prints
-// it.
+// isClock reports whether text is a clock time from proxylog.ReadableLine.
 func isClock(text string) bool {
 	return len(text) == len(time.TimeOnly) && text[2] == ':' && text[5] == ':'
 }

@@ -2,28 +2,23 @@ package state
 
 import "github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 
-// Trouble is something that keeps a sandbox that runs from working as it
-// should, though the agent's pod may run.
+// Trouble is something that keeps a sandbox that runs from working.
 type Trouble int
 
 // The troubles of a sandbox that runs.
 const (
-	// TroubleMirror is the mirror down, so that Keycard cannot verify the
-	// agent with the cluster's keys.
+	// TroubleMirror is the mirror down: Keycard cannot verify the agent.
 	TroubleMirror Trouble = iota
-	// TroubleProxy is the egress proxy's container that stopped, so that the
-	// agent's requests go nowhere.
+	// TroubleProxy is the egress proxy down: requests go nowhere.
 	TroubleProxy
-	// TroubleProxyLog is the proxy's log that cannot be read, so that what
-	// Keycard did is not known.
+	// TroubleProxyLog is the proxy's log that cannot be read.
 	TroubleProxyLog
 	// TroubleChecks is checks that failed.
 	TroubleChecks
 )
 
-// Troubles lists what keeps the sandbox from working as it should, in the
-// order a request needs it: Keycard can verify the agent, the proxy runs
-// and its log reads, and the checks pass.
+// Troubles lists what keeps the sandbox from working, in the order a
+// request needs it.
 func (s *Sandbox) Troubles() []Trouble {
 	var troubles []Trouble
 	if s.Run.StepOf(sandbox.StepMirror) != nil && !s.Reads.Status.Mirror.Running {

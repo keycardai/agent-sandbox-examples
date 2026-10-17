@@ -58,8 +58,7 @@ func NewUI() *UI {
 	return ui
 }
 
-// TrafficSource names the feed of the proxy's decisions the TUI shows:
-// with the DNS lookups, or without.
+// TrafficSource names the feed of the proxy's decisions the TUI shows.
 func (u *UI) TrafficSource() string {
 	if u.ShowDNS {
 		return state.SourceTrafficAll
@@ -124,8 +123,7 @@ func (v view) endpoints() []sandbox.ScenarioEndpoint {
 
 func (u *UI) spinner() string { return component.Spinner(u.Frame) }
 
-// podMark is how a pod in state looks: its mark, and the style of the
-// mark and of what is said about it. Home and the Agents tab both use it.
+// podMark is a pod state's mark, and the style of the mark and its text.
 func (u *UI) podMark(pod state.PodState) (string, lipgloss.Style) {
 	switch pod {
 	case state.PodRunning:

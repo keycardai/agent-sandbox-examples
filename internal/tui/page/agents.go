@@ -22,30 +22,25 @@ import (
 )
 
 const (
-	// agentBoxRows is the height of the Agents tab's agent pane, with its
-	// border.
+	// agentBoxRows is the agent pane's height, with its border.
 	agentBoxRows = 5
-	// The Agents tab's left column takes a leftShare of the width, within
-	// minLeftWidth and maxLeftWidth.
+	// The left column takes 1/leftShare of the width, within the bounds.
 	minLeftWidth, maxLeftWidth, leftShare = 40, 56, 3
-	// responseCaptionRows is what the response's caption takes over the
-	// command the agent ran: the request and its status, what Keycard did
-	// in up to verdictRows lines, and a blank line.
+	// responseCaptionRows fits the status line, up to verdictRows lines of
+	// Keycard's verdict and a blank line.
 	responseCaptionRows, verdictRows = 4, 2
 	// commandIndent indents each line of a command after its first, and
 	// commandMore ends each line the command goes on from.
 	commandIndent, commandMore = "    ", ` \`
 	// maxBodyLines bounds how much of a response's body the tab keeps.
 	maxBodyLines = 2000
-	// recordSlack is how much earlier than the request a proxy record may
-	// be stamped and still be the request's, for clocks that differ.
+	// recordSlack is how early a proxy record may be stamped, for clock skew.
 	recordSlack = time.Second
 	// agentEmailWidth is the width of an agent's email in the list.
 	agentEmailWidth = 30
 )
 
-// AgentPane is the pane of the Agents tab with focus: the agent it shows,
-// the requests it can send, or the pane on the right.
+// AgentPane is the Agents tab's pane with focus.
 type AgentPane int
 
 // The Agents tab's panes.
@@ -56,12 +51,10 @@ const (
 	agentPaneCount
 )
 
-// FollowMsg asks the root model to follow a container's log in the log
-// pane.
+// FollowMsg asks the root model to follow a container's log.
 type FollowMsg struct{ Row state.ContainerRow }
 
-// ShowAgentsMsg asks the root model to open the list of agents, which the
-// Agents tab draws.
+// ShowAgentsMsg asks the root model to open the list of agents.
 type ShowAgentsMsg struct{}
 
 // SendRequestMsg asks the root model to send a request from agent's
@@ -72,8 +65,7 @@ type SendRequestMsg struct {
 	Method, URL, Body string
 }
 
-// RequestDoneMsg is what came back from a request the Agents tab sent
-// from the agent's container.
+// RequestDoneMsg is what came back from a SendRequestMsg.
 type RequestDoneMsg struct {
 	Agent       string
 	Seq         int
@@ -82,23 +74,20 @@ type RequestDoneMsg struct {
 	Err         error
 }
 
-// DeployTitle names the action that brings up the agent of email once the
-// sandbox is up.
+// DeployTitle names the action that brings up email's agent.
 func DeployTitle(email string) string { return "Bringing up " + email + "'s agent" }
 
 // trial is a request the Agents tab offers to send from the agent.
 type trial struct {
 	method, url, body string
-	// name names the resource whose credential the proxy adds, or is ""
-	// for an endpoint that needs none. blocked is set for a host the demo
-	// does not allow.
+	// name is the resource whose credential the proxy adds, if any.
+	// blocked marks a host the demo does not allow.
 	name    string
 	blocked bool
 }
 
-// requestState is the request the Agents tab sent last, and the agent it
-// sent it from. seq numbers it, so that a response to an earlier request
-// does not take its place.
+// requestState is the last request the tab sent. A response that carries
+// an earlier seq is dropped.
 type requestState struct {
 	agent   string
 	seq     int
@@ -111,21 +100,16 @@ type requestState struct {
 	err      error
 }
 
-// Agents is the dashboard's tab for working with the agents. It lists an
-// agent for each person the settings give one, and the agent selected
-// there is the one every tab shows: its pod, its log and its traffic. On
-// the left are the agent it shows and the requests it can send.
-// On the right is the agent's log, or with the requests in focus, what the
-// last one got back.
+// Agents is the dashboard's tab for the agents. The agent selected here is
+// the one every tab shows. On the left are the agent and the requests it
+// can send. On the right is the agent's log or the last response.
 type Agents struct {
 	view
 
-	// focus is the pane with focus, and showResponse is set when the pane
-	// on the right shows the last response, and not the agent's log.
+	// The pane with focus, and whether the right one shows the response.
 	focus        AgentPane
 	showResponse bool
-	// trial is the request selected, request what the last one sent got
-	// back, and sent how many requests the tab sent.
+	// The selected request, the last one sent, and how many the tab sent.
 	trial   int
 	request requestState
 	sent    int
@@ -178,8 +162,7 @@ func (a *Agents) Hints() []component.Hint {
 	return append(hints, component.Hint{Key: "?", Desc: wordKeys})
 }
 
-// Keys moves between the panes, and gives a key to the pane with focus.
-// Tab and the arrows left and right go round the panes.
+// Keys moves between the panes, or gives a key to the pane with focus.
 func (a *Agents) Keys(msg tea.KeyPressMsg) tea.Cmd {
 	keys := a.ui.Keys
 	switch {
@@ -195,8 +178,7 @@ func (a *Agents) Keys(msg tea.KeyPressMsg) tea.Cmd {
 	return a.rightPaneKeys(msg)
 }
 
-// Layout sizes the log pane on the right, under the response's caption
-// when it shows the last response.
+// Layout sizes the log pane on the right, below any response caption.
 func (a *Agents) Layout() {
 	height := a.ui.BodyRows()
 	if a.responseShows() {
@@ -205,10 +187,8 @@ func (a *Agents) Layout() {
 	a.ui.Logs.SetSize(max(a.rightWidth()-component.BorderCols, 1), max(height-component.BorderRows-1, 1))
 }
 
-// FocusPane gives pane the focus. The pane on the right shows the agent's
-// log for the agent pane, and the last response for the requests. With
-// focus itself, it keeps what it showed. It returns the container whose
-// log the pane shows, for the root model to follow.
+// FocusPane gives pane the focus, and returns the container whose log the
+// root model follows, if any.
 func (a *Agents) FocusPane(pane AgentPane) (state.ContainerRow, bool) {
 	a.focus = pane
 	switch pane {
@@ -221,16 +201,14 @@ func (a *Agents) FocusPane(pane AgentPane) (state.ContainerRow, bool) {
 	return a.ShowRight()
 }
 
-// FocusLog gives the pane on the right the focus, with the agent's log, and
-// returns the agent's container to follow.
+// FocusLog gives the right pane the focus and shows the agent's log.
 func (a *Agents) FocusLog() (state.ContainerRow, bool) {
 	a.showResponse = false
 	return a.FocusPane(AgentPaneRight)
 }
 
-// ShowRight points the pane on the right at what it shows: the last
-// response, or the agent's log. It returns the agent's container, for the
-// root model to follow its log.
+// ShowRight points the right pane at the last response or the agent's log,
+// and returns the agent's container when it shows the log.
 func (a *Agents) ShowRight() (state.ContainerRow, bool) {
 	defer a.Layout()
 	if a.showResponse {
@@ -248,9 +226,8 @@ func follow(row state.ContainerRow, ok bool) tea.Cmd {
 	return func() tea.Msg { return FollowMsg{Row: row} }
 }
 
-// Reset forgets the last request, as for an agent, a pod or a demo that is
-// new, and keeps the selected request within the demo's requests. It does
-// not size the log pane, which the tab that shows lays out.
+// Reset forgets the last request, for a new agent, pod or demo. It does not
+// size the log pane, which the tab that shows lays out.
 func (a *Agents) Reset() {
 	a.request = requestState{}
 	a.trial = min(a.trial, max(len(a.trials())-1, 0))
@@ -282,8 +259,7 @@ func (a *Agents) Send() tea.Cmd {
 	return tea.Batch(focus, func() tea.Msg { return request })
 }
 
-// OnRequestDone shows what came back, while it answers the request the tab
-// shows.
+// OnRequestDone shows the response, and drops one for an earlier request.
 func (a *Agents) OnRequestDone(msg RequestDoneMsg) {
 	if a.request.running && a.request.seq == msg.Seq {
 		request := &a.request
@@ -304,8 +280,7 @@ func (a *Agents) OpenPicker() {
 	a.picker.Cursor = max(index, 0)
 }
 
-// PickerKeys moves through the list of agents, and returns the email of
-// the one chosen.
+// PickerKeys moves through the list of agents and returns the one chosen.
 func (a *Agents) PickerKeys(msg tea.KeyPressMsg) (string, component.Pick) {
 	agents := a.state.Agents.List
 	pick := a.picker.Update(msg, a.ui.Keys, len(agents))
@@ -342,8 +317,6 @@ func (a *Agents) PickerView() string {
 		component.Hint{Key: component.KeyEnter, Desc: "switch"}, component.Hint{Key: component.KeyEsc, Desc: "close"})
 }
 
-// trials offers a request for each of the demo's endpoints that says
-// something on its own.
 func (a *Agents) trials() []trial { return trialsFor(a.state.LoadedDemo()) }
 
 // agentReady reports whether the agent's container runs and is ready.
@@ -352,8 +325,6 @@ func (a *Agents) agentReady() bool {
 	return ok && row.Container.Ready
 }
 
-// leftWidth is the width of the tab's left column, and rightWidth that of
-// the pane right of it.
 func (a *Agents) leftWidth() int {
 	return min(max((a.ui.Width-component.PageIndent)/leftShare, minLeftWidth), maxLeftWidth)
 }
@@ -368,8 +339,6 @@ func (a *Agents) responseShows() bool {
 	return a.showResponse && a.ui.Logs.Source() == state.SourceResponse
 }
 
-// rightPane draws the log pane on the right: the agent's log, or the last
-// response under what it was.
 func (a *Agents) rightPane(width, height int) string {
 	source := a.ui.Logs.Source()
 	focused := a.focus == AgentPaneRight
@@ -380,8 +349,7 @@ func (a *Agents) rightPane(width, height int) string {
 	return a.ui.logPane(sourceTitle(source), nil, waitingText(source), width, height, focused)
 }
 
-// agentPaneLines show the agent the tabs show: its person, how its pod is,
-// and how to switch to another.
+// agentPaneLines show the selected agent, its pod and how to switch.
 func (a *Agents) agentPaneLines(width int) []string {
 	theme := a.ui.Styles
 	agent, index := a.state.Selected()
@@ -421,8 +389,7 @@ func (a *Agents) agentState(agent sandbox.Agent) (string, string) {
 	return look.Render(mark), said
 }
 
-// requestPaneLines list the requests the agent can send, the selected one
-// marked, then what it needs from Keycard and how the agent sends it.
+// requestPaneLines list the requests, then what the selected one needs.
 func (a *Agents) requestPaneLines(width int) []string {
 	theme := a.ui.Styles
 	trials := a.trials()
@@ -443,8 +410,7 @@ func (a *Agents) requestPaneLines(width int) []string {
 	return append(lines, strings.Split(theme.Muted.Width(width).Render(a.requestIntro()), "\n")...)
 }
 
-// trialAbout says what the selected request needs from Keycard, in the
-// style to say it in.
+// trialAbout says what the selected request needs from Keycard.
 func (a *Agents) trialAbout() (lipgloss.Style, string) {
 	theme := a.ui.Styles
 	trials := a.trials()
@@ -470,9 +436,7 @@ func (a *Agents) requestIntro() string {
 	return intro
 }
 
-// noPodLines say why the selected agent has no pod to show, from how the
-// sandbox is: it comes up, is read, or the bring-up stopped. Else the pods
-// cannot be read, or the pod does not exist yet.
+// noPodLines say why the selected agent has no pod to show.
 func (a *Agents) noPodLines(width int) []string {
 	theme := a.ui.Styles
 	lines := func(title, text string) []string {
@@ -497,14 +461,12 @@ func (a *Agents) noPodLines(width int) []string {
 		"Press u to bring the sandbox up. It creates the pod of every agent.")
 }
 
-// responseCaption says what the last request was, what came back, what the
-// proxy and Keycard did with it, and the command the agent ran to send it,
-// over its body.
+// responseCaption is the header over the response body: the request, its
+// status, Keycard's verdict and the command the agent ran.
 func (a *Agents) responseCaption(width int) []string {
 	theme := a.ui.Styles
 	request := a.request
-	// The status goes first, so that a narrow pane cuts the URL, not what
-	// came back.
+	// The status goes first so a narrow pane cuts the URL, not the status.
 	sent := theme.Dim.Render(" · ") + theme.Text.Render(request.trial.method+" "+request.trial.url)
 	var head, more string
 	switch {
@@ -537,9 +499,7 @@ func (a *Agents) responseCaption(width int) []string {
 	return append(component.Fit(lines, responseCaptionRows), a.commandCaption(width)...)
 }
 
-// commandCaption shows the whole command the agent's container ran to send
-// the last request, with a blank line under it, or nothing before the
-// first request.
+// commandCaption shows the command the agent ran for the last request.
 func (a *Agents) commandCaption(width int) []string {
 	if len(a.request.command) == 0 {
 		return nil
@@ -559,10 +519,8 @@ type commandLine struct {
 	inWord bool
 }
 
-// commandLines lays a command's arguments out in width columns, quoted, so
-// that a shell takes the lines pasted as the command. A flag keeps its
-// value on its line where they fit, and each line but the last ends in a
-// backslash.
+// commandLines lays a command out in width columns, quoted so that the
+// lines paste into a shell as one command.
 func commandLines(args []string, width int) []string {
 	var lines []commandLine
 	for _, unit := range flagUnits(args) {
@@ -571,9 +529,8 @@ func commandLines(args []string, width int) []string {
 	return joinLines(lines)
 }
 
-// placeUnit puts a flag and its value after lines: on the last line when it
-// fits there, else on a line of its own, else each argument on lines of
-// its own.
+// placeUnit adds a flag and its value to lines: on the last line, or on a
+// line of its own, or one argument at a time.
 func placeUnit(lines []commandLine, unit []string, width int) []commandLine {
 	fits := func(text string) bool { return ansi.StringWidth(text)+len(commandMore) <= width }
 	text := strings.Join(sandbox.ShellWords(unit), " ")
@@ -609,10 +566,8 @@ func joinLines(lines []commandLine) []string {
 	return out
 }
 
-// wordLines puts one argument on lines of its own, indented unless it
-// starts the command. An argument too wide for a line goes in pieces, each
-// quoted, and the pieces after the first start their lines: a backslash at
-// the end of a line joins them back into one word.
+// wordLines puts one argument on lines of its own. A too-wide argument goes
+// in quoted pieces that a trailing backslash joins back into one word.
 func wordLines(arg string, indent bool, width int) []commandLine {
 	prefix := ""
 	if indent {
@@ -632,8 +587,7 @@ func wordLines(arg string, indent bool, width int) []commandLine {
 	return lines
 }
 
-// flagUnits joins each flag in args with the value after it, as one unit
-// that stays on one line where it fits.
+// flagUnits pairs each flag in args with the value after it.
 func flagUnits(args []string) [][]string {
 	units := make([][]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
@@ -671,8 +625,7 @@ func (a *Agents) statusText(status int) string {
 	return theme.OK.Bold(true).Render(text)
 }
 
-// keycardVerdict says what the proxy and Keycard did with the last request,
-// from the proxy's record of it.
+// keycardVerdict says what the proxy and Keycard did with the last request.
 func (a *Agents) keycardVerdict() string {
 	theme := a.ui.Styles
 	request := a.request
@@ -698,8 +651,7 @@ func (a *Agents) keycardVerdict() string {
 	return label + theme.OK.Render("✓ Allowed with no credential, as the endpoint needs none")
 }
 
-// rightPaneKeys scrolls and filters what the pane on the right shows. Esc
-// goes back to the pane it shows for.
+// rightPaneKeys scrolls and filters the right pane, and Esc leaves it.
 func (a *Agents) rightPaneKeys(msg tea.KeyPressMsg) tea.Cmd {
 	if !key.Matches(msg, a.ui.Keys.Back) || a.ui.Logs.Filter() != "" {
 		return a.ui.Logs.Keys(msg, a.ui.Keys)
@@ -710,8 +662,7 @@ func (a *Agents) rightPaneKeys(msg tea.KeyPressMsg) tea.Cmd {
 	return follow(a.FocusPane(AgentPaneAgent))
 }
 
-// agentPaneKeys opens the list of agents to switch to, and goes down to
-// the requests.
+// agentPaneKeys opens the list of agents or goes down to the requests.
 func (a *Agents) agentPaneKeys(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case msg.String() == component.KeyEnter:
@@ -746,7 +697,6 @@ func (a *Agents) requestPaneKeys(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
-// host is the host the trial goes to.
 func (t trial) host() string {
 	parsed, err := url.Parse(t.url)
 	if err != nil {
@@ -764,9 +714,7 @@ func (t trial) path() string {
 	return parsed.Path
 }
 
-// trialsFor offers the demo's requests to try, then one to a host no demo
-// allows. A request to an endpoint with a credential names the resource
-// whose credential the proxy adds.
+// trialsFor lists the demo's requests, then one to a host no demo allows.
 func trialsFor(scenario *sandbox.Scenario) []trial {
 	blocked := trial{method: http.MethodGet, url: "https://example.com/", blocked: true}
 	if scenario == nil {
@@ -784,8 +732,7 @@ func trialsFor(scenario *sandbox.Scenario) []trial {
 	return append(trials, blocked)
 }
 
-// excerpt returns the first rows lines of a body, indented when it is
-// JSON.
+// excerpt returns the first rows lines of body, indented if it is JSON.
 func excerpt(body string, rows int) []string {
 	body = strings.TrimSpace(body)
 	if body == "" {

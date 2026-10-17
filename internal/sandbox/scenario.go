@@ -104,8 +104,7 @@ type ScenarioResource struct {
 	Credential string `yaml:"credential"`
 }
 
-// ScenarioTry is a request to try from the agent: its method, its URL, and
-// its body, if any.
+// ScenarioTry is a request to try from the agent.
 type ScenarioTry struct {
 	Method string `yaml:"method"`
 	URL    string `yaml:"url"`
@@ -343,8 +342,7 @@ func (s *Scenario) check() error {
 	return s.checkRun()
 }
 
-// checkTry checks that each request to try has a method, and goes to one
-// of the endpoints, which the proxy lets through.
+// checkTry checks that each try has a method and goes to an endpoint.
 func (s *Scenario) checkTry() error {
 	endpoints := s.EndpointList()
 	for i, try := range s.Try {

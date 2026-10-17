@@ -223,9 +223,7 @@ type Store struct {
 }
 
 // Add keeps a record of pod's proxy, and reports whether the store follows
-// pod. A record of another pod comes from a follower that stopped, and is
-// dropped. A DNS lookup is counted, and a routine one is not kept. Once the
-// store holds maxRecords, a record replaces the oldest.
+// pod. It drops another pod's record. It keeps no routine DNS lookup.
 func (s *Store) Add(pod string, record Record) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -366,12 +364,10 @@ func Summarize(records []Record, endpoints []sandbox.ScenarioEndpoint) ([]Endpoi
 	return uses, blocked.newestFirst()
 }
 
-// RecordFor returns the proxy's record of a request of method to host and
-// path, made at since or later. It takes the oldest, so that a later
-// request to the same place, such as an agent's own poll, does not take its
-// place. Without one, it returns the first connection to host or refused
-// lookup of the name, since the proxy refuses a host off the allow list
-// before any request.
+// RecordFor returns the oldest record of a request of method to host and
+// path, made at since or later. A later request to the same place, such as
+// the agent's own poll, does not take its place. Without one, it returns the
+// first refused connection to host or refused lookup of its name.
 func RecordFor(records []Record, method, host, path string, since time.Time) (Record, bool) {
 	var other *Record
 	for i := range records {
@@ -396,9 +392,8 @@ func isRequest(record *Record, method, path string) bool {
 }
 
 // standsIn reports whether record stands in for a request with no record of
-// its own: a refused connection, or a refused lookup. An allowed connection
-// is logged before the proxy asks Keycard, so it says nothing of the
-// request.
+// its own: a refused connection, or a refused lookup. The proxy logs an
+// allowed connection before it asks Keycard, so that one does not.
 func standsIn(record *Record) bool { return record.Request == nil && record.Denied() }
 
 // blockedHosts collects the hosts the proxy refused, each once, in the

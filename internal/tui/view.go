@@ -49,8 +49,7 @@ func (m *model) View() tea.View {
 	return view
 }
 
-// dashboardView draws the tab that shows, under the band with the tabs and
-// over the footer with the tab's keys.
+// dashboardView draws the tab that shows between the band and the footer.
 func (m *model) dashboardView() string {
 	var body string
 	var hints []component.Hint
@@ -68,8 +67,7 @@ func (m *model) dashboardView() string {
 	return m.ui.PageUnder(m.tabBand(), body, hints)
 }
 
-// tabBand draws the header band with the tabs, the one that shows marked,
-// and how the sandbox is on the right.
+// tabBand draws the header band with the tabs and the status badge.
 func (m *model) tabBand() string {
 	theme := m.ui.Styles
 	tabs := component.Tabs(theme, []string{"Home", "Agents", "Traffic"}, int(m.tab))
@@ -154,8 +152,7 @@ func (m *model) progress() *tea.ProgressBar {
 	return nil
 }
 
-// layout sizes the log pane for the window, and the log chosen from the
-// list or the tab that shows.
+// layout sizes the log pane for the window and the view that shows.
 func (m *model) layout() {
 	if m.overlay.kind == overlayLog {
 		m.logs.Layout()
@@ -185,8 +182,7 @@ func (m *model) withOverlay(base string) string {
 	return component.Overlay(base, modal, m.ui.Width, m.ui.Height)
 }
 
-// questionModal draws the setup's question outside the wizard. In the
-// wizard, the question is part of the screen, so it draws nothing over it.
+// questionModal draws the setup's question, unless the wizard shows it.
 func (m *model) questionModal() string {
 	if m.screen == screenWizard {
 		return ""
@@ -194,8 +190,7 @@ func (m *model) questionModal() string {
 	return m.setup.QuestionModal(m.askTitle)
 }
 
-// helpModal lists every key by group, each group on as many rows as the
-// modal's width needs. A short window leaves out the note on quitting.
+// helpModal lists the keys by group. A short window drops the quit note.
 func (m *model) helpModal() string {
 	theme := m.ui.Styles
 	width := component.ModalInnerWidth(m.ui.Width)
@@ -214,8 +209,7 @@ func (m *model) helpModal() string {
 	return modal.Render(lipgloss.JoinVertical(lipgloss.Left, append(rows, "", footer)...))
 }
 
-// helpRows lays a group's keys out after its title, as many on a row as
-// width takes.
+// helpRows lays a group's keys out after its title, wrapped to width.
 func helpRows(theme style.Styles, group component.HelpGroup, width int) []string {
 	var rows []string
 	row := ""

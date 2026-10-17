@@ -18,9 +18,7 @@ import (
 // nameWidth and targetWidth are the columns of what Keycard did.
 const nameWidth, targetWidth = 12, 24
 
-// Traffic is the dashboard's tab for what the agent asks for: what Keycard
-// did for each endpoint, then every decision of the egress proxy as it
-// makes it.
+// Traffic is the dashboard's tab for the agent's outbound traffic.
 type Traffic struct {
 	view
 }

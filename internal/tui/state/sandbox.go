@@ -12,8 +12,7 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/proxylog"
 )
 
-// The logs the state keeps, besides those StepSource, ServiceSource and
-// ContainerSource name.
+// Other log sources, besides StepSource, ServiceSource and ContainerSource.
 const (
 	SourceSetup    = "setup"
 	SourceAction   = "action"
@@ -22,8 +21,7 @@ const (
 	// proxy blocked, and SourceTrafficAll the feed with every DNS lookup.
 	SourceTraffic    = "traffic"
 	SourceTrafficAll = "traffic dns"
-	// SourceResponse holds the body of the last response the Agents tab
-	// got.
+	// SourceResponse holds the body of the Agents tab's last response.
 	SourceResponse = "response"
 )
 

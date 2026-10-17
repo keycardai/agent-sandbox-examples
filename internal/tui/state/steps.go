@@ -103,11 +103,8 @@ func (r *Run) FailedStep() *StepRow {
 	return nil
 }
 
-// ResumeIndex is where a bring-up starts again: at the step that failed,
-// or from the beginning. When the tunnel or the mirror that a step before
-// the failed one started no longer runs, it starts at that step instead,
-// because the later steps need it. A quick tunnel's new URL then makes the
-// cluster step offer to recreate the cluster.
+// ResumeIndex is where a bring-up starts again: the failed step, or the
+// earlier tunnel or mirror step when that no longer runs.
 func (s *Sandbox) ResumeIndex() int {
 	failed := slices.IndexFunc(s.Run.Steps, func(row *StepRow) bool { return row.State == StepFailed })
 	if failed < 0 {

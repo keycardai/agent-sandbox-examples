@@ -1,11 +1,6 @@
 // Package tui is the sandbox's terminal UI. It sets the sandbox up through
-// the same questions as `sandbox init`, and brings it up one step at a
-// time. Then Home says what Keycard did for the agent and what to try, the
-// Agents tab lists an agent for each person, sends requests from the one
-// selected and shows what came back, and the Traffic tab shows each
-// decision of its egress proxy. l lists every log, from any tab. The tunnel
-// and the mirror run as services, so quitting the TUI leaves the sandbox
-// up, and starting it again shows it.
+// the same questions as `sandbox init`, brings it up one step at a time,
+// and shows the agents and their traffic. Quitting it leaves the sandbox up.
 //
 // The state package holds what the TUI knows and the rules that change it,
 // and the page package draws it. The root model here is the controller: it
@@ -55,9 +50,7 @@ const (
 	screenSettings
 )
 
-// tab is a view of the dashboard. Home says what happens and what to do,
-// Agents is for working with the agents, and Traffic for what they ask
-// for.
+// tab is a view of the dashboard.
 type tab int
 
 const (
@@ -105,10 +98,8 @@ type model struct {
 	polling     int
 	tickPlanned bool
 	stale       bool
-	// stream names the container log the TUI follows, and streamStop stops
-	// following it. streamFinished is set when the container had finished,
-	// so its log was read once. trafficStop stops following the proxy's
-	// audit log.
+	// stream names the container log the TUI follows, and streamFinished is
+	// set when it was read once. trafficStop stops following the proxy's log.
 	stream         string
 	streamStop     context.CancelFunc
 	streamFinished bool
@@ -129,15 +120,12 @@ type model struct {
 	wizardBack   screen
 	settingsBack screen
 
-	// mouse turns on mouse reporting, for the wheel. It is off by default,
-	// so the terminal can select and copy text.
+	// mouse turns on mouse reporting. It is off by default, for copying text.
 	mouse bool
 }
 
-// overlay is what covers the screen: nothing, the help, a confirmation, a
-// setup question, the quit dialog or a list to choose from. It holds data
-// only: a confirmation's yes is the message that y sends, which Update
-// acts on then.
+// overlay is what covers the screen. It holds data only: a confirmation's
+// yes is the message that y sends, which Update acts on then.
 type overlay struct {
 	kind  overlayKind
 	title string
@@ -151,13 +139,12 @@ const (
 	overlayNone overlayKind = iota
 	overlayHelp
 	overlayConfirm
-	// overlayQuestion is the setup's question outside the wizard, which
-	// the setup page keeps. In the wizard, it is part of the screen.
+	// overlayQuestion is the setup's question. In the wizard, it is part of
+	// the screen.
 	overlayQuestion
 	overlayQuit
 	overlayDemo
-	// overlayLogs lists every log, for looking into a problem, and
-	// overlayLog shows the one chosen.
+	// overlayLogs lists every log, and overlayLog shows the one chosen.
 	overlayLogs
 	overlayLog
 	// overlayAgents lists every agent, to switch to another.
@@ -187,8 +174,7 @@ func (m *model) screenLayer() layer {
 }
 
 // overlayLayer is how the open overlay draws and takes a key, or false
-// when none is open. An overlay that draws nothing leaves the screen as it
-// is.
+// when none is open. An overlay that draws nothing leaves the screen as is.
 func (m *model) overlayLayer() (layer, bool) {
 	switch m.overlay.kind {
 	case overlayHelp:

@@ -74,7 +74,6 @@ type (
 		describe map[string]string
 		problems []error
 	}
-	// agentAddedMsg reports the end of adding an agent.
 	agentAddedMsg struct {
 		email    string
 		err      error
@@ -424,8 +423,7 @@ func (m *model) restartAgent() {
 		"with the current images and settings. The agent loses what it kept in the pod.", restartPodMsg{})
 }
 
-// restartPod restarts the selected agent's pod, while nothing else runs and
-// the sandbox is up. The agent's log starts over with the new pod.
+// restartPod restarts the selected agent's pod, and its log starts over.
 func (m *model) restartPod() {
 	if m.busy() || m.isDown() {
 		return
@@ -487,9 +485,8 @@ func (m *model) stopEverything(quit bool) {
 	m.runAction(state.Job{Kind: state.JobStop, Name: "Stopping everything", QuitAfter: quit}, m.session.Down)
 }
 
-// runAction runs job's work in the background with its output in the
-// action log, which the log pane shows, and reports when it is done. While
-// another job runs, it refuses and says so.
+// runAction runs job's work in the background, with its output in the
+// action log. While another job runs, it refuses.
 func (m *model) runAction(job state.Job, work func(ctx context.Context, out io.Writer) error) {
 	if !m.state.Run.StartJob(job, nil) {
 		return
@@ -585,8 +582,7 @@ func (m *model) polled() tea.Cmd {
 	return pollTick()
 }
 
-// onStatus keeps what a read of the services and the cluster found,
-// unless a job ended since it started.
+// onStatus keeps a read of the services, unless a job ended since it began.
 func (m *model) onStatus(msg statusMsg) {
 	if !m.state.Reads.Current(msg.mark) {
 		m.stale = true
@@ -606,15 +602,13 @@ func (m *model) onPods(msg podsMsg) {
 	if len(m.state.SelectedPods()) > 0 {
 		m.startTraffic()
 	}
-	// The log pane keeps an action's log until the operator moves away
-	// from it, so that its outcome stays on screen.
+	// The log pane keeps an action's log, so its outcome stays on screen.
 	if m.ui.Logs.Source() != state.SourceAction {
 		m.followFront()
 	}
 }
 
-// syncAgents follows the selected agent's pod. When that pod changed, every
-// tab moves to it.
+// syncAgents moves every tab to the selected agent's pod when it changes.
 func (m *model) syncAgents() {
 	agent, _ := m.state.Selected()
 	if agent.Pod != m.shownPod {
@@ -623,8 +617,7 @@ func (m *model) syncAgents() {
 	}
 }
 
-// agentSwitched points the screens at the agent selected now: its log,
-// its traffic, and no request yet.
+// agentSwitched points the screens at the agent selected now.
 func (m *model) agentSwitched() {
 	m.agents.Reset()
 	m.stopStream()
@@ -640,10 +633,8 @@ func (m *model) stopStream() {
 	m.stream, m.streamStop, m.streamFinished = "", nil, false
 }
 
-// followContainer follows a container's log until ctx ends. It follows it
-// again when kubectl stops, as it does when the container restarts, and
-// keeps the lines it has until kubectl writes new ones. A container that
-// finished, such as the init container, is read once.
+// followContainer follows a container's log until ctx ends, and again when
+// kubectl stops, as on a restart. A finished container is read once.
 func followContainer(ctx context.Context, session *sandbox.Session, pod, container string, finished bool,
 	log *component.Log,
 ) {
@@ -683,9 +674,8 @@ func followContainer(ctx context.Context, session *sandbox.Session, pod, contain
 	}
 }
 
-// attemptLog is what one run of kubectl logs writes to log. When the run
-// follows another, log drops the earlier run's lines once this run writes,
-// since kubectl starts again from the tail.
+// attemptLog writes one run of kubectl logs to log. A later run clears the
+// earlier lines at its first write, as kubectl starts again from the tail.
 type attemptLog struct {
 	log   *component.Log
 	again bool
@@ -733,8 +723,7 @@ func (m *model) startTraffic() {
 	m.jobs.Go(func() { followTraffic(ctx, session, pod, feeds, store) })
 }
 
-// stopTraffic stops following the proxy's log, and forgets its records and
-// rows, as for an agent without a pod, or once everything stopped.
+// stopTraffic stops following the proxy's log, and forgets its records.
 func (m *model) stopTraffic() {
 	if m.trafficStop != nil {
 		m.trafficStop()
@@ -745,12 +734,9 @@ func (m *model) stopTraffic() {
 	m.ui.Logs.Log(state.SourceTrafficAll).Reset()
 }
 
-// followTraffic follows the proxy's log in pod until ctx ends. Each audit
-// record goes to store, and as a row to the feeds: requests to the first,
-// and every record to the second. Other log lines are left out. What
-// kubectl says on its error output goes to both feeds. When kubectl stops,
-// or cannot start, store keeps why, the feeds say it, and followTraffic
-// follows the log again streamRetry later.
+// followTraffic follows the proxy's log in pod until ctx ends, and again
+// streamRetry after kubectl stops. Requests go to the first feed, and every
+// audit record to the second.
 func followTraffic(ctx context.Context, session *sandbox.Session, pod string, feeds [2]*component.Log,
 	store *proxylog.Store,
 ) {
@@ -775,10 +761,8 @@ func followTraffic(ctx context.Context, session *sandbox.Session, pod string, fe
 	}
 }
 
-// streamRecords runs kubectl logs once, and reads the proxy's audit
-// records into store and the feeds. What kubectl writes to standard error
-// goes to both feeds. It returns why kubectl stopped, with the first line
-// it wrote to standard error.
+// streamRecords runs kubectl logs once into store and the feeds. It returns
+// why kubectl stopped, with the first line it wrote to standard error.
 func streamRecords(ctx context.Context, session *sandbox.Session, pod string, feeds [2]*component.Log,
 	store *proxylog.Store,
 ) error {
@@ -805,8 +789,7 @@ func streamRecords(ctx context.Context, session *sandbox.Session, pod string, fe
 	return readErr
 }
 
-// readRecords reads the audit records of pod's proxy from stdout into
-// store and the feeds. The first line it reads clears the store's error.
+// readRecords reads pod's audit records. The first line clears store's error.
 func readRecords(stdout io.Reader, pod string, feeds [2]*component.Log, store *proxylog.Store) error {
 	reading := false
 	err := component.ReadLines(stdout, func(line string) {
@@ -824,9 +807,8 @@ func readRecords(stdout io.Reader, pod string, feeds [2]*component.Log, store *p
 			return
 		}
 		row := record.Row()
-		// The feed of requests leaves out the routine lookups, and keeps a
-		// refused lookup of a host on the internet: the proxy blocks a host
-		// it does not allow there, before any connection.
+		// The requests feed keeps a refused lookup of an internet host: the
+		// proxy blocks a host it does not allow at the lookup.
 		if !record.RoutineLookup() {
 			feeds[0].Add(row)
 		}
@@ -922,9 +904,7 @@ func (m *model) stopSetup() {
 	}
 }
 
-// addAgent asks who gets a new agent, and the demo's questions for them, as
-// setup does. Once the settings are saved, the new agent comes up when the
-// sandbox is up.
+// addAgent asks who gets a new agent, and the demo's questions for them.
 func (m *model) addAgent() {
 	if m.busy() {
 		return
@@ -958,9 +938,7 @@ func (m *model) addAgent() {
 }
 
 // onAgentAdded selects the new agent, and brings it up when the sandbox is
-// up. Otherwise it comes up with the next bring-up. When saving the
-// settings failed, it says the agent is for this session only. When D
-// stopped the questions, everything stops now.
+// up. Otherwise it comes up with the next bring-up.
 func (m *model) onAgentAdded(msg agentAddedMsg) {
 	m.state.Run.CancelJob()
 	ended := m.state.EndJob()
@@ -1003,8 +981,7 @@ func (m *model) onAgentAdded(msg agentAddedMsg) {
 	})
 }
 
-// removeAgent asks, then takes the selected agent away: out of the
-// settings, and out of the cluster and the zone's rules when it runs.
+// removeAgent asks, then takes the selected agent away.
 func (m *model) removeAgent() {
 	agent, index := m.state.Selected()
 	switch {
@@ -1064,8 +1041,7 @@ func (m *model) sendRequest(msg page.SendRequestMsg) tea.Cmd {
 	}
 }
 
-// onRequestDone records what came back from a request the Agents tab
-// asked for, and shows it there.
+// onRequestDone records a request's result, and shows it on the Agents tab.
 func (m *model) onRequestDone(msg page.RequestDoneMsg) {
 	sent := msg.Agent + "'s agent: " + msg.Method + " " + msg.URL
 	switch {

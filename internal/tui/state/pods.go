@@ -10,8 +10,7 @@ import (
 const (
 	AgentContainer = "agent"
 	ProxyContainer = "egress-proxy"
-	// NetsetupContainer is the pod's init container, which sets the
-	// firewall rules.
+	// NetsetupContainer is the init container that sets the firewall rules.
 	NetsetupContainer = "egress-netsetup"
 	StateTerminated   = "terminated"
 )
@@ -29,8 +28,7 @@ type PodState int
 const (
 	// PodNone is an agent without a pod: it was not brought up.
 	PodNone PodState = iota
-	// PodComingUp is a pod that an action makes for the agent now, as when
-	// the person was just added or the pod restarts.
+	// PodComingUp is a pod that an action makes or restarts now.
 	PodComingUp
 	// PodUnread is a pod the last read could not list.
 	PodUnread
@@ -40,16 +38,14 @@ const (
 	PodStarting
 	// PodRunning is a pod whose agent runs.
 	PodRunning
-	// PodFirewallFailed is a pod whose firewall did not start, so the agent
-	// never does.
+	// PodFirewallFailed is a pod whose firewall failed, so no agent runs.
 	PodFirewallFailed
 	// PodAgentFailed is a pod whose agent stopped or is stuck.
 	PodAgentFailed
 )
 
-// PodState says how agent's pod is, with the container that says so: the
-// firewall's when it failed, else the agent's. Every screen says it from
-// here, so that they agree.
+// PodState says how agent's pod is, with the container that says so. Every
+// screen reads it here, so that they agree.
 func (s *Sandbox) PodState(agent sandbox.Agent) (PodState, ContainerRow) {
 	if row, failed := s.firewallFailed(agent.Pod); failed {
 		return PodFirewallFailed, row
@@ -77,10 +73,8 @@ func stuck(ctr sandbox.ContainerStatus) bool {
 	)
 }
 
-// firewallFailed returns the firewall's container of pod when it did not
-// set the rules. The egress proxy is an init container too, as a native
-// sidecar, but its failure is a trouble of its own: the agent can run
-// without it.
+// firewallFailed returns pod's firewall container when it did not set the
+// rules. A failed proxy is TroubleProxy, since the agent runs without it.
 func (s *Sandbox) firewallFailed(pod string) (ContainerRow, bool) {
 	for _, row := range s.Agents.Pods {
 		ctr := row.Container
@@ -92,9 +86,7 @@ func (s *Sandbox) firewallFailed(pod string) (ContainerRow, bool) {
 	return ContainerRow{}, false
 }
 
-// noPod says why the last read found no agent container for agent: an
-// action makes its pod now, it was not brought up, the read failed, or the
-// pod is gone.
+// noPod says why the last read found no agent container for agent.
 func (s *Sandbox) noPod(agent sandbox.Agent) PodState {
 	switch {
 	case agent.Email != "" && s.Run.Job.Agent == agent.Email:
