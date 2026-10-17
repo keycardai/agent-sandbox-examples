@@ -50,7 +50,7 @@ func (s *Sandbox) PodState(agent sandbox.Agent) (PodState, ContainerRow) {
 	if agent.Pod == "" {
 		return PodNone, ContainerRow{}
 	}
-	if row, failed := s.failedInit(agent.Pod); failed {
+	if row, failed := s.firewallFailed(agent.Pod); failed {
 		return PodFirewallFailed, row
 	}
 	index := slices.IndexFunc(s.Agents.Pods, func(row ContainerRow) bool {
@@ -82,12 +82,15 @@ func stuck(ctr sandbox.ContainerStatus) bool {
 	)
 }
 
-// failedInit returns the init container of pod that failed, such as the
-// firewall that did not start.
-func (s *Sandbox) failedInit(pod string) (ContainerRow, bool) {
+// firewallFailed returns the firewall's container of pod when it did not
+// set the rules. The egress proxy is an init container too, as a native
+// sidecar, but its failure is a trouble of its own: the agent can run
+// without it.
+func (s *Sandbox) firewallFailed(pod string) (ContainerRow, bool) {
 	for _, row := range s.Agents.Pods {
 		ctr := row.Container
-		if row.Pod == pod && ctr.Init && (ctr.State == StateTerminated && ctr.ExitCode != 0 || stuck(ctr)) {
+		if row.Pod == pod && ctr.Name == NetsetupContainer &&
+			(ctr.State == StateTerminated && ctr.ExitCode != 0 || stuck(ctr)) {
 			return row, true
 		}
 	}

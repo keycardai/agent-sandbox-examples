@@ -184,7 +184,7 @@ func TestPhase(t *testing.T) {
 // none before a bring-up, unread or missing, starting, running or failed.
 func TestPodState(t *testing.T) {
 	t.Parallel()
-	const pod = "sandbox-ada-0"
+	const pod, waiting = "sandbox-ada-0", "waiting"
 	agentIn := func(status sandbox.ContainerStatus) []ContainerRow {
 		status.Name = AgentContainer
 		return []ContainerRow{{Pod: pod, Container: status}}
@@ -199,12 +199,26 @@ func TestPodState(t *testing.T) {
 		{"no pod", sandbox.Agent{}, nil, nil, PodNone},
 		{"unread", sandbox.Agent{Pod: pod}, nil, sandbox.ErrPod, PodUnread},
 		{"missing", sandbox.Agent{Pod: pod}, nil, nil, PodMissing},
-		{"starting", sandbox.Agent{Pod: pod}, agentIn(sandbox.ContainerStatus{State: "waiting"}), nil, PodStarting},
+		{"starting", sandbox.Agent{Pod: pod}, agentIn(sandbox.ContainerStatus{State: waiting}), nil, PodStarting},
 		{"running", sandbox.Agent{Pod: pod}, agentIn(sandbox.ContainerStatus{Ready: true}), nil, PodRunning},
 		{
 			"crashing",
 			sandbox.Agent{Pod: pod},
-			agentIn(sandbox.ContainerStatus{State: "waiting", Reason: "CrashLoopBackOff"}), nil, PodAgentFailed,
+			agentIn(sandbox.ContainerStatus{State: waiting, Reason: "CrashLoopBackOff"}), nil, PodAgentFailed,
+		},
+		{
+			"firewall failed",
+			sandbox.Agent{Pod: pod},
+			append(agentIn(sandbox.ContainerStatus{State: waiting}), ContainerRow{Pod: pod, Container: sandbox.ContainerStatus{
+				Name: NetsetupContainer, Init: true, State: StateTerminated, ExitCode: 1,
+			}}), nil, PodFirewallFailed,
+		},
+		{
+			"proxy crashing",
+			sandbox.Agent{Pod: pod},
+			append(agentIn(sandbox.ContainerStatus{Ready: true}), ContainerRow{Pod: pod, Container: sandbox.ContainerStatus{
+				Name: ProxyContainer, Init: true, State: waiting, Reason: "CrashLoopBackOff",
+			}}), nil, PodRunning,
 		},
 	} {
 		known := testSandbox(t, sandbox.Settings{})
