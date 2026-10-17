@@ -19,19 +19,19 @@ const nameWidth, targetWidth = 12, 24
 // one line per endpoint and two more, however much traffic there is. When
 // the proxy's log cannot be read, it says why instead.
 func (v view) keycardLines() []string {
-	if err := v.state.Traffic.Err(); err != nil {
+	if err := v.state.Agents.Traffic.Err(); err != nil {
 		return []string{
 			v.ui.Styles.Failed.Render("✕ Cannot read the proxy's log: " + component.FirstLine(err.Error())),
 			v.ui.Styles.Dim.Render("  The TUI tries again every few seconds."),
 		}
 	}
-	records, _ := v.state.Traffic.Snapshot()
+	records, _ := v.state.Agents.Traffic.Snapshot()
 	uses, blocked := proxylog.Summarize(records, v.endpoints())
 	lines := make([]string, 0, len(uses)+half)
 	for _, use := range uses {
 		lines = append(lines, v.useLine(use))
 	}
-	return append(lines, v.blockedLine(blocked), v.lookupLine(v.state.Traffic.Lookups()))
+	return append(lines, v.blockedLine(blocked), v.lookupLine(v.state.Agents.Traffic.Lookups()))
 }
 
 // useLine is one endpoint: its resource, where it is, and what came of the

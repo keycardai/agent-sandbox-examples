@@ -122,7 +122,7 @@ func snapshotUp(t *testing.T) *model {
 	root.Update(tea.WindowSizeMsg{Width: 150, Height: 42})
 	root.ui.Frame = 3
 	now := time.Now()
-	for i, row := range root.state.Steps {
+	for i, row := range root.state.Run.Steps {
 		row.State, row.Started, row.Ended = state.StepDone, now.Add(-time.Duration(300-i*25)*time.Second),
 			now.Add(-time.Duration(290-i*25)*time.Second)
 	}
@@ -144,10 +144,10 @@ func snapshotUp(t *testing.T) *model {
 func snapshotBringUp(t *testing.T) *model {
 	t.Helper()
 	root := snapshotUp(t)
-	root.state.Job = state.Job{Kind: state.JobBringUp}
+	root.state.Run.Job = state.Job{Kind: state.JobBringUp}
 	now := sampleTime()
 	root.state.Now = func() time.Time { return now }
-	for i, row := range root.state.Steps {
+	for i, row := range root.state.Run.Steps {
 		switch {
 		case i == 6:
 			row.State, row.Started, row.Ended = state.StepRunning, now.Add(-41*time.Second), time.Time{}
@@ -157,6 +157,6 @@ func snapshotBringUp(t *testing.T) *model {
 			row.State = state.StepPending
 		}
 	}
-	root.state.Cursor = 6
+	root.state.Run.Cursor = 6
 	return root
 }

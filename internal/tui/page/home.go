@@ -94,19 +94,19 @@ func (h *Home) Hints() []component.Hint {
 // log. A run of the checks alone shows only their log.
 func (h *Home) bringUp() string {
 	theme := h.ui.Styles
-	current := h.state.Steps[h.state.Cursor]
+	current := h.state.Run.Steps[h.state.Run.Cursor]
 	title := "Bringing up your sandbox"
 	note := "The first time takes a few minutes. Quitting stops the step that runs. What is done stays, " +
 		"and u runs the steps again."
-	if from := h.state.Job.From; from > 0 {
-		title += " from: " + h.state.Steps[from].Step.Title
+	if from := h.state.Run.Job.From; from > 0 {
+		title += " from: " + h.state.Run.Steps[from].Step.Title
 	}
 	lines := []string{}
-	if h.state.Job.Is(state.JobChecks) {
+	if h.state.Run.Job.Is(state.JobChecks) {
 		title, note = "Running the checks", "Each check sends a request from the agent and reads what came back."
 	} else {
 		lines = append(lines, "")
-		for _, row := range h.state.Steps {
+		for _, row := range h.state.Run.Steps {
 			lines = append(lines, h.stepLine(row, min(h.ui.bodyWidth(), readWidth)))
 		}
 	}
@@ -137,9 +137,9 @@ func (h *Home) failed(row *state.StepRow) string {
 		}
 	}
 	lines = append(lines, "",
-		h.ui.actionLine("u", "Start again from: "+h.state.Steps[h.state.ResumeIndex()].Step.Title),
+		h.ui.actionLine("u", "Start again from: "+h.state.Run.Steps[h.state.ResumeIndex()].Step.Title),
 		"")
-	for _, step := range h.state.Steps {
+	for _, step := range h.state.Run.Steps {
 		lines = append(lines, h.stepLine(step, min(h.ui.bodyWidth(), readWidth)))
 	}
 	return strings.Join(lines, "\n")
@@ -150,12 +150,12 @@ func (h *Home) down() string {
 	theme := h.ui.Styles
 	why := "There is no sandbox yet."
 	switch {
-	case h.state.Status.ClusterErr != nil:
-		why = "The cluster might exist. Checking it failed: " + component.FirstLine(h.state.Status.ClusterErr.Error())
-	case h.state.Status.ClusterExists && h.state.StartsTunnel() && !h.state.Status.Tunnel.Running:
+	case h.state.Reads.Status.ClusterErr != nil:
+		why = "The cluster might exist. Checking it failed: " + component.FirstLine(h.state.Reads.Status.ClusterErr.Error())
+	case h.state.Reads.Status.ClusterExists && h.state.StartsTunnel() && !h.state.Reads.Status.Tunnel.Running:
 		why = "The cluster exists, but the tunnel is stopped, so Keycard cannot reach the cluster's issuer. " +
 			"u starts a new tunnel. A quick tunnel gets a new URL, so the bring-up then asks to recreate the cluster."
-	case h.state.Status.ClusterExists:
+	case h.state.Reads.Status.ClusterExists:
 		why = "The cluster exists, but the sandbox was not set up in it."
 	}
 	return strings.Join([]string{
@@ -236,7 +236,7 @@ func (h *Home) agentHeadline() []string {
 	case state.PodUnread:
 		return []string{
 			theme.Failed.Bold(true).Render("✕ Cannot read the sandbox's pods"),
-			h.ui.para(theme.Muted, component.FirstLine(h.state.PodsErr.Error())),
+			h.ui.para(theme.Muted, component.FirstLine(h.state.Agents.PodsErr.Error())),
 		}
 	case state.PodNone:
 		return []string{
@@ -272,7 +272,7 @@ func (h *Home) actions() []string {
 
 // checksScore says how the last checks went, or "".
 func (h *Home) checksScore() string {
-	for _, row := range h.state.Steps {
+	for _, row := range h.state.Run.Steps {
 		if row.Step.ID == sandbox.StepChecks && row.Total > 0 {
 			return fmt.Sprintf(" (last time %d of %d passed)", row.Passed, row.Total)
 		}
@@ -301,8 +301,8 @@ func (h *Home) contextLine() string {
 // there are when there is more than one.
 func (h *Home) agentContext() string {
 	agent, _ := h.state.Selected()
-	if len(h.state.Agents) > 1 {
-		return agent.Email + " (" + component.Plural(len(h.state.Agents), wordAgent) + ")"
+	if len(h.state.Agents.List) > 1 {
+		return agent.Email + " (" + component.Plural(len(h.state.Agents.List), wordAgent) + ")"
 	}
 	return agent.Email
 }

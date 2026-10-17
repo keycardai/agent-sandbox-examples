@@ -45,7 +45,7 @@ func testModel(t *testing.T) *model {
 	t.Helper()
 	root := newModel(t.Context(), testSession(t))
 	root.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
-	root.state.Read = true
+	root.state.Reads.Done = true
 	return root
 }
 
@@ -66,7 +66,7 @@ func answerYes(root *model) {
 func TestStepsFollowTheBringUp(t *testing.T) {
 	t.Parallel()
 	root := testModel(t)
-	steps := root.state.Steps
+	steps := root.state.Run.Steps
 	if len(steps) != 10 || steps[0].Step.ID != sandbox.StepTunnel {
 		t.Fatalf("steps = %d, first %q; want the 10 k3d steps from the tunnel", len(steps), steps[0].Step.ID)
 	}
@@ -80,7 +80,7 @@ func TestStepsFollowTheBringUp(t *testing.T) {
 	if got := root.state.ResumeIndex(); got != 0 {
 		t.Errorf("ResumeIndex with the tunnel stopped = %d, want 0", got)
 	}
-	root.state.Status.Tunnel.Running = true
+	root.state.Reads.Status.Tunnel.Running = true
 	if got := root.state.ResumeIndex(); got != 1 {
 		t.Errorf("ResumeIndex = %d, want 1", got)
 	}
@@ -103,11 +103,11 @@ func TestChecksAlone(t *testing.T) {
 	cancel()
 	root := newModel(ctx, testSession(t))
 	root.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
-	root.state.Status = sandbox.Status{Deployed: true, ClusterExists: true}
-	root.state.Status.Tunnel.Running, root.state.Read = true, true
+	root.state.Reads.Status = sandbox.Status{Deployed: true, ClusterExists: true}
+	root.state.Reads.Status.Tunnel.Running, root.state.Reads.Done = true, true
 	root.Update(press("c"))
-	if !root.state.Job.Is(state.JobChecks) {
-		t.Fatalf("job = %+v, want the checks", root.state.Job)
+	if !root.state.Run.Job.Is(state.JobChecks) {
+		t.Fatalf("job = %+v, want the checks", root.state.Run.Job)
 	}
 	badge := ansi.Strip(root.statusBadge())
 	if !strings.Contains(badge, "running the checks") || strings.Contains(badge, "bringing up") {
@@ -139,9 +139,9 @@ func TestReadFromBeforeAStop(t *testing.T) {
 	root := testModel(t)
 	before := sandbox.Status{Deployed: true, ClusterExists: true}
 	before.Tunnel.Running = true
-	root.state.SetStatus(before)
-	mark := root.state.ReadMark()
-	root.state.StartJob(state.Job{Kind: state.JobStop, Name: "Stopping everything"}, nil)
+	root.state.Reads.Set(before)
+	mark := root.state.Reads.Mark()
+	root.state.Run.StartJob(state.Job{Kind: state.JobStop, Name: "Stopping everything"}, nil)
 	root.polling = pollReads
 	root.Update(actionDoneMsg{})
 	if phase, _ := root.state.Phase(); phase != state.PhaseReading {
@@ -151,10 +151,10 @@ func TestReadFromBeforeAStop(t *testing.T) {
 	if _, cmd := root.Update(podsMsg{mark: mark}); cmd == nil || root.polling != pollReads {
 		t.Errorf("polling = %d after the old reads; want a new poll at once", root.polling)
 	}
-	if root.state.Read || root.state.Status.ClusterExists {
-		t.Errorf("status = %+v, read %v; want the old read dropped", root.state.Status, root.state.Read)
+	if root.state.Reads.Done || root.state.Reads.Status.ClusterExists {
+		t.Errorf("status = %+v, read %v; want the old read dropped", root.state.Reads.Status, root.state.Reads.Done)
 	}
-	root.Update(statusMsg{mark: root.state.ReadMark()})
+	root.Update(statusMsg{mark: root.state.Reads.Mark()})
 	if phase, _ := root.state.Phase(); phase != state.PhaseDown {
 		t.Errorf("phase after a new read = %v, want down", phase)
 	}
@@ -167,10 +167,10 @@ func TestStopEndsTheTraffic(t *testing.T) {
 	root := testModel(t)
 	stopped := false
 	root.trafficStop = func() { stopped = true }
-	root.state.Traffic.Reset(samplePod)
-	root.state.StartJob(state.Job{Kind: state.JobStop}, nil)
+	root.state.Agents.Traffic.Reset(samplePod)
+	root.state.Run.StartJob(state.Job{Kind: state.JobStop}, nil)
 	root.Update(actionDoneMsg{})
-	if _, pod := root.state.Traffic.Snapshot(); !stopped || root.trafficStop != nil || pod != "" {
+	if _, pod := root.state.Agents.Traffic.Snapshot(); !stopped || root.trafficStop != nil || pod != "" {
 		t.Errorf("after the stop: follower stopped %v, store of %q; want it stopped and the store empty", stopped, pod)
 	}
 }
@@ -180,7 +180,7 @@ func TestStopEndsTheTraffic(t *testing.T) {
 func TestQuitDialogFollowsTheJob(t *testing.T) {
 	t.Parallel()
 	root := upModel(t)
-	root.state.Job = state.Job{Kind: state.JobBringUp}
+	root.state.Run.Job = state.Job{Kind: state.JobBringUp}
 	root.Update(press("q"))
 	if view := ansi.Strip(root.View().Content); !strings.Contains(view, "A bring-up is running") {
 		t.Fatalf("the quit dialog does not say the bring-up runs:\n%s", view)
@@ -198,8 +198,8 @@ func TestStartsWithoutTellingToBringUp(t *testing.T) {
 	t.Parallel()
 	root := quietModel(t)
 	root.Init()
-	if root.ui.Toast.Text != "" || root.state.Job.Busy() {
-		t.Errorf("Init: notice %q, job %+v; want neither", root.ui.Toast.Text, root.state.Job)
+	if root.ui.Toast.Text != "" || root.state.Run.Job.Busy() {
+		t.Errorf("Init: notice %q, job %+v; want neither", root.ui.Toast.Text, root.state.Run.Job)
 	}
 }
 
@@ -242,8 +242,8 @@ func TestQuitLeavesTheSandboxRunning(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("Enter in the quit dialog returned no command, want tea.Quit")
 	}
-	if _, ok := cmd().(tea.QuitMsg); !ok || root.state.Job.Busy() {
-		t.Errorf("Enter: quit %v, job %+v; want a plain quit", ok, root.state.Job)
+	if _, ok := cmd().(tea.QuitMsg); !ok || root.state.Run.Job.Busy() {
+		t.Errorf("Enter: quit %v, job %+v; want a plain quit", ok, root.state.Run.Job)
 	}
 }
 
@@ -275,8 +275,8 @@ func TestViewSizes(t *testing.T) {
 func TestChecksScore(t *testing.T) {
 	t.Parallel()
 	root := testModel(t)
-	last := len(root.state.Steps) - 1
-	row := root.state.Steps[last]
+	last := len(root.state.Run.Steps) - 1
+	row := root.state.Run.Steps[last]
 	row.Log.Add("  PASS  allowed", "  FAIL  credentialed", "  PASS  denied", "  MANUAL  event log")
 	root.Update(stepStartMsg{index: last})
 	root.Update(stepDoneMsg{index: last, err: sandbox.ErrCheck})
@@ -291,12 +291,12 @@ func TestChecksScore(t *testing.T) {
 func TestChecksThatDidNotRun(t *testing.T) {
 	t.Parallel()
 	root := testModel(t)
-	if root.Update(press("c")); root.state.Job.Busy() || !strings.Contains(root.ui.Toast.Text, "sandbox is down") {
+	if root.Update(press("c")); root.state.Run.Job.Busy() || !strings.Contains(root.ui.Toast.Text, "sandbox is down") {
 		t.Errorf("c on a sandbox that is down: job %+v, notice %q; want a notice that it is down",
-			root.state.Job, root.ui.Toast.Text)
+			root.state.Run.Job, root.ui.Toast.Text)
 	}
-	last := len(root.state.Steps) - 1
-	root.state.Job = state.Job{Kind: state.JobChecks, From: last}
+	last := len(root.state.Run.Steps) - 1
+	root.state.Run.Job = state.Job{Kind: state.JobChecks, From: last}
 	root.Update(stepStartMsg{index: last})
 	root.Update(stepDoneMsg{index: last, err: sandbox.ErrPod})
 	root.Update(bringUpDoneMsg{})
@@ -326,22 +326,22 @@ func TestOneJobAtATime(t *testing.T) {
 			answerYes(root)
 		}, busyKeys()},
 		{
-			"a bring-up", "bring-up is running", func(root *model) { root.state.Job = state.Job{Kind: state.JobBringUp} },
+			"a bring-up", "bring-up is running", func(root *model) { root.state.Run.Job = state.Job{Kind: state.JobBringUp} },
 			slices.DeleteFunc(busyKeys(), func(key string) bool { return key == "u" || key == "D" }),
 		},
 	} {
 		for _, key := range tc.keys {
 			root := quietModel(t)
 			tc.start(root)
-			running := root.state.Job
+			running := root.state.Run.Job
 			_, cmd := root.Update(press(key))
-			if root.overlay.kind != overlayNone || root.state.Job.Kind != running.Kind || cmd != nil ||
+			if root.overlay.kind != overlayNone || root.state.Run.Job.Kind != running.Kind || cmd != nil ||
 				!strings.Contains(root.ui.Toast.Text, tc.notice) {
 				t.Errorf("%s while %s runs: overlay %v, job %+v, command %v, notice %q; want only a notice "+
-					"that says %q", key, tc.name, root.overlay.kind, root.state.Job, cmd != nil,
+					"that says %q", key, tc.name, root.overlay.kind, root.state.Run.Job, cmd != nil,
 					root.ui.Toast.Text, tc.notice)
 			}
-			root.state.CancelJob()
+			root.state.Run.CancelJob()
 		}
 	}
 }
@@ -367,18 +367,18 @@ func localQuietModel(t *testing.T) *model {
 func TestDownWaitsForTheBringUp(t *testing.T) {
 	t.Parallel()
 	root := localQuietModel(t)
-	root.state.Job = state.Job{Kind: state.JobBringUp}
+	root.state.Run.Job = state.Job{Kind: state.JobBringUp}
 	root.Update(press("q"))
 	root.Update(press("D"))
-	if job := root.state.Job; job.StopAfter || root.overlay.title != "Stop everything and quit?" {
+	if job := root.state.Run.Job; job.StopAfter || root.overlay.title != "Stop everything and quit?" {
 		t.Errorf("D asked %q and set job = %+v, want it to ask before it stops anything", root.overlay.title, job)
 	}
 	answerYes(root)
-	if job := root.state.Job; !job.Is(state.JobBringUp) || !job.StopAfter || !job.QuitAfter {
+	if job := root.state.Run.Job; !job.Is(state.JobBringUp) || !job.StopAfter || !job.QuitAfter {
 		t.Errorf("job = %+v while the bring-up runs, want the bring-up, then a stop and a quit", job)
 	}
 	root.Update(bringUpDoneMsg{err: context.Canceled})
-	if job := root.state.Job; !job.Is(state.JobStop) || !job.QuitAfter {
+	if job := root.state.Run.Job; !job.Is(state.JobStop) || !job.QuitAfter {
 		t.Errorf("after the bring-up stopped, job = %+v, want everything to stop, then a quit", job)
 	}
 }
@@ -392,7 +392,7 @@ func TestStopWhileAToolRuns(t *testing.T) {
 		return exec.CommandContext(ctx, "sleep", "30"), nil
 	}
 	ctx, cancel := context.WithCancel(t.Context())
-	run := bringUp{session: root.session, out: newBus(t.Context()), steps: root.state.Steps}
+	run := bringUp{session: root.session, out: newBus(t.Context()), steps: root.state.Run.Steps}
 	stop := time.AfterFunc(200*time.Millisecond, cancel)
 	defer stop.Stop()
 	runSteps(ctx, cancel, run, 0)
@@ -415,7 +415,7 @@ func TestStopWhileAToolRuns(t *testing.T) {
 func TestStoppedBringUp(t *testing.T) {
 	t.Parallel()
 	root := testModel(t)
-	root.state.Status.Tunnel.Running = true
+	root.state.Reads.Status.Tunnel.Running = true
 	root.Update(stepDoneMsg{index: 1, err: context.Canceled})
 	root.Update(bringUpDoneMsg{err: context.Canceled})
 	view := ansi.Strip(root.View().Content)
@@ -455,7 +455,7 @@ func TestDownForgetsTheFailedStep(t *testing.T) {
 		t.Errorf("while it stops, Home and the band do not say so:\n%s", view)
 	}
 	root.Update(<-root.bus.ch)
-	for _, row := range root.state.Steps {
+	for _, row := range root.state.Run.Steps {
 		if row.State != state.StepPending {
 			t.Errorf("after the stop, %q is %v, want it pending", row.Step.Title, row.State)
 		}
@@ -484,7 +484,7 @@ func TestRecreateWaitsForTheQuitDialog(t *testing.T) {
 func TestPollSkipsPodsWhenDown(t *testing.T) {
 	t.Parallel()
 	root := quietModel(t)
-	root.state.Read, root.state.Status = true, sandbox.Status{ClusterExists: true}
+	root.state.Reads.Done, root.state.Reads.Status = true, sandbox.Status{ClusterExists: true}
 	root.session.Local().Tool = func(ctx context.Context, name string, _ ...string) (*exec.Cmd, error) {
 		t.Errorf("the poll ran %s while the sandbox is down", name)
 		return exec.CommandContext(ctx, "false"), nil
@@ -513,7 +513,7 @@ func TestTrafficSaysWhyItCannotRead(t *testing.T) {
 	if store.Err() == nil {
 		t.Fatal("no error from following a pod with no zone step, want one")
 	}
-	root.state.Traffic.SetErr(store.Err())
+	root.state.Agents.Traffic.SetErr(store.Err())
 	if view := ansi.Strip(root.View().Content); !strings.Contains(view, "Cannot read the proxy's log") ||
 		strings.Contains(view, "not used yet") {
 		t.Errorf("Home says nothing of the error:\n%s", view)
@@ -526,9 +526,9 @@ func TestAgentKeysWhileDown(t *testing.T) {
 	t.Parallel()
 	for _, key := range []string{"x", "R", "c"} {
 		root := quietModel(t)
-		root.state.Read, root.state.Status = true, sandbox.Status{}
+		root.state.Reads.Done, root.state.Reads.Status = true, sandbox.Status{}
 		_, cmd := root.Update(press(key))
-		if cmd != nil || root.overlay.kind != overlayNone || root.state.Job.Busy() ||
+		if cmd != nil || root.overlay.kind != overlayNone || root.state.Run.Job.Busy() ||
 			!strings.Contains(root.ui.Toast.Text, "The sandbox is down") {
 			t.Errorf("%s while down: command %v, overlay %v, notice %q; want only a notice that it is down",
 				key, cmd != nil, root.overlay.kind, root.ui.Toast.Text)
@@ -565,7 +565,7 @@ func TestBusEndsWithTheTUI(t *testing.T) {
 func TestNothingToStopOnAnExistingCluster(t *testing.T) {
 	t.Parallel()
 	root := quietModel(t)
-	root.state.Status = sandbox.Status{Deployed: true, ClusterExists: true}
+	root.state.Reads.Status = sandbox.Status{Deployed: true, ClusterExists: true}
 	root.Update(press("D"))
 	if root.overlay.kind != overlayNone || !strings.Contains(root.ui.Toast.Text, "nothing for D to stop") {
 		t.Errorf("D: overlay %v, notice %q; want only a notice", root.overlay.kind, root.ui.Toast.Text)
@@ -576,7 +576,7 @@ func TestNothingToStopOnAnExistingCluster(t *testing.T) {
 	// While a bring-up runs, quitting stops it, and D still has nothing to
 	// stop.
 	root.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	root.state.Job = state.Job{Kind: state.JobBringUp}
+	root.state.Run.Job = state.Job{Kind: state.JobBringUp}
 	root.Update(press("q"))
 	if view := ansi.Strip(root.View().Content); !strings.Contains(view, "A bring-up is running") ||
 		strings.Contains(view, "stop everything") {
@@ -592,7 +592,7 @@ func TestNothingToStopOnAnExistingCluster(t *testing.T) {
 func TestQuitAfterAFailedStop(t *testing.T) {
 	t.Parallel()
 	root := quietModel(t)
-	root.state.Job = state.Job{Kind: state.JobStop, Name: "Stopping everything", QuitAfter: true}
+	root.state.Run.Job = state.Job{Kind: state.JobStop, Name: "Stopping everything", QuitAfter: true}
 	if _, cmd := root.Update(actionDoneMsg{err: sandbox.ErrDocker}); cmd != nil {
 		if _, quit := cmd().(tea.QuitMsg); quit {
 			t.Error("the TUI quit after stopping everything failed")
@@ -625,19 +625,21 @@ func TestPollsDoNotOverlap(t *testing.T) {
 	if first == nil || second != nil {
 		t.Fatalf("two ticks: first read %v, second read %v; want only the first", first != nil, second != nil)
 	}
-	root.Update(statusMsg{status: root.state.Status})
-	if _, next := root.Update(podsMsg{rows: root.state.Pods, agents: root.state.Agents}); next == nil {
+	root.Update(statusMsg{status: root.state.Reads.Status})
+	if _, next := root.Update(podsMsg{rows: root.state.Agents.Pods, agents: root.state.Agents.List}); next == nil {
 		t.Error("the last read came back, and no next read is planned")
 	}
 	// An action that ends reads the sandbox at once, and the poll planned
 	// above stays the only one.
-	root.state.Job = state.Job{Kind: state.JobAction, Name: "Waiting"}
+	root.state.Run.Job = state.Job{Kind: state.JobAction, Name: "Waiting"}
 	if _, read := root.Update(actionDoneMsg{}); read == nil {
 		t.Fatal("an action ended, and the sandbox was not read again")
 	}
-	mark := root.state.ReadMark()
-	root.Update(statusMsg{status: root.state.Status, mark: mark})
-	if _, next := root.Update(podsMsg{rows: root.state.Pods, agents: root.state.Agents, mark: mark}); next != nil {
+	mark := root.state.Reads.Mark()
+	root.Update(statusMsg{status: root.state.Reads.Status, mark: mark})
+	if _, next := root.Update(
+		podsMsg{rows: root.state.Agents.Pods, agents: root.state.Agents.List, mark: mark},
+	); next != nil {
 		t.Error("a second poll was planned while one waits")
 	}
 }
@@ -680,21 +682,21 @@ func TestShutdownStopsTheWork(t *testing.T) {
 func TestRecreateQuestionGoesWithD(t *testing.T) {
 	t.Parallel()
 	root := testModel(t)
-	cluster := slices.IndexFunc(root.state.Steps, func(row *state.StepRow) bool {
+	cluster := slices.IndexFunc(root.state.Run.Steps, func(row *state.StepRow) bool {
 		return row.Step.ID == sandbox.StepCluster
 	})
-	root.state.Job = state.Job{Kind: state.JobBringUp}
+	root.state.Run.Job = state.Job{Kind: state.JobBringUp}
 	root.Update(press("D"))
 	root.Update(stepDoneMsg{index: cluster, err: sandbox.ErrOtherIssuer})
 	answerYes(root)
-	if root.overlay.kind != overlayNone || root.waiting != nil || !root.state.Job.StopAfter {
+	if root.overlay.kind != overlayNone || root.waiting != nil || !root.state.Run.Job.StopAfter {
 		t.Errorf("after D: overlay %v, waiting %v, job %+v; want the question gone and everything to stop",
-			root.overlay.kind, root.waiting != nil, root.state.Job)
+			root.overlay.kind, root.waiting != nil, root.state.Run.Job)
 	}
-	root.state.Job = state.Job{}
+	root.state.Run.Job = state.Job{}
 	root.state.ResetSteps()
 	root.Update(recreateClusterMsg{from: cluster})
-	if root.state.Job.Busy() || !strings.Contains(root.ui.Toast.Text, "does not need to be recreated") {
-		t.Errorf("a late answer: job %+v, notice %q; want no bring-up", root.state.Job, root.ui.Toast.Text)
+	if root.state.Run.Job.Busy() || !strings.Contains(root.ui.Toast.Text, "does not need to be recreated") {
+		t.Errorf("a late answer: job %+v, notice %q; want no bring-up", root.state.Run.Job, root.ui.Toast.Text)
 	}
 }

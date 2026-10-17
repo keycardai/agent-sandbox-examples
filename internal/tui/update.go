@@ -18,7 +18,7 @@ import (
 func (m *model) Init() tea.Cmd {
 	cmds := []tea.Cmd{frameTick(), m.poll(), m.bus.next(), tea.RequestWindowSize, tea.RequestBackgroundColor}
 	switch {
-	case len(m.state.Steps) == 0, m.state.Steps[0].Step.ID != sandbox.StepTunnel:
+	case len(m.state.Run.Steps) == 0, m.state.Run.Steps[0].Step.ID != sandbox.StepTunnel:
 	case m.session.Local().ServiceStatus(sandbox.ServiceTunnel).Running:
 		m.state.Record("•", "Found the tunnel running from before")
 		m.ui.Notify("Found the tunnel from before.", false)
@@ -66,8 +66,8 @@ func (m *model) updateBackground(msg tea.Msg) (tea.Cmd, bool) {
 		m.tickPlanned = false
 		return m.poll(), true
 	case statusMsg:
-		if m.state.ReadCurrent(msg.mark) {
-			m.state.SetStatus(msg.status)
+		if m.state.Reads.Current(msg.mark) {
+			m.state.Reads.Set(msg.status)
 		} else {
 			m.stale = true
 		}
@@ -152,7 +152,7 @@ func (m *model) quitBody() string {
 	if m.session.Local().Existing() {
 		body = "The sandbox keeps running in the cluster, and shows here again next time."
 	}
-	switch job := m.state.Job; job.Kind {
+	switch job := m.state.Run.Job; job.Kind {
 	case state.JobBringUp:
 		body = "A bring-up is running, and quitting stops it where it is.\n" + body
 	case state.JobChecks:
@@ -168,9 +168,9 @@ func (m *model) quitBody() string {
 // stops: a bring-up, an action, the tunnel, the mirror or the local
 // cluster.
 func (m *model) anythingRunning() bool {
-	status := m.state.Status
+	status := m.state.Reads.Status
 	local := status.ClusterExists && !m.session.Local().Existing()
-	return m.state.Job.Busy() || status.Tunnel.Running || status.Mirror.Running || local
+	return m.state.Run.Job.Busy() || status.Tunnel.Running || status.Mirror.Running || local
 }
 
 func (m *model) quitKeys(msg tea.KeyPressMsg) tea.Cmd {
@@ -178,10 +178,10 @@ func (m *model) quitKeys(msg tea.KeyPressMsg) tea.Cmd {
 	m.overlay = overlay{}
 	switch msg.String() {
 	case component.KeyEnter, "q", "y", component.KeyCtrlC:
-		m.state.CancelJob()
+		m.state.Run.CancelJob()
 		return tea.Quit
 	case "D":
-		if !keepsRunning || !m.state.Job.RunsSteps() && m.busy() {
+		if !keepsRunning || !m.state.Run.Job.RunsSteps() && m.busy() {
 			return nil
 		}
 		m.askStopAll(true)
@@ -267,7 +267,7 @@ func (m *model) agentActionKeys(msg tea.KeyPressMsg) tea.Cmd {
 // busy reports whether a job runs, and then says which in the footer.
 // Work that changes the sandbox waits for it.
 func (m *model) busy() bool {
-	text := m.state.Job.WaitText()
+	text := m.state.Run.Job.WaitText()
 	if text != "" {
 		m.ui.Notify(text, true)
 	}
@@ -277,7 +277,7 @@ func (m *model) busy() bool {
 // isDown reports whether the last read found the sandbox down, and then
 // says so in the footer. Work on the agent needs the sandbox up.
 func (m *model) isDown() bool {
-	if !m.state.Read || m.state.Up() {
+	if !m.state.Reads.Done || m.state.Up() {
 		return false
 	}
 	m.ui.Notify("The sandbox is down. Press u to bring it up.", true)

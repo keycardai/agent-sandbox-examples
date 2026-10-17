@@ -29,21 +29,21 @@ const (
 // that they agree.
 func (s *Sandbox) Phase() (Phase, *StepRow) {
 	switch {
-	case s.Job.Is(JobBringUp):
+	case s.Run.Job.Is(JobBringUp):
 		return PhaseBringingUp, nil
-	case s.Job.Is(JobChecks):
+	case s.Run.Job.Is(JobChecks):
 		return PhaseChecking, nil
-	case s.Job.Is(JobStop):
+	case s.Run.Job.Is(JobStop):
 		return PhaseStopping, nil
 	}
-	if row := s.FailedStep(); row != nil {
+	if row := s.Run.FailedStep(); row != nil {
 		if row.Stopped() {
 			return PhaseStopped, row
 		}
 		return PhaseFailed, row
 	}
 	switch {
-	case !s.Read:
+	case !s.Reads.Done:
 		return PhaseReading, nil
 	case s.Up():
 		return PhaseUp, nil

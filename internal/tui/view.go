@@ -69,8 +69,8 @@ func (m *model) statusBadge() string {
 	case state.PhaseBringingUp:
 		done := m.stepsDone()
 		return theme.BandBusy.Render(component.Spinner(m.ui.Frame)+" bringing up ") +
-			m.progressBar(done, len(m.state.Steps)) + theme.BandLabel.Render(" "+strconv.Itoa(done)+"/"+
-			strconv.Itoa(len(m.state.Steps)))
+			m.progressBar(done, len(m.state.Run.Steps)) + theme.BandLabel.Render(" "+strconv.Itoa(done)+"/"+
+			strconv.Itoa(len(m.state.Run.Steps)))
 	case state.PhaseChecking:
 		return theme.BandBusy.Render(component.Spinner(m.ui.Frame) + " running the checks")
 	case state.PhaseStopping:
@@ -95,7 +95,7 @@ func (m *model) shortBadge() string {
 	switch phase, _ := m.state.Phase(); phase {
 	case state.PhaseBringingUp:
 		return theme.BandBusy.Render(component.Spinner(m.ui.Frame) + " " + strconv.Itoa(m.stepsDone()) + "/" +
-			strconv.Itoa(len(m.state.Steps)))
+			strconv.Itoa(len(m.state.Run.Steps)))
 	case state.PhaseChecking:
 		return theme.BandBusy.Render(component.Spinner(m.ui.Frame) + " checks")
 	case state.PhaseStopped:
@@ -110,7 +110,7 @@ func (m *model) shortBadge() string {
 // stepsDone counts the bring-up's steps that are done.
 func (m *model) stepsDone() int {
 	done := 0
-	for _, row := range m.state.Steps {
+	for _, row := range m.state.Run.Steps {
 		if row.State == state.StepDone {
 			done++
 		}
@@ -133,7 +133,7 @@ func (m *model) progressBar(done, total int) string {
 // progress is the bring-up's progress for terminals that show it, such as
 // Ghostty, iTerm2 and Windows Terminal.
 func (m *model) progress() *tea.ProgressBar {
-	steps := m.state.Steps
+	steps := m.state.Run.Steps
 	if len(steps) == 0 {
 		return nil
 	}

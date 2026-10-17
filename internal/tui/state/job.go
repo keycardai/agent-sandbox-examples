@@ -62,31 +62,31 @@ func (j Job) WaitText() string {
 
 // StartJob makes job the one that runs, with cancel to stop it, or nil.
 // While another job runs, it refuses.
-func (s *Sandbox) StartJob(job Job, cancel context.CancelFunc) bool {
-	if s.Job.Busy() {
+func (r *Run) StartJob(job Job, cancel context.CancelFunc) bool {
+	if r.Job.Busy() {
 		return false
 	}
 	job.cancel = cancel
-	s.Job = job
+	r.Job = job
 	return true
 }
 
 // StopAfterJob makes the job that runs stop everything once it ends, and
 // with quit, quit after that.
-func (s *Sandbox) StopAfterJob(quit bool) { s.Job.StopAfter, s.Job.QuitAfter = true, quit }
+func (r *Run) StopAfterJob(quit bool) { r.Job.StopAfter, r.Job.QuitAfter = true, quit }
 
 // EndJob ends the job that runs, and returns it. A read that started
 // before is no longer current.
 func (s *Sandbox) EndJob() Job {
-	ended := s.Job
-	s.Job = Job{}
-	s.readMark++
+	ended := s.Run.Job
+	s.Run.Job = Job{}
+	s.Reads.mark++
 	return ended
 }
 
 // CancelJob stops the job that runs, when it can be stopped.
-func (s *Sandbox) CancelJob() {
-	if s.Job.cancel != nil {
-		s.Job.cancel()
+func (r *Run) CancelJob() {
+	if r.Job.cancel != nil {
+		r.Job.cancel()
 	}
 }

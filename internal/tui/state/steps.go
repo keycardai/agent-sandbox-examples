@@ -44,34 +44,34 @@ func StepSource(id sandbox.StepID) string { return "step " + string(id) }
 
 // ResetSteps lists the steps for the current settings, all pending.
 func (s *Sandbox) ResetSteps() {
-	s.Steps = nil
+	s.Run.Steps = nil
 	for _, step := range s.session.Steps() {
-		s.Steps = append(s.Steps, &StepRow{Step: step, Log: s.logs(StepSource(step.ID))})
+		s.Run.Steps = append(s.Run.Steps, &StepRow{Step: step, Log: s.logs(StepSource(step.ID))})
 	}
-	s.Cursor = min(s.Cursor, max(len(s.Steps)-1, 0))
+	s.Run.Cursor = min(s.Run.Cursor, max(len(s.Run.Steps)-1, 0))
 }
 
 // StartSteps sets the steps from index from on pending, with empty logs,
 // for a bring-up that runs them.
-func (s *Sandbox) StartSteps(from int) {
-	for _, row := range s.Steps[from:] {
+func (r *Run) StartSteps(from int) {
+	for _, row := range r.Steps[from:] {
 		row.State, row.Err = StepPending, nil
 		row.Log.Reset()
 	}
-	s.Cursor = from
+	r.Cursor = from
 }
 
 // StepStarted marks step i running, and the bring-up on it.
 func (s *Sandbox) StepStarted(i int) {
-	row := s.Steps[i]
+	row := s.Run.Steps[i]
 	row.State, row.Started, row.Ended = StepRunning, s.Now(), time.Time{}
-	s.Cursor = i
+	s.Run.Cursor = i
 }
 
 // StepEnded marks step i done, or failed with err. The checks step counts
 // the checks that passed.
 func (s *Sandbox) StepEnded(i int, err error) *StepRow {
-	row := s.Steps[i]
+	row := s.Run.Steps[i]
 	row.Ended, row.Err, row.State = s.Now(), err, StepDone
 	if err != nil {
 		row.State = StepFailed
@@ -84,8 +84,8 @@ func (s *Sandbox) StepEnded(i int, err error) *StepRow {
 
 // FailedStep returns the step a bring-up stopped at, or nil. A failed check
 // does not count: the sandbox is up.
-func (s *Sandbox) FailedStep() *StepRow {
-	for _, row := range s.Steps {
+func (r *Run) FailedStep() *StepRow {
+	for _, row := range r.Steps {
 		if row.State == StepFailed && row.Step.ID != sandbox.StepChecks {
 			return row
 		}
@@ -98,16 +98,16 @@ func (s *Sandbox) FailedStep() *StepRow {
 // tunnel, because every later step needs its URL. A quick tunnel's new URL
 // then makes the cluster step offer to recreate the cluster.
 func (s *Sandbox) ResumeIndex() int {
-	if len(s.Steps) > 0 && s.Steps[0].Step.ID == sandbox.StepTunnel && !s.Status.Tunnel.Running {
+	if len(s.Run.Steps) > 0 && s.Run.Steps[0].Step.ID == sandbox.StepTunnel && !s.Reads.Status.Tunnel.Running {
 		return 0
 	}
-	return max(slices.IndexFunc(s.Steps, func(row *StepRow) bool { return row.State == StepFailed }), 0)
+	return max(slices.IndexFunc(s.Run.Steps, func(row *StepRow) bool { return row.State == StepFailed }), 0)
 }
 
 // StepsDone counts the steps that are done.
-func (s *Sandbox) StepsDone() int {
+func (r *Run) StepsDone() int {
 	done := 0
-	for _, row := range s.Steps {
+	for _, row := range r.Steps {
 		if row.State == StepDone {
 			done++
 		}

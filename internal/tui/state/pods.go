@@ -44,16 +44,16 @@ func (s *Sandbox) PodState(agent sandbox.Agent) (PodState, ContainerRow) {
 	if agent.Pod == "" {
 		return PodNone, ContainerRow{}
 	}
-	index := slices.IndexFunc(s.Pods, func(row ContainerRow) bool {
+	index := slices.IndexFunc(s.Agents.Pods, func(row ContainerRow) bool {
 		return row.Pod == agent.Pod && row.Container.Name == AgentContainer
 	})
 	switch {
-	case index < 0 && s.PodsErr != nil:
+	case index < 0 && s.Agents.PodsErr != nil:
 		return PodUnread, ContainerRow{}
 	case index < 0:
 		return PodMissing, ContainerRow{}
 	}
-	row := s.Pods[index]
+	row := s.Agents.Pods[index]
 	switch {
 	case row.Container.Ready:
 		return PodRunning, row

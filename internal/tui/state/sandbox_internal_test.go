@@ -40,8 +40,8 @@ func TestUp(t *testing.T) {
 			known := testSandbox(t, sandbox.Settings{
 				sandbox.KeyKubeContext: tc.kubeContext, sandbox.KeyIssuer: tc.issuer,
 			})
-			known.Status.Tunnel.Running, known.Status.Deployed = tc.tunnel, tc.deployed
-			known.Status.ClusterExists = !tc.missing
+			known.Reads.Status.Tunnel.Running, known.Reads.Status.Deployed = tc.tunnel, tc.deployed
+			known.Reads.Status.ClusterExists = !tc.missing
 			if got := known.Up(); got != tc.want {
 				t.Errorf("Up = %v, want %v", got, tc.want)
 			}
@@ -56,20 +56,20 @@ func TestOneJob(t *testing.T) {
 	t.Parallel()
 	known := testSandbox(t, sandbox.Settings{})
 	cancelled := false
-	if !known.StartJob(Job{Kind: JobAction, Name: "Restarting ada's pod"}, func() { cancelled = true }) {
+	if !known.Run.StartJob(Job{Kind: JobAction, Name: "Restarting ada's pod"}, func() { cancelled = true }) {
 		t.Fatal("the first job was refused")
 	}
-	if known.StartJob(Job{Kind: JobBringUp}, nil) || !known.Job.Is(JobAction) ||
-		known.Job.WaitText() != "Restarting ada's pod is running. Wait for it to finish." {
+	if known.Run.StartJob(Job{Kind: JobBringUp}, nil) || !known.Run.Job.Is(JobAction) ||
+		known.Run.Job.WaitText() != "Restarting ada's pod is running. Wait for it to finish." {
 		t.Errorf("a second job: job %+v, wait %q; want it refused, and the first one's name",
-			known.Job, known.Job.WaitText())
+			known.Run.Job, known.Run.Job.WaitText())
 	}
-	known.CancelJob()
-	if ended := known.EndJob(); !cancelled || ended.Name != "Restarting ada's pod" || known.Job.Busy() {
+	known.Run.CancelJob()
+	if ended := known.EndJob(); !cancelled || ended.Name != "Restarting ada's pod" || known.Run.Job.Busy() {
 		t.Errorf("cancelled %v, ended %+v, busy %v; want the first job cancelled, ended and gone",
-			cancelled, ended, known.Job.Busy())
+			cancelled, ended, known.Run.Job.Busy())
 	}
-	if text := known.Job.WaitText(); text != "" {
+	if text := known.Run.Job.WaitText(); text != "" {
 		t.Errorf("WaitText with no job = %q, want none", text)
 	}
 }
@@ -79,21 +79,21 @@ func TestOneJob(t *testing.T) {
 func TestReadMark(t *testing.T) {
 	t.Parallel()
 	known := testSandbox(t, sandbox.Settings{})
-	mark := known.ReadMark()
-	known.StartJob(Job{Kind: JobStop}, nil)
-	if !known.ReadCurrent(mark) {
+	mark := known.Reads.Mark()
+	known.Run.StartJob(Job{Kind: JobStop}, nil)
+	if !known.Reads.Current(mark) {
 		t.Error("a read is not current while the job runs, want it current until the job ends")
 	}
 	known.EndJob()
-	if known.ReadCurrent(mark) || !known.ReadCurrent(known.ReadMark()) {
+	if known.Reads.Current(mark) || !known.Reads.Current(known.Reads.Mark()) {
 		t.Error("a read from before the job ended is current, want only one that started after it")
 	}
-	known.SetStatus(sandbox.Status{Deployed: true, ClusterExists: true})
-	known.Pods = []ContainerRow{{Pod: "u7k2vjw9ab"}}
+	known.Reads.Set(sandbox.Status{Deployed: true, ClusterExists: true})
+	known.Agents.Pods = []ContainerRow{{Pod: "u7k2vjw9ab"}}
 	known.StoppedAll()
-	if known.Read || known.Status.ClusterExists || known.Pods != nil {
+	if known.Reads.Done || known.Reads.Status.ClusterExists || known.Agents.Pods != nil {
 		t.Errorf("after StoppedAll: read %v, status %+v, pods %v; want them forgotten",
-			known.Read, known.Status, known.Pods)
+			known.Reads.Done, known.Reads.Status, known.Agents.Pods)
 	}
 }
 
@@ -107,24 +107,24 @@ func TestPhase(t *testing.T) {
 		setup func(known *Sandbox)
 		want  Phase
 	}{
-		{"reading", func(known *Sandbox) { known.Read = false }, PhaseReading},
-		{"bringing up", func(known *Sandbox) { known.Job = Job{Kind: JobBringUp} }, PhaseBringingUp},
-		{"checking", func(known *Sandbox) { known.Job = Job{Kind: JobChecks} }, PhaseChecking},
-		{"stopping", func(known *Sandbox) { known.Job = Job{Kind: JobStop} }, PhaseStopping},
+		{"reading", func(known *Sandbox) { known.Reads.Done = false }, PhaseReading},
+		{"bringing up", func(known *Sandbox) { known.Run.Job = Job{Kind: JobBringUp} }, PhaseBringingUp},
+		{"checking", func(known *Sandbox) { known.Run.Job = Job{Kind: JobChecks} }, PhaseChecking},
+		{"stopping", func(known *Sandbox) { known.Run.Job = Job{Kind: JobStop} }, PhaseStopping},
 		{"stopped", func(known *Sandbox) {
-			known.Steps[0].State, known.Steps[0].Err = StepFailed, context.Canceled
+			known.Run.Steps[0].State, known.Run.Steps[0].Err = StepFailed, context.Canceled
 		}, PhaseStopped},
 		{"failed", func(known *Sandbox) {
-			known.Steps[0].State, known.Steps[0].Err = StepFailed, sandbox.ErrDocker
+			known.Run.Steps[0].State, known.Run.Steps[0].Err = StepFailed, sandbox.ErrDocker
 		}, PhaseFailed},
 		{"up", func(known *Sandbox) {
-			known.Status = sandbox.Status{Deployed: true, ClusterExists: true}
-			known.Status.Tunnel.Running = true
+			known.Reads.Status = sandbox.Status{Deployed: true, ClusterExists: true}
+			known.Reads.Status.Tunnel.Running = true
 		}, PhaseUp},
 		{"down", func(*Sandbox) {}, PhaseDown},
 	} {
 		known := testSandbox(t, sandbox.Settings{})
-		known.Read = true
+		known.Reads.Done = true
 		tc.setup(known)
 		if got, _ := known.Phase(); got != tc.want {
 			t.Errorf("%s: phase %v, want %v", tc.name, got, tc.want)
@@ -160,7 +160,7 @@ func TestPodState(t *testing.T) {
 		},
 	} {
 		known := testSandbox(t, sandbox.Settings{})
-		known.Pods, known.PodsErr = tc.pods, tc.err
+		known.Agents.Pods, known.Agents.PodsErr = tc.pods, tc.err
 		if got, _ := known.PodState(tc.agent); got != tc.want {
 			t.Errorf("%s: pod state %v, want %v", tc.name, got, tc.want)
 		}
@@ -172,13 +172,13 @@ func TestPodState(t *testing.T) {
 func TestStepEnded(t *testing.T) {
 	t.Parallel()
 	known := testSandbox(t, sandbox.Settings{})
-	last := len(known.Steps) - 1
-	known.Steps[last].Log.Add("  PASS with a credential", "  FAIL to a blocked host", "  PASS without one")
+	last := len(known.Run.Steps) - 1
+	known.Run.Steps[last].Log.Add("  PASS with a credential", "  FAIL to a blocked host", "  PASS without one")
 	known.StepStarted(last)
 	if row := known.StepEnded(last, sandbox.ErrCheck); row.State != StepFailed || row.Passed != 2 || row.Total != 3 {
 		t.Errorf("checks: state %v, %d of %d passed; want failed, 2 of 3", row.State, row.Passed, row.Total)
 	}
-	if known.FailedStep() != nil {
+	if known.Run.FailedStep() != nil {
 		t.Error("a failed check stops the bring-up, want the sandbox counted up")
 	}
 }

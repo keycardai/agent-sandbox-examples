@@ -96,15 +96,15 @@ func pollTick() tea.Cmd {
 // sandbox is up even when a check fails. From the checks, the last step, it
 // runs the checks alone.
 func (m *model) startBringUp(from int, recreate bool) {
-	if from >= len(m.state.Steps) {
+	if from >= len(m.state.Run.Steps) {
 		return
 	}
 	kind := state.JobBringUp
-	if m.state.Steps[from].Step.ID == sandbox.StepChecks {
+	if m.state.Run.Steps[from].Step.ID == sandbox.StepChecks {
 		kind = state.JobChecks
 	}
 	ctx, cancel := context.WithCancel(m.ctx)
-	if !m.state.StartJob(state.Job{Kind: kind, From: from}, cancel) {
+	if !m.state.Run.StartJob(state.Job{Kind: kind, From: from}, cancel) {
 		cancel()
 		return
 	}
@@ -114,10 +114,10 @@ func (m *model) startBringUp(from int, recreate bool) {
 	case from == 0:
 		m.state.Record("▸", "Bring-up started")
 	default:
-		m.state.Record("▸", "Bring-up started again at: "+m.state.Steps[from].Step.Title)
+		m.state.Record("▸", "Bring-up started again at: "+m.state.Run.Steps[from].Step.Title)
 	}
-	m.state.StartSteps(from)
-	run := bringUp{session: m.session, out: m.bus, steps: slices.Clone(m.state.Steps), recreate: recreate}
+	m.state.Run.StartSteps(from)
+	run := bringUp{session: m.session, out: m.bus, steps: slices.Clone(m.state.Run.Steps), recreate: recreate}
 	m.jobs.Go(func() { runSteps(ctx, cancel, run, from) })
 }
 
@@ -273,17 +273,17 @@ func (m *model) notifyUp() {
 }
 
 func (m *model) toggleBringUp() {
-	if m.state.Job.Is(state.JobChecks) {
+	if m.state.Run.Job.Is(state.JobChecks) {
 		m.confirm("Stop the checks?", "The check that runs now is canceled.", stopBringUpMsg{})
 		return
 	}
-	if !m.state.Job.Is(state.JobBringUp) {
+	if !m.state.Run.Job.Is(state.JobBringUp) {
 		if m.busy() {
 			return
 		}
 		from := m.state.ResumeIndex()
 		if from > 0 {
-			m.ui.Notify("Starting again at: "+m.state.Steps[from].Step.Title, false)
+			m.ui.Notify("Starting again at: "+m.state.Run.Steps[from].Step.Title, false)
 		}
 		m.startBringUp(from, false)
 		return
@@ -297,8 +297,8 @@ func (m *model) toggleBringUp() {
 func (m *model) updateAnswers(msg tea.Msg) bool {
 	switch msg := msg.(type) {
 	case stopBringUpMsg:
-		if m.state.Job.RunsSteps() {
-			m.state.CancelJob()
+		if m.state.Run.Job.RunsSteps() {
+			m.state.Run.CancelJob()
 		}
 	case recreateClusterMsg:
 		m.recreateCluster(msg.from)
@@ -316,7 +316,7 @@ func (m *model) updateAnswers(msg tea.Msg) bool {
 // stopAllNow stops everything, then quits with quit, unless a job other
 // than a bring-up or the checks runs.
 func (m *model) stopAllNow(quit bool) {
-	if !m.state.Job.RunsSteps() && m.busy() {
+	if !m.state.Run.Job.RunsSteps() && m.busy() {
 		return
 	}
 	m.stopEverything(quit)
@@ -327,8 +327,8 @@ func (m *model) stopAllNow(quit bool) {
 // fixes. Once D stopped everything, or a later bring-up passed the step, the
 // question no longer applies.
 func (m *model) recreateCluster(from int) {
-	if from >= len(m.state.Steps) || m.state.Steps[from].State != state.StepFailed ||
-		!recreatable(m.state.Steps[from].Err) {
+	if from >= len(m.state.Run.Steps) || m.state.Run.Steps[from].State != state.StepFailed ||
+		!recreatable(m.state.Run.Steps[from].Err) {
 		m.ui.Notify("The cluster does not need to be recreated now.", false)
 		return
 	}
@@ -343,7 +343,7 @@ func (m *model) runChecks() {
 	if m.busy() || m.isDown() {
 		return
 	}
-	for i, row := range m.state.Steps {
+	for i, row := range m.state.Run.Steps {
 		if row.Step.ID == sandbox.StepChecks {
 			m.startBringUp(i, false)
 		}
@@ -386,7 +386,7 @@ func (m *model) restartPod() {
 // stopAll asks, then stops everything. A running bring-up or checks run
 // stops first.
 func (m *model) stopAll() {
-	if !m.state.Job.RunsSteps() && m.busy() {
+	if !m.state.Run.Job.RunsSteps() && m.busy() {
 		return
 	}
 	m.askStopAll(false)
@@ -414,13 +414,13 @@ func (m *model) askStopAll(quit bool) {
 func (m *model) stopEverything(quit bool) {
 	// A question about the cluster's issuer is gone with the cluster.
 	m.waiting = nil
-	if m.state.Job.RunsSteps() {
+	if m.state.Run.Job.RunsSteps() {
 		what := "the bring-up"
-		if m.state.Job.Is(state.JobChecks) {
+		if m.state.Run.Job.Is(state.JobChecks) {
 			what = "the checks"
 		}
-		m.state.StopAfterJob(quit)
-		m.state.CancelJob()
+		m.state.Run.StopAfterJob(quit)
+		m.state.Run.CancelJob()
 		m.ui.Notify("Stopping "+what+" first…", false)
 		return
 	}
@@ -430,7 +430,7 @@ func (m *model) stopEverything(quit bool) {
 // runAction runs job's work in the background, and reports when it is
 // done. While another job runs, it refuses and says so.
 func (m *model) runAction(job state.Job, work func(ctx context.Context, out io.Writer) error) {
-	if !m.state.StartJob(job, nil) {
+	if !m.state.Run.StartJob(job, nil) {
 		return
 	}
 	m.state.Record("▸", job.Name)
@@ -478,11 +478,11 @@ func (m *model) poll() tea.Cmd {
 		return nil
 	}
 	m.polling = pollReads
-	base, session, mark := m.ctx, m.session, m.state.ReadMark()
+	base, session, mark := m.ctx, m.session, m.state.Reads.Mark()
 	// The pods need the cluster and the zone step. Without them, kubectl
 	// has nothing to list, so the poll skips it.
-	last := m.state.Status
-	noPods := m.state.Read && (!last.ClusterExists || !last.Deployed)
+	last := m.state.Reads.Status
+	noPods := m.state.Reads.Done && (!last.ClusterExists || !last.Deployed)
 	status := func() tea.Msg {
 		ctx, cancel := context.WithTimeout(base, readTimeout)
 		defer cancel()
@@ -528,7 +528,7 @@ func (m *model) polled() tea.Cmd {
 // onPods keeps what a read of the pods found, unless a job ended since it
 // started.
 func (m *model) onPods(msg podsMsg) {
-	if !m.state.ReadCurrent(msg.mark) {
+	if !m.state.Reads.Current(msg.mark) {
 		m.stale = true
 		return
 	}
@@ -563,7 +563,7 @@ func (m *model) startTraffic() {
 		m.stopTraffic()
 		return
 	}
-	if _, pod := m.state.Traffic.Snapshot(); pod == target.Pod && m.trafficStop != nil {
+	if _, pod := m.state.Agents.Traffic.Snapshot(); pod == target.Pod && m.trafficStop != nil {
 		return
 	}
 	if m.trafficStop != nil {
@@ -571,8 +571,8 @@ func (m *model) startTraffic() {
 	}
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.trafficStop = cancel
-	m.state.Traffic.Reset(target.Pod)
-	session, store, pod := m.session, &m.state.Traffic, target.Pod
+	m.state.Agents.Traffic.Reset(target.Pod)
+	session, store, pod := m.session, &m.state.Agents.Traffic, target.Pod
 	m.jobs.Go(func() { followTraffic(ctx, session, pod, store) })
 }
 
@@ -583,7 +583,7 @@ func (m *model) stopTraffic() {
 		m.trafficStop()
 		m.trafficStop = nil
 	}
-	m.state.Traffic.Reset("")
+	m.state.Agents.Traffic.Reset("")
 }
 
 // followTraffic follows the proxy's log in pod until ctx ends, and keeps

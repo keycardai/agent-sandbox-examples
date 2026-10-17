@@ -18,38 +18,57 @@ import (
 // SourceActivity names the activity log.
 const SourceActivity = "activity"
 
-// Sandbox is the sandbox as the TUI knows it. Update runs on one goroutine,
-// so it needs no lock.
+// Sandbox is the sandbox as the TUI knows it, in parts. A part's methods
+// change only that part. The rules that read more than one part, the
+// session or the clock are Sandbox's. Update runs on one goroutine, so it
+// needs no lock.
 type Sandbox struct {
 	session *sandbox.Session
 	logs    func(source string) *component.Log
 	// Now is the clock the steps' times come from.
 	Now func() time.Time
 
+	// Run is the work that changes the sandbox, Reads what the last read of
+	// it found, and Agents the agents and their pods.
+	Run    Run
+	Reads  Reads
+	Agents Agents
+
+	// Loaded is the demo the settings name, once it loaded.
+	Loaded *sandbox.Scenario
+}
+
+// Run is the work that changes the sandbox: the job that runs, and the
+// bring-up's steps.
+type Run struct {
 	// Steps are the bring-up's steps, and Cursor the one it is on.
 	Steps  []*StepRow
 	Cursor int
-	// Job is the work that changes the sandbox, such as a bring-up, or the
-	// zero Job.
+	// Job is the work that runs, or the zero Job.
 	Job Job
+}
 
-	// Status is the sandbox as the last read found it. Read is set once the
-	// first read came back.
+// Reads is the sandbox as the last read found it.
+type Reads struct {
+	// Status is what the last read found. Done is set once the first read
+	// came back.
 	Status sandbox.Status
-	Read   bool
-	// readMark moves on each time a job ends. A read takes it when it
-	// starts, so that a read from before the job can be told apart.
-	readMark int
-	// Agents lists an agent for each person the settings give one, and Pods
-	// the containers of every pod. PodsErr is the last read's error.
-	Agents  []sandbox.Agent
+	Done   bool
+	// mark moves on each time a job ends. A read takes it when it starts,
+	// so that a read from before the job can be told apart.
+	mark int
+}
+
+// Agents are the agents the settings give, their pods, and what the egress
+// proxy decided for them.
+type Agents struct {
+	// List has an agent for each person the settings give one, and Pods the
+	// containers of every pod. PodsErr is the last read's error.
+	List    []sandbox.Agent
 	Pods    []ContainerRow
 	PodsErr error
 	// Traffic holds the proxy's decisions, from its audit log.
 	Traffic proxylog.Store
-
-	// Loaded is the demo the settings name, once it loaded.
-	Loaded *sandbox.Scenario
 }
 
 // New returns the sandbox of session, with the steps of its settings. logs
@@ -82,35 +101,36 @@ func (s *Sandbox) Record(mark, text string) {
 // starts a tunnel, that needs the tunnel. An existing cluster, or an issuer
 // the operator publishes, needs none.
 func (s *Sandbox) Up() bool {
-	return s.Status.Deployed && s.Status.ClusterExists && (s.Status.Tunnel.Running || !s.StartsTunnel())
+	status := s.Reads.Status
+	return status.Deployed && status.ClusterExists && (status.Tunnel.Running || !s.StartsTunnel())
 }
 
-// ReadMark returns the mark a read that starts now takes.
-func (s *Sandbox) ReadMark() int { return s.readMark }
+// Mark returns the mark a read that starts now takes.
+func (r *Reads) Mark() int { return r.mark }
 
-// ReadCurrent reports whether a read that started with mark found the
+// Current reports whether a read that started with mark found the
 // sandbox as it is: no job ended since it started. The root model drops a
 // read that is not, and reads again.
-func (s *Sandbox) ReadCurrent(mark int) bool { return mark == s.readMark }
+func (r *Reads) Current(mark int) bool { return mark == r.mark }
 
 // StoppedAll forgets the bring-up and what the reads found, once
 // everything stopped. The sandbox they describe is gone, so the screens say
 // they read it until a read made after the stop comes back.
 func (s *Sandbox) StoppedAll() {
 	s.ResetSteps()
-	s.Status, s.Read = sandbox.Status{}, false
-	s.Pods, s.PodsErr = nil, nil
+	s.Reads.Status, s.Reads.Done = sandbox.Status{}, false
+	s.Agents.Pods, s.Agents.PodsErr = nil, nil
 }
 
-// SetStatus keeps what a read of the services and the cluster found.
-func (s *Sandbox) SetStatus(status sandbox.Status) {
-	s.Status, s.Read = status, true
+// Set keeps what a read of the services and the cluster found.
+func (r *Reads) Set(status sandbox.Status) {
+	r.Status, r.Done = status, true
 }
 
 // SetPods keeps what a read of the pods found, and keeps the selection on
 // an agent in the list.
 func (s *Sandbox) SetPods(pods []ContainerRow, agents []sandbox.Agent, err error) {
-	s.Pods, s.Agents, s.PodsErr = pods, agents, err
+	s.Agents.Pods, s.Agents.List, s.Agents.PodsErr = pods, agents, err
 	if _, index := s.Selected(); index < 0 && len(agents) > 0 {
 		s.session.SelectAgent(agents[0].Email)
 	}
@@ -120,7 +140,7 @@ func (s *Sandbox) SetPods(pods []ContainerRow, agents []sandbox.Agent, err error
 // the list, or -1 when the list does not have it.
 func (s *Sandbox) Selected() (sandbox.Agent, int) {
 	email := s.session.Selected()
-	for i, agent := range s.Agents {
+	for i, agent := range s.Agents.List {
 		if agent.Email == email {
 			return agent, i
 		}
@@ -134,7 +154,7 @@ func (s *Sandbox) SelectedPods() []ContainerRow {
 	if agent.Pod == "" {
 		return nil
 	}
-	return slices.DeleteFunc(slices.Clone(s.Pods), func(row ContainerRow) bool { return row.Pod != agent.Pod })
+	return slices.DeleteFunc(slices.Clone(s.Agents.Pods), func(row ContainerRow) bool { return row.Pod != agent.Pod })
 }
 
 // Container finds the selected agent's container of name.

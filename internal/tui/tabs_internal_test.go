@@ -107,11 +107,11 @@ func upModel(t *testing.T) *model {
 	settings[sandbox.KeyUserEmail] = sampleUser
 	settings[sandbox.KeyZoneURL] = "https://wvqowjom3ctf3eysdimuj4h745.keycard.cloud"
 	root.state.Loaded = piScenario()
-	root.state.Status = sandbox.Status{
+	root.state.Reads.Status = sandbox.Status{
 		Deployed: true, ClusterExists: true, Tunnel: sandbox.ServiceState{Running: true},
 		Mirror: sandbox.ServiceState{Running: true},
 	}
-	root.state.Pods = []state.ContainerRow{
+	root.state.Agents.Pods = []state.ContainerRow{
 		{Pod: samplePod, Container: sandbox.ContainerStatus{
 			Name: "egress-netsetup", Init: true, State: state.StateTerminated,
 		}},
@@ -119,10 +119,10 @@ func upModel(t *testing.T) *model {
 		{Pod: samplePod, Container: sandbox.ContainerStatus{Name: state.AgentContainer, Ready: true, State: "running"}},
 	}
 	root.shownPod = samplePod
-	root.state.Agents = []sandbox.Agent{{Email: sampleUser, Pod: samplePod, Default: true}}
-	root.state.Traffic.Reset(samplePod)
+	root.state.Agents.List = []sandbox.Agent{{Email: sampleUser, Pod: samplePod, Default: true}}
+	root.state.Agents.Traffic.Reset(samplePod)
 	for _, record := range sampleRecords(sampleTime()) {
-		root.state.Traffic.Add(samplePod, record)
+		root.state.Agents.Traffic.Add(samplePod, record)
 	}
 	return root
 }
@@ -143,23 +143,23 @@ func TestHomeStates(t *testing.T) {
 	t.Parallel()
 	down := testModel(t)
 	bringingUp := upModel(t)
-	bringingUp.state.Job = state.Job{Kind: state.JobBringUp}
-	bringingUp.state.Steps[2].State = state.StepRunning
-	bringingUp.state.Cursor = 2
+	bringingUp.state.Run.Job = state.Job{Kind: state.JobBringUp}
+	bringingUp.state.Run.Steps[2].State = state.StepRunning
+	bringingUp.state.Run.Cursor = 2
 	failed := testModel(t)
 	failed.Update(stepDoneMsg{index: 1, err: sandbox.ErrDocker})
 	reading := testModel(t)
-	reading.state.Read = false
+	reading.state.Reads.Done = false
 	podsErr := upModel(t)
-	podsErr.state.Pods, podsErr.state.PodsErr = nil, fmt.Errorf(
+	podsErr.state.Agents.Pods, podsErr.state.Agents.PodsErr = nil, fmt.Errorf(
 		"%w: the connection to the server was refused",
 		sandbox.ErrPod,
 	)
 	clusterErr := testModel(t)
-	clusterErr.state.Status.ClusterErr = fmt.Errorf("%w: cannot list k3d clusters", sandbox.ErrDocker)
+	clusterErr.state.Reads.Status.ClusterErr = fmt.Errorf("%w: cannot list k3d clusters", sandbox.ErrDocker)
 	dockerDown := upModel(t)
-	dockerDown.state.Status.ClusterExists = false
-	dockerDown.state.Status.ClusterErr = clusterErr.state.Status.ClusterErr
+	dockerDown.state.Reads.Status.ClusterExists = false
+	dockerDown.state.Reads.Status.ClusterErr = clusterErr.state.Reads.Status.ClusterErr
 	const isDown = "The sandbox is down"
 	for name, tc := range map[string]struct {
 		root *model
@@ -173,7 +173,7 @@ func TestHomeStates(t *testing.T) {
 		"coming":  {bringingUp, []string{"Bringing up your sandbox", "Start the issuer mirror", "START THE ISSUER MIRROR"}},
 		"failed": {failed, []string{
 			"The bring-up stopped at: Create or check the cluster", "→ Start Docker",
-			"Start again from: " + failed.state.Steps[0].Step.Title,
+			"Start again from: " + failed.state.Run.Steps[0].Step.Title,
 		}},
 		"up": {upModel(t), []string{
 			sampleUser + "'s agent is running", "acts as " + sampleUser, "does not hold any secrets", "WHAT KEYCARD DID",
@@ -195,12 +195,12 @@ func TestHomeStates(t *testing.T) {
 func TestDeadTunnelHint(t *testing.T) {
 	t.Parallel()
 	root := testModel(t)
-	issuer := slices.IndexFunc(root.state.Steps, func(row *state.StepRow) bool {
+	issuer := slices.IndexFunc(root.state.Run.Steps, func(row *state.StepRow) bool {
 		return row.Step.ID == sandbox.StepIssuer
 	})
 	err := fmt.Errorf("%w: discovery refused: dial tcp: lookup given-shareware-tales-beta.trycloudflare.com: "+
 		"no such host", sandbox.ErrIssuer)
-	if hint := page.StepHint(root.state.Steps[issuer], err); !strings.Contains(hint, "starts a new tunnel") {
+	if hint := page.StepHint(root.state.Run.Steps[issuer], err); !strings.Contains(hint, "starts a new tunnel") {
 		t.Errorf("hint = %q, want it to say u starts a new tunnel", hint)
 	}
 }
@@ -213,7 +213,7 @@ func TestServerErrorAfterCredential(t *testing.T) {
 	record := newRecord(time.Now(), scopeRequest, routerHost, "/api/v1/messages", verdictAllow, sampleAllowed,
 		routerEndpoint)
 	record.Outcome.Status = http.StatusNotFound
-	root.state.Traffic.Add(samplePod, record)
+	root.state.Agents.Traffic.Add(samplePod, record)
 	view := ansi.Strip(root.View().Content)
 	for _, want := range []string{"1 request, credential added", "but the server answered 404 Not Found"} {
 		if !strings.Contains(view, want) {
@@ -229,10 +229,16 @@ func TestUnansweredRequests(t *testing.T) {
 	t.Parallel()
 	root := upModel(t)
 	stamp := sampleTime().Add(5 * time.Second)
-	root.state.Traffic.Add(samplePod, newRecord(stamp, scopeRequest, "github.com", "/org/repo.git/info/refs", verdictDeny,
-		reasonUnanswered, "github.com:443/"))
-	root.state.Traffic.Add(samplePod, newRecord(stamp, scopeRequest, githubHost, "/user", verdictDeny, reasonUnanswered,
-		githubEndpoint))
+	root.state.Agents.Traffic.Add(
+		samplePod,
+		newRecord(stamp, scopeRequest, "github.com", "/org/repo.git/info/refs", verdictDeny,
+			reasonUnanswered, "github.com:443/"),
+	)
+	root.state.Agents.Traffic.Add(
+		samplePod,
+		newRecord(stamp, scopeRequest, githubHost, "/user", verdictDeny, reasonUnanswered,
+			githubEndpoint),
+	)
 	view := ansi.Strip(root.View().Content)
 	for target, wants := range map[string][]string{
 		" github.com ":     {"✕ GitHub git", "1 request, the server did not answer"},
@@ -263,9 +269,9 @@ func TestBlockedReasons(t *testing.T) {
 	t.Parallel()
 	root := upModel(t)
 	stamp := time.Now()
-	root.state.Traffic.Add(samplePod, newRecord(stamp, proxylog.ScopeDNS, sampleDenied, "", verdictDeny,
+	root.state.Agents.Traffic.Add(samplePod, newRecord(stamp, proxylog.ScopeDNS, sampleDenied, "", verdictDeny,
 		sampleReason, ""))
-	root.state.Traffic.Add(samplePod, newRecord(stamp.Add(time.Second), scopeRequest, "pypi.org", "/simple/",
+	root.state.Agents.Traffic.Add(samplePod, newRecord(stamp.Add(time.Second), scopeRequest, "pypi.org", "/simple/",
 		verdictDeny, "malformed_request", ""))
 	view := ansi.Strip(root.View().Content)
 	for _, want := range []string{
