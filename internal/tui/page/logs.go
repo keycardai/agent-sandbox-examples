@@ -73,13 +73,13 @@ func (l *Logs) Entries() []LogEntry {
 		LogEntry{"Activity", state.SourceActivity, "", "What happened in this session, newest last."})
 }
 
-// Open puts the list's cursor on the step that runs or stopped the
-// bring-up, or else keeps it on a log, since the list can be shorter than
-// when it last showed.
+// Open puts the list's cursor on the step that runs, in a bring-up or the
+// checks, or on the one a bring-up stopped at, or else keeps it on a log,
+// since the list can be shorter than when it last showed.
 func (l *Logs) Open() {
 	entries := l.Entries()
 	step := l.state.Run.FailedStep()
-	if l.state.Run.Job.Is(state.JobBringUp) && l.state.Run.Cursor < len(l.state.Run.Steps) {
+	if l.state.Run.Job.RunsSteps() && l.state.Run.Cursor < len(l.state.Run.Steps) {
 		step = l.state.Run.Steps[l.state.Run.Cursor]
 	}
 	if step != nil {

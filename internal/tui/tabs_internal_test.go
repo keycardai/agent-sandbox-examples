@@ -930,3 +930,17 @@ func TestPodStatesAgree(t *testing.T) {
 		}
 	}
 }
+
+// TestLogsOpenOnTheChecks puts the list of every log on the checks' log
+// while c runs them, as it does on the step a bring-up runs.
+func TestLogsOpenOnTheChecks(t *testing.T) {
+	t.Parallel()
+	root := quietModel(t)
+	last := len(root.state.Run.Steps) - 1
+	root.state.Run.Job, root.state.Run.Cursor = state.Job{Kind: state.JobChecks, From: last}, last
+	root.Update(press("l"))
+	want := "▸ Bring-up: " + root.state.Run.Steps[last].Step.Title
+	if view := ansi.Strip(root.View().Content); !strings.Contains(view, want) {
+		t.Errorf("the list of every log is not on the checks, want %q:\n%s", want, view)
+	}
+}
