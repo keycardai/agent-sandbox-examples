@@ -37,10 +37,11 @@ const (
 	// answer.
 	reasonUnanswered = "upstream_failed"
 	githubUserURL    = "https://api.github.com/user"
-	// paneAgent and paneRequests are the Agents tab's panes with the agent
-	// and with the requests.
+	// paneAgent, paneRequests and paneResponse are the Agents tab's panes
+	// with the agent, the requests and a request's response.
 	paneAgent    = "Agent"
 	paneRequests = "Try a request"
+	paneResponse = "Response"
 	// The kinds of a demo's inputs, as its scenario file names them.
 	inputGitHub = "github"
 	inputSecret = "secret"
@@ -243,52 +244,133 @@ func TestHomeStates(t *testing.T) {
 	}
 }
 
-// TestAgentTab shows the agent and the requests on the left, and the
-// agent's log on the right. With the requests in focus, the right shows
-// the last response, and the request selected says what it needs.
-func TestAgentTab(t *testing.T) {
-	t.Parallel()
-	root := upModel(t)
-	root.Update(press("2"))
-	view := ansi.Strip(root.View().Content)
-	for _, want := range []string{
-		paneAgent, sampleUser, "running · pod " + samplePod, paneRequests, "GET api.github.com/user",
-		"Needs " + sampleUser + "'s GitHub", "Press a to open pi-session", "Container log",
-	} {
-		if !strings.Contains(view, want) {
-			t.Errorf("Agents tab lacks %q:\n%s", want, view)
-		}
-	}
-	down := tea.KeyPressMsg{Code: tea.KeyDown}
-	root.Update(down)
-	if view = ansi.Strip(root.View().Content); focusedPane(view) != paneRequests ||
-		!strings.Contains(view, "Response") || !strings.Contains(view, "Nothing sent yet") {
-		t.Errorf("down from the agent: focus %q, want the requests and the response:\n%s", focusedPane(view), view)
-	}
-	for range 5 {
-		root.Update(down)
-	}
-	if view = ansi.Strip(root.View().Content); !strings.Contains(view, "Not on the allow list") {
-		t.Errorf("the last request does not say it is blocked:\n%s", view)
-	}
+// containerOf returns the status of the container of the agent's pod that
+// name names.
+func containerOf(root *model, name string) *sandbox.ContainerStatus {
+	i := slices.IndexFunc(root.state.Agents.Pods, func(row state.ContainerRow) bool {
+		return row.Container.Name == name
+	})
+	return &root.state.Agents.Pods[i].Container
 }
 
-// TestUpToTheAgent goes from the requests back to the agent and its log,
-// up past the first request.
-func TestUpToTheAgent(t *testing.T) {
+// TestTabsWhileUp says what Home, the Agents tab and the Traffic tab show
+// of a sandbox that is up, after the keys and reads of each case.
+func TestTabsWhileUp(t *testing.T) {
 	t.Parallel()
-	root := upModel(t)
-	root.Update(press("2"))
-	for range 5 {
-		root.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	const needsALook = "NEEDS A LOOK"
+	down, wide := tea.KeyPressMsg{Code: tea.KeyDown}, tea.WindowSizeMsg{Width: 150, Height: 42}
+	agentTab := func(downs int) func(root *model) {
+		return func(root *model) {
+			root.Update(press("2"))
+			for range downs {
+				root.Update(down)
+			}
+		}
 	}
-	for range 4 {
-		act(root, tea.KeyPressMsg{Code: tea.KeyUp})
+	traffic := func(root *model) {
+		root.ui.Logs.Log(state.SourceTraffic).Add(sampleRecords(time.Now())[2].Row())
+		root.Update(press("3"))
 	}
-	if view := ansi.Strip(root.View().Content); focusedPane(view) != paneAgent ||
-		!strings.Contains(view, "▸ GET api.github.com/user") || !strings.Contains(view, "Container log") {
-		t.Errorf("up past the first request: focus %q, want the agent and its log, the first request selected:\n%s",
-			focusedPane(view), view)
+	podsUnread := func(root *model) {
+		root.Update(podsMsg{agents: root.state.Agents.List, err: errRefused})
+		root.Update(press("1"))
+	}
+	for _, tc := range []struct {
+		name           string
+		change         func(root *model)
+		focus          string
+		want, unwanted []string
+	}{
+		{"agent and requests on the left, its log on the right", agentTab(0), "", []string{
+			paneAgent, sampleUser, "running · pod " + samplePod, paneRequests, "GET api.github.com/user",
+			"Needs " + sampleUser + "'s GitHub", "Press a to open pi-session", "Container log",
+		}, nil},
+		{"the requests and the last response", agentTab(1), paneRequests, []string{paneResponse, "Nothing sent yet"}, nil},
+		{"the last request says it is blocked", agentTab(6), "", []string{"Not on the allow list"}, nil},
+		{"up past the first request to the agent and its log", func(root *model) {
+			agentTab(5)(root)
+			for range 4 {
+				act(root, tea.KeyPressMsg{Code: tea.KeyUp})
+			}
+		}, paneAgent, []string{"▸ GET api.github.com/user", "Container log"}, nil},
+		{"the response says why its verdict cannot come without the proxy's log", func(root *model) {
+			root.Update(tea.WindowSizeMsg{Width: wideCaption, Height: 40})
+			agentTab(1)(root)
+			_, send := root.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			root.state.Agents.Traffic.SetErr(errRefused)
+			asked, _ := send().(page.SendRequestMsg)
+			root.Update(page.RequestDoneMsg{
+				Agent: asked.Agent, Seq: asked.Seq, Method: asked.Method, URL: asked.URL,
+				Response: sandbox.AgentResponse{Status: http.StatusOK},
+			})
+		}, "", []string{"Cannot read the proxy's log"}, []string{"waiting for the proxy's record"}},
+		{"traffic sums up what Keycard did", traffic, "", []string{
+			"WHAT KEYCARD DID", "Every request through the egress proxy", sampleUserPath, "show DNS",
+		}, nil},
+		{"d shows the DNS lookups", func(root *model) {
+			traffic(root)
+			root.Update(press("d"))
+		}, "", []string{"with DNS lookups", "hide DNS"}, nil},
+		{"each blocked host with its own reason", func(root *model) {
+			stamp := time.Now()
+			root.state.Agents.Traffic.Add(samplePod, newRecord(stamp, proxylog.ScopeDNS, sampleDenied, "", verdictDeny,
+				sampleReason, ""))
+			root.state.Agents.Traffic.Add(samplePod, newRecord(stamp.Add(time.Second), scopeRequest, "pypi.org",
+				"/simple/", verdictDeny, "malformed_request", ""))
+		}, "", []string{
+			"pypi.org · " + proxylog.ReasonText("malformed_request"),
+			sampleDenied + " · " + proxylog.ReasonText(sampleReason),
+		}, nil},
+		{"nothing needs a look when all is well", func(root *model) { root.Update(wide) }, "", nil, []string{needsALook}},
+		{"the stopped mirror and proxy and the unread log need a look", func(root *model) {
+			root.Update(wide)
+			root.state.Reads.Status.Mirror.Running = false
+			proxy := containerOf(root, state.ProxyContainer)
+			proxy.Ready, proxy.State, proxy.ExitCode = false, state.StateTerminated, 1
+			root.state.Agents.Traffic.SetErr(errRefused)
+		}, "", []string{
+			needsALook, "The mirror is down, so Keycard cannot verify the agent.", "Press u to start it again.",
+			"The egress proxy stopped: terminated (exit 1).", "Press l for its log, or R to restart the pod.",
+			"Cannot read the proxy's log: kubectl get pods: connection refused.",
+		}, nil},
+		{"checks the operator stopped are no trouble", func(root *model) {
+			root.Update(wide)
+			checks := slices.IndexFunc(root.state.Run.Steps, func(row *state.StepRow) bool {
+				return row.Step.ID == sandbox.StepChecks
+			})
+			root.Update(stepDoneMsg{index: checks, err: context.Canceled})
+		}, "", nil, []string{needsALook, "context canceled"}},
+		{"the agent does not run when its firewall did not start", func(root *model) {
+			netsetup, agent := containerOf(root, "egress-netsetup"), containerOf(root, state.AgentContainer)
+			netsetup.State, netsetup.ExitCode = state.StateTerminated, 1
+			agent.Ready, agent.State = false, "waiting"
+			root.syncAgents()
+		}, "", []string{"the firewall did not start"}, []string{"pod is starting"}},
+		{"Home says why there is no pod", podsUnread, "", []string{"connection refused"}, nil},
+		{"the Agents tab says why there is no pod", func(root *model) {
+			podsUnread(root)
+			root.Update(press("2"))
+		}, "", []string{"connection refused"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := upModel(t)
+			tc.change(root)
+			view := ansi.Strip(root.View().Content)
+			if got := focusedPane(view); tc.focus != "" && got != tc.focus {
+				t.Errorf("focus %q, want %q:\n%s", got, tc.focus, view)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(view, want) {
+					t.Errorf("lacks %q:\n%s", want, view)
+				}
+			}
+			for _, unwanted := range tc.unwanted {
+				if strings.Contains(view, unwanted) {
+					t.Errorf("shows %q:\n%s", unwanted, view)
+				}
+			}
+		})
 	}
 }
 
@@ -299,7 +381,7 @@ func TestAgentPanes(t *testing.T) {
 	root := upModel(t)
 	root.Update(press("2"))
 	tab := tea.KeyPressMsg{Code: tea.KeyTab}
-	for _, want := range []string{paneRequests, "Response", paneAgent} {
+	for _, want := range []string{paneRequests, paneResponse, paneAgent} {
 		root.Update(tab)
 		if got := focusedPane(ansi.Strip(root.View().Content)); got != want {
 			t.Fatalf("focus = %q after tab, want %q", got, want)
@@ -307,7 +389,7 @@ func TestAgentPanes(t *testing.T) {
 	}
 	root.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	root.Update(tab)
-	if got := focusedPane(ansi.Strip(root.View().Content)); got != "Response" ||
+	if got := focusedPane(ansi.Strip(root.View().Content)); got != paneResponse ||
 		root.ui.Logs.Source() != state.SourceResponse {
 		t.Fatalf("the right pane after the requests: focus %q, source %q; want the response", got,
 			root.ui.Logs.Source())
@@ -391,27 +473,6 @@ func TestAgentVerdicts(t *testing.T) {
 	}
 }
 
-// TestVerdictWithoutTheProxyLog says why a request's verdict cannot come
-// when the proxy's log cannot be read, instead of waiting for it.
-func TestVerdictWithoutTheProxyLog(t *testing.T) {
-	t.Parallel()
-	root := upModel(t)
-	root.Update(tea.WindowSizeMsg{Width: wideCaption, Height: 40})
-	root.Update(press("2"))
-	root.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-	_, send := root.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	root.state.Agents.Traffic.SetErr(errRefused)
-	asked, _ := send().(page.SendRequestMsg)
-	root.Update(page.RequestDoneMsg{
-		Agent: asked.Agent, Seq: asked.Seq, Method: asked.Method, URL: asked.URL,
-		Response: sandbox.AgentResponse{Status: http.StatusOK},
-	})
-	if view := ansi.Strip(root.View().Content); !strings.Contains(view, "Cannot read the proxy's log") ||
-		strings.Contains(view, "waiting for the proxy's record") {
-		t.Errorf("the response waits for a record the TUI cannot read:\n%s", view)
-	}
-}
-
 // TestSendNeedsTheAgent refuses to send before the agent runs.
 func TestSendNeedsTheAgent(t *testing.T) {
 	t.Parallel()
@@ -422,29 +483,6 @@ func TestSendNeedsTheAgent(t *testing.T) {
 	}
 	if !strings.Contains(root.ui.Toast.Text, "not running") {
 		t.Errorf("notice = %q, want it to say the agent is not running", root.ui.Toast.Text)
-	}
-}
-
-// TestTrafficTab sums up what Keycard did, and shows the feed with the
-// DNS lookups on d.
-func TestTrafficTab(t *testing.T) {
-	t.Parallel()
-	root := upModel(t)
-	root.ui.Logs.Log(state.SourceTraffic).Add(sampleRecords(time.Now())[2].Row())
-	root.Update(press("3"))
-	view := ansi.Strip(root.View().Content)
-	for _, want := range []string{
-		"WHAT KEYCARD DID", "Every request through the egress proxy", sampleUserPath,
-		"show DNS",
-	} {
-		if !strings.Contains(view, want) {
-			t.Errorf("Traffic tab lacks %q:\n%s", want, view)
-		}
-	}
-	root.Update(press("d"))
-	if view = ansi.Strip(root.View().Content); !strings.Contains(view, "with DNS lookups") ||
-		!strings.Contains(view, "hide DNS") {
-		t.Errorf("after d, the Traffic tab does not show the lookups:\n%s", view)
 	}
 }
 
@@ -635,73 +673,8 @@ func lineWith(view, text string) string {
 	return ""
 }
 
-// TestBlockedReasons names each blocked host with the reason the proxy
-// gave for it, not the newest host's reason for all of them.
-func TestBlockedReasons(t *testing.T) {
-	t.Parallel()
-	root := upModel(t)
-	stamp := time.Now()
-	root.state.Agents.Traffic.Add(samplePod, newRecord(stamp, proxylog.ScopeDNS, sampleDenied, "", verdictDeny,
-		sampleReason, ""))
-	root.state.Agents.Traffic.Add(samplePod, newRecord(stamp.Add(time.Second), scopeRequest, "pypi.org", "/simple/",
-		verdictDeny, "malformed_request", ""))
-	view := ansi.Strip(root.View().Content)
-	for _, want := range []string{
-		"pypi.org · " + proxylog.ReasonText("malformed_request"),
-		sampleDenied + " · " + proxylog.ReasonText(sampleReason),
-	} {
-		if !strings.Contains(view, want) {
-			t.Errorf("Home lacks %q:\n%s", want, view)
-		}
-	}
-}
-
-// TestHomeTroubles says on Home what keeps a sandbox that runs from
-// working, with what to do: nothing when all is well, then the mirror that
-// stopped, the proxy that stopped, and its log that cannot be read.
-func TestHomeTroubles(t *testing.T) {
-	t.Parallel()
-	root := upModel(t)
-	root.Update(tea.WindowSizeMsg{Width: 150, Height: 42})
-	if view := ansi.Strip(root.View().Content); strings.Contains(view, "NEEDS A LOOK") {
-		t.Errorf("all well, and Home says something needs a look:\n%s", view)
-	}
-	root.state.Reads.Status.Mirror.Running = false
-	for i, row := range root.state.Agents.Pods {
-		if row.Container.Name == state.ProxyContainer {
-			ctr := &root.state.Agents.Pods[i].Container
-			ctr.Ready, ctr.State, ctr.ExitCode = false, state.StateTerminated, 1
-		}
-	}
-	root.state.Agents.Traffic.SetErr(errRefused)
-	view := ansi.Strip(root.View().Content)
-	for _, want := range []string{
-		"NEEDS A LOOK", "The mirror is down, so Keycard cannot verify the agent.", "Press u to start it again.",
-		"The egress proxy stopped: terminated (exit 1).", "Press l for its log, or R to restart the pod.",
-		"Cannot read the proxy's log: kubectl get pods: connection refused.",
-	} {
-		if !strings.Contains(view, want) {
-			t.Errorf("Home lacks %q:\n%s", want, view)
-		}
-	}
-}
-
 // errRefused is a read of the pods that the cluster refused.
 var errRefused = errors.New("kubectl get pods: connection refused")
-
-// TestPodsError says why there is no pod when the pods cannot be read, on
-// Home and on the Agents tab.
-func TestPodsError(t *testing.T) {
-	t.Parallel()
-	root := upModel(t)
-	root.Update(podsMsg{agents: root.state.Agents.List, err: errRefused})
-	for _, tab := range []string{"1", "2"} {
-		root.Update(press(tab))
-		if view := ansi.Strip(root.View().Content); !strings.Contains(view, "connection refused") {
-			t.Errorf("tab %s does not say why there is no pod:\n%s", tab, view)
-		}
-	}
-}
 
 // TestLogsListAfterFewerSteps keeps the list of every log's cursor on a
 // log when the list grows shorter, as when the settings move to an
@@ -759,22 +732,6 @@ func TestLogsShowTheStep(t *testing.T) {
 	}
 }
 
-// TestStoppedChecksAreNoTrouble keeps checks the operator stopped off what
-// needs a look on Home: they did not fail.
-func TestStoppedChecksAreNoTrouble(t *testing.T) {
-	t.Parallel()
-	root := upModel(t)
-	root.Update(tea.WindowSizeMsg{Width: 150, Height: 42})
-	checks := slices.IndexFunc(root.state.Run.Steps, func(row *state.StepRow) bool {
-		return row.Step.ID == sandbox.StepChecks
-	})
-	root.Update(stepDoneMsg{index: checks, err: context.Canceled})
-	if view := ansi.Strip(root.View().Content); strings.Contains(view, "NEEDS A LOOK") ||
-		strings.Contains(view, "context canceled") {
-		t.Errorf("Home shows the stopped checks as a failure:\n%s", view)
-	}
-}
-
 // TestHelpFits draws every key's help within the window, the smallest one
 // too.
 func TestHelpFits(t *testing.T) {
@@ -794,28 +751,6 @@ func TestHelpFits(t *testing.T) {
 		if len(lines) > size[1] || !strings.Contains(modal, "X remove the agent") {
 			t.Errorf("at %dx%d, the help takes %d rows, or lacks X:\n%s", size[0], size[1], len(lines), modal)
 		}
-	}
-}
-
-// TestHomeFirewallFailed says on Home that the agent does not run when its
-// pod's firewall did not start, as the Agents tab does, instead of saying
-// the pod is starting.
-func TestHomeFirewallFailed(t *testing.T) {
-	t.Parallel()
-	root := upModel(t)
-	for i, row := range root.state.Agents.Pods {
-		ctr := &root.state.Agents.Pods[i].Container
-		switch row.Container.Name {
-		case "egress-netsetup":
-			ctr.State, ctr.ExitCode = state.StateTerminated, 1
-		case state.AgentContainer:
-			ctr.Ready, ctr.State = false, "waiting"
-		}
-	}
-	root.syncAgents()
-	view := ansi.Strip(root.View().Content)
-	if !strings.Contains(view, "the firewall did not start") || strings.Contains(view, "pod is starting") {
-		t.Errorf("Home does not say the firewall did not start:\n%s", view)
 	}
 }
 

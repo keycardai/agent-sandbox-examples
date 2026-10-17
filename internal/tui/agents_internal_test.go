@@ -110,31 +110,22 @@ func pick(root *model, steps int) {
 	root.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 }
 
-// TestOnlyAgentPicker says how to add an agent when there is only one to
-// switch to.
-func TestOnlyAgentPicker(t *testing.T) {
-	t.Parallel()
-	root := upModel(t)
-	root.Update(press("2"))
-	if root.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); root.overlay.kind != overlayNone ||
-		!strings.Contains(root.ui.Toast.Text, "only agent") {
-		t.Errorf("enter with one agent: overlay %v, notice %q", root.overlay.kind, root.ui.Toast.Text)
-	}
-}
-
-// TestOneAgentNeedsNoBar leaves out which agent a tab shows when there is
-// only one. That agent is the picked person's, which X cannot remove.
-func TestOneAgentNeedsNoBar(t *testing.T) {
+// TestOneAgent leaves out which agent a tab shows when there is only one,
+// and offers no X: that agent is the picked person's, which X cannot remove.
+// On enter, it says how to add an agent, as there is none to switch to.
+func TestOneAgent(t *testing.T) {
 	t.Parallel()
 	root := upModel(t)
 	if view := ansi.Strip(root.View().Content); strings.Contains(view, "Showing ") {
 		t.Errorf("Home says which agent it shows, with one agent:\n%s", view)
 	}
 	root.Update(press("2"))
-	for _, hint := range root.agents.Hints() {
-		if hint.Key == "X" {
-			t.Error("the only agent offers X to remove it")
-		}
+	if slices.ContainsFunc(root.agents.Hints(), func(hint component.Hint) bool { return hint.Key == "X" }) {
+		t.Error("the only agent offers X to remove it")
+	}
+	if root.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); root.overlay.kind != overlayNone ||
+		!strings.Contains(root.ui.Toast.Text, "only agent") {
+		t.Errorf("enter with one agent: overlay %v, notice %q", root.overlay.kind, root.ui.Toast.Text)
 	}
 }
 
