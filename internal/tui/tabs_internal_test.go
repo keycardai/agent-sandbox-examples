@@ -387,6 +387,27 @@ func TestAgentVerdicts(t *testing.T) {
 	}
 }
 
+// TestVerdictWithoutTheProxyLog says why a request's verdict cannot come
+// when the proxy's log cannot be read, instead of waiting for it.
+func TestVerdictWithoutTheProxyLog(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	root.Update(tea.WindowSizeMsg{Width: wideCaption, Height: 40})
+	root.Update(press("2"))
+	root.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	_, send := root.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	root.state.Agents.Traffic.SetErr(errRefused)
+	asked, _ := send().(page.SendRequestMsg)
+	root.Update(page.RequestDoneMsg{
+		Agent: asked.Agent, Seq: asked.Seq, Method: asked.Method, URL: asked.URL,
+		Response: sandbox.AgentResponse{Status: http.StatusOK},
+	})
+	if view := ansi.Strip(root.View().Content); !strings.Contains(view, "Cannot read the proxy's log") ||
+		strings.Contains(view, "waiting for the proxy's record") {
+		t.Errorf("the response waits for a record the TUI cannot read:\n%s", view)
+	}
+}
+
 // TestSendNeedsTheAgent refuses to send before the agent runs.
 func TestSendNeedsTheAgent(t *testing.T) {
 	t.Parallel()

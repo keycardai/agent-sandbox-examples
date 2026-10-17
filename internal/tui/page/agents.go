@@ -685,6 +685,9 @@ func (a *Agents) keycardVerdict() string {
 	record, found := proxylog.RecordFor(records, request.trial.method, request.trial.host(), request.trial.path(),
 		request.started.Add(-recordSlack))
 	switch {
+	case !found && a.state.Agents.Traffic.Err() != nil:
+		return label + theme.Failed.Render("✕ Cannot read the proxy's log: "+
+			component.FirstLine(a.state.Agents.Traffic.Err().Error()))
 	case !found:
 		return label + theme.Dim.Render("waiting for the proxy's record of the request…")
 	case record.RefusedCredential():
