@@ -944,21 +944,17 @@ func (m *model) addAgent() {
 	log.Reset()
 	m.setup.ForgetNotes()
 	ask := m.startQuestions(nil, log)
-	session, out := m.session, m.bus
+	session := m.session
 	m.state.Record("▸", "Adding an agent")
 	m.ui.Notify("Signing in to Keycard to list the zone's users…", false)
-	m.jobs.Go(func() {
-		var done agentAddedMsg
-		defer func() {
-			if r := recover(); r != nil {
-				done.err = fmt.Errorf("%w: %v", errPanic, r)
-			}
-			done.describe, done.problems = session.Describe(), session.Problems()
-			out.Send(done)
-		}()
-		done.email, done.err = session.AddAgent(ctx, ask, log)
-		done.agents = session.Agents()
-	})
+	// The settings are read again after the questions, also after a panic.
+	done := func(email string, err error) tea.Msg {
+		return agentAddedMsg{
+			email: email, err: err, agents: session.Agents(), describe: session.Describe(), problems: session.Problems(),
+		}
+	}
+	m.inBackground(func() tea.Msg { return done(session.AddAgent(ctx, ask, log)) },
+		func(err error) tea.Msg { return done("", err) })
 }
 
 // onAgentAdded selects the new agent, and brings it up when the sandbox is
