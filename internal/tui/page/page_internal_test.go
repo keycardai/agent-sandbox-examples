@@ -288,7 +288,7 @@ func TestReview(t *testing.T) {
 				t.Errorf("%dx%d review lacks %q:\n%s", size[0], size[1], want, view)
 			}
 		}
-		setup.state.Problems = []error{sandbox.ErrSettings}
+		setup.state.Setup.Problems = []error{sandbox.ErrSettings}
 		if view := ansi.Strip(setup.ReviewView()); strings.Contains(view, "Ready to launch") ||
 			strings.Contains(view, "enter  launch") || !strings.Contains(view, "needs a fix") {
 			t.Errorf("%dx%d review with a problem:\n%s", size[0], size[1], view)

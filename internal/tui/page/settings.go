@@ -63,7 +63,7 @@ func (s *Settings) View(back string) string {
 	width := min(s.ui.Width-component.BorderCols-component.PageIndent, readWidth+checkNameWidth)
 	rows := make([]string, 0, len(sections())*half)
 	for i, sec := range sections() {
-		value := ansi.Truncate(cmp.Or(s.state.Describe[sec.id], "not set"), max(width-labelWidth-half, 1), "…")
+		value := ansi.Truncate(cmp.Or(s.state.Setup.Describe[sec.id], "not set"), max(width-labelWidth-half, 1), "…")
 		mark, label := "  ", lipgloss.NewStyle().Width(labelWidth).Render(theme.Text.Render(sec.title))
 		line := mark + label + theme.Muted.Render(value)
 		if i == s.cursor {
@@ -78,7 +78,7 @@ func (s *Settings) View(back string) string {
 	if failed := s.setupFailure(width); failed != "" {
 		parts = append(parts, failed, "")
 	}
-	if len(s.state.Problems) > 0 {
+	if len(s.state.Setup.Problems) > 0 {
 		parts = append(parts, s.problemList(width))
 	} else {
 		parts = append(parts, theme.OK.Render("✓ ")+theme.Text.Render("Ready to launch."))
@@ -99,7 +99,7 @@ func (s *Settings) View(back string) string {
 func (s *Settings) savedWhere() string {
 	saving := s.state.Saving()
 	keychain := ""
-	if err := s.state.KeychainErr; err != nil {
+	if err := s.state.Setup.KeychainErr; err != nil {
 		keychain = " The keychain cannot keep the secrets: " + component.FirstLine(err.Error()) + "."
 	}
 	switch {

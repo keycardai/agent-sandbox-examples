@@ -21,7 +21,7 @@ import (
 func (m *model) Init() tea.Cmd {
 	cmds := []tea.Cmd{frameTick(), m.poll(), m.bus.next(), tea.RequestWindowSize, tea.RequestBackgroundColor}
 	switch {
-	case len(m.state.Problems) > 0:
+	case len(m.state.Setup.Problems) > 0:
 		return tea.Batch(append(cmds, m.openWelcome())...)
 	case len(m.state.Run.Steps) == 0, m.state.Run.Steps[0].Step.ID != sandbox.StepTunnel:
 	case m.session.Local().ServiceStatus(sandbox.ServiceTunnel).Running:
@@ -70,7 +70,7 @@ func (m *model) updateBackground(msg tea.Msg) (tea.Cmd, bool) {
 	}
 	switch msg := msg.(type) {
 	case style.GlintMsg:
-		return m.welcome.Glint.Move(msg.Now, m.screen == screenWelcome && m.state.Preflight.Checking()), true
+		return m.welcome.Glint.Move(msg.Now, m.screen == screenWelcome && m.state.Setup.Preflight.Checking()), true
 	case frameMsg:
 		m.ui.Frame++
 		return tea.Batch(frameTick(), m.welcomeGlint()), true
@@ -135,7 +135,7 @@ func (m *model) updateOnboarding(msg tea.Msg) (tea.Cmd, bool) {
 // welcomeGlint starts the sheen across the mark while the welcome screen
 // checks the machine, however the screen came to show.
 func (m *model) welcomeGlint() tea.Cmd {
-	if m.screen != screenWelcome || !m.state.Preflight.Checking() {
+	if m.screen != screenWelcome || !m.state.Setup.Preflight.Checking() {
 		return nil
 	}
 	return m.welcome.Glint.Start()
@@ -365,7 +365,7 @@ func (m *model) isDown() bool {
 // does not run now.
 func (m *model) openDemoPicker() {
 	if len(m.state.DemoList()) == 0 {
-		m.ui.Notify("No demo loads: "+component.FirstLine(m.state.DemosErr.Error()), true)
+		m.ui.Notify("No demo loads: "+component.FirstLine(m.state.Demos.Err.Error()), true)
 		return
 	}
 	if m.busy() {
@@ -400,10 +400,10 @@ func (m *model) switchDemo(name string) {
 func (m *model) welcomeKeys(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case msg.String() == component.KeyEnter:
-		m.startWizard(screenWelcome, nil, m.state.FixSections()...)
+		m.startWizard(screenWelcome, nil, m.state.Setup.FixSections()...)
 	case key.Matches(msg, m.ui.Keys.Setup) && !m.state.FirstRun():
 		m.showSettings(screenWelcome)
-	case msg.String() == "r" && !m.state.Preflight.Checking():
+	case msg.String() == "r" && !m.state.Setup.Preflight.Checking():
 		return m.checkAgain()
 	}
 	return nil
@@ -413,7 +413,7 @@ func (m *model) welcomeKeys(msg tea.KeyPressMsg) tea.Cmd {
 // and checks the machine again. With nothing left to fix, the review shows.
 func (m *model) checkAgain() tea.Cmd {
 	m.state.RefreshSettings()
-	if len(m.state.Problems) == 0 && m.session.Local().Initialized() {
+	if len(m.state.Setup.Problems) == 0 && m.session.Local().Initialized() {
 		m.screen = screenReview
 		return nil
 	}
@@ -483,7 +483,7 @@ func (m *model) startWizard(back screen, preset map[string]string, ids ...string
 // launch brings the sandbox up and shows the dashboard, when the settings
 // have no problems.
 func (m *model) launch() tea.Cmd {
-	if len(m.state.Problems) > 0 {
+	if len(m.state.Setup.Problems) > 0 {
 		m.ui.Notify("Fix the settings first.", true)
 		return nil
 	}
@@ -519,7 +519,7 @@ func (m *model) leaveSettings() tea.Cmd {
 	switch {
 	case m.settingsBack != screenWelcome:
 		m.screen = m.settingsBack
-	case len(m.state.Problems) == 0 && m.session.Local().Initialized():
+	case len(m.state.Setup.Problems) == 0 && m.session.Local().Initialized():
 		m.screen = screenReview
 	default:
 		return m.openWelcome()

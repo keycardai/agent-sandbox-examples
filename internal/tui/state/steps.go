@@ -80,7 +80,7 @@ func (s *Sandbox) StepEnded(i int, err error) *StepRow {
 	case row.Step.ID == sandbox.StepChecks:
 		row.Passed, row.Total = countChecks(row.Log)
 	case row.Step.ID == sandbox.StepSandbox && err == nil:
-		s.Launched = s.deployedDemo()
+		s.Demos.Launched = s.deployedDemo()
 	}
 	return row
 }

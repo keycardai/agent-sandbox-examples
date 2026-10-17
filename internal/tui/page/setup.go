@@ -133,7 +133,7 @@ func (s *Setup) Begin(ids ...string) {
 		asked[id] = true
 	}
 	all := len(ids) == 0
-	describe := s.state.Describe
+	describe := s.state.Setup.Describe
 	s.Rail, s.current, s.notesFrom = nil, "", 0
 	for _, step := range RailSteps() {
 		switch {
@@ -327,7 +327,7 @@ func (s *Setup) ReviewView() string {
 		body = lipgloss.JoinVertical(lipgloss.Left, s.reviewLines(width), "", s.launchPanel(width))
 	}
 	var hints []component.Hint
-	if len(s.state.Problems) == 0 {
+	if len(s.state.Setup.Problems) == 0 {
 		hints = append(hints, component.Hint{Key: component.KeyEnter, Desc: "launch"})
 	}
 	return s.ui.Page("setup · review", s.centered(body), append(hints,
@@ -590,7 +590,7 @@ func (s *Setup) reviewLines(width int) string {
 	}
 	for _, sec := range sections() {
 		lines = append(lines, ansi.Truncate(theme.OK.Render("✓")+"  "+theme.Text.Render(component.Pad(sec.title,
-			checkNameWidth))+theme.Muted.Render(cmp.Or(s.state.Describe[sec.id], "not set")), width, "…"))
+			checkNameWidth))+theme.Muted.Render(cmp.Or(s.state.Setup.Describe[sec.id], "not set")), width, "…"))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -600,7 +600,7 @@ func (s *Setup) reviewLines(width int) string {
 func (s *Setup) launchPanel(width int) string {
 	theme := s.ui.Styles
 	para := lipgloss.NewStyle().Width(width)
-	if len(s.state.Problems) > 0 {
+	if len(s.state.Setup.Problems) > 0 {
 		return lipgloss.JoinVertical(lipgloss.Left, theme.Attention.Bold(true).Render("Something needs a fix"),
 			"", s.problemList(width), "", theme.KeyChip.Render("e")+" "+theme.Title.Render("Change a setting"))
 	}

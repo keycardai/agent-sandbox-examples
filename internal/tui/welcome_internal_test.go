@@ -22,7 +22,7 @@ func welcomeModel(t *testing.T, width, height int, checks ...sandbox.Check) *mod
 	root.screen = screenWelcome
 	root.preflight([]sandbox.PreflightItem{{Name: sampleCheck}, {Name: sampleTools}})
 	for i, check := range checks {
-		root.Update(checkDoneMsg{run: root.state.Preflight.Run, index: i, check: check})
+		root.Update(checkDoneMsg{run: root.state.Setup.Preflight.Run, index: i, check: check})
 	}
 	root.Update(tea.WindowSizeMsg{Width: width, Height: height})
 	return root
@@ -131,7 +131,7 @@ func TestSettingsKey(t *testing.T) {
 	}
 	fix := welcomeModel(t, 150, 42)
 	writeSettings(t, fix)
-	fix.state.Problems = []error{sandbox.ErrSettings}
+	fix.state.Setup.Problems = []error{sandbox.ErrSettings}
 	if fix.Update(press("e")); fix.screen != screenSettings || fix.settingsBackWord() != "back" {
 		t.Fatalf("e on the fix screen showed screen %v, esc %q", fix.screen, fix.settingsBackWord())
 	}
@@ -180,7 +180,7 @@ func TestQuitWithNothingRunning(t *testing.T) {
 func TestWelcomeDropsAnEarlierRun(t *testing.T) {
 	t.Parallel()
 	root := welcomeModel(t, 120, 40)
-	earlier := root.state.Preflight.Run
+	earlier := root.state.Setup.Preflight.Run
 	root.preflight([]sandbox.PreflightItem{{Name: sampleCheck}, {Name: sampleTools}})
 	root.Update(checkDoneMsg{run: earlier, index: 0, check: sandbox.Check{Name: sampleCheck, Detail: "stale"}})
 	if view := ansi.Strip(root.View().Content); strings.Contains(view, "stale") {
@@ -193,9 +193,9 @@ func TestWelcomeDropsAnEarlierRun(t *testing.T) {
 func TestWelcomeChecksTheSettingsAgain(t *testing.T) {
 	t.Parallel()
 	root := welcomeModel(t, 120, 40, sandbox.Check{Name: sampleCheck}, sandbox.Check{Name: sampleTools})
-	root.state.Problems = []error{fmt.Errorf("%w: the keychain is locked", sandbox.ErrKeychain)}
+	root.state.Setup.Problems = []error{fmt.Errorf("%w: the keychain is locked", sandbox.ErrKeychain)}
 	root.Update(press("r"))
-	if len(root.state.Problems) != 1 || !errors.Is(root.state.Problems[0], sandbox.ErrNoSetup) {
-		t.Errorf("problems after r = %v, want them read again", root.state.Problems)
+	if len(root.state.Setup.Problems) != 1 || !errors.Is(root.state.Setup.Problems[0], sandbox.ErrNoSetup) {
+		t.Errorf("problems after r = %v, want them read again", root.state.Setup.Problems)
 	}
 }

@@ -285,7 +285,7 @@ func (m *model) toggleBringUp() {
 		if m.busy() {
 			return
 		}
-		if len(m.state.Problems) > 0 {
+		if len(m.state.Setup.Problems) > 0 {
 			m.ui.Notify("Fix the settings first. Press e to open them.", true)
 			return
 		}
@@ -668,7 +668,7 @@ func (m *model) startSetup(preset map[string]string, ids ...string) {
 		cancel()
 		return
 	}
-	m.state.SetupStarted()
+	m.state.Setup.Started()
 	log := m.ui.Logs.Log(state.SourceSetup)
 	log.Reset()
 	ask := m.setup.Start(m.bus.Send, preset, log)
@@ -698,7 +698,7 @@ func (m *model) onSetupDone(msg setupDoneMsg) {
 		m.overlay = overlay{}
 	}
 	m.setup.End()
-	m.state.SetSettings(msg.describe, msg.problems)
+	m.state.Setup.SetSettings(msg.describe, msg.problems)
 	if ended.StopAfter {
 		m.screen = screenDashboard
 		m.stopEverything(ended.QuitAfter)
@@ -710,7 +710,7 @@ func (m *model) onSetupDone(msg setupDoneMsg) {
 		if errors.Is(msg.err, sandbox.ErrInterrupted) || errors.Is(msg.err, context.Canceled) {
 			m.state.Record("•", "Setup stopped without saving")
 		} else {
-			m.state.SetupFailed(msg.err)
+			m.state.Setup.Failed(msg.err)
 			m.state.Record("✕", "Setup failed: "+component.FirstLine(msg.err.Error()))
 			m.ui.Notify("Setup stopped: "+component.FirstLine(msg.err.Error()), true)
 		}

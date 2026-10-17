@@ -31,7 +31,7 @@ func (m *model) startPreflight() tea.Cmd { return m.preflight(m.state.PreflightI
 func (m *model) preflight(items []sandbox.PreflightItem) tea.Cmd {
 	m.stopPreflight()
 	m.preflightCtx, m.preflightStop = context.WithCancel(m.ctx)
-	m.state.StartPreflight(items)
+	m.state.Setup.StartPreflight(items)
 	return m.nextCheck()
 }
 
@@ -45,7 +45,7 @@ func (m *model) stopPreflight() {
 // onCheck keeps a check's result, records it, and starts the next check.
 // A result of an earlier run is dropped.
 func (m *model) onCheck(msg checkDoneMsg) tea.Cmd {
-	if !m.state.CheckDone(msg.run, msg.index, msg.check) {
+	if !m.state.Setup.CheckDone(msg.run, msg.index, msg.check) {
 		return nil
 	}
 	mark := map[sandbox.CheckState]string{sandbox.CheckOK: "✓", sandbox.CheckNote: "•", sandbox.CheckFailed: "✕"}
@@ -56,7 +56,7 @@ func (m *model) onCheck(msg checkDoneMsg) tea.Cmd {
 // nextCheck runs the first check that has no result yet. Each check shows
 // for at least minCheck, so a fast one does not flash past.
 func (m *model) nextCheck() tea.Cmd {
-	run := m.state.Preflight
+	run := m.state.Setup.Preflight
 	index := len(run.Results)
 	if index >= len(run.Items) {
 		return nil

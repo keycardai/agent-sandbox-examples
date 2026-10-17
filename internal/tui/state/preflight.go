@@ -33,13 +33,13 @@ func (p Preflight) Failed() int {
 func (s *Sandbox) PreflightItems() []sandbox.PreflightItem { return s.session.PreflightItems() }
 
 // StartPreflight starts a run of the checks in items.
-func (s *Sandbox) StartPreflight(items []sandbox.PreflightItem) {
+func (s *Setup) StartPreflight(items []sandbox.PreflightItem) {
 	s.Preflight = Preflight{Items: items, Run: s.Preflight.Run + 1}
 }
 
 // CheckDone keeps the result of check index of run, and reports whether it
 // kept it. A result of an earlier run, or out of order, is dropped.
-func (s *Sandbox) CheckDone(run, index int, check sandbox.Check) bool {
+func (s *Setup) CheckDone(run, index int, check sandbox.Check) bool {
 	if run != s.Preflight.Run || index != len(s.Preflight.Results) {
 		return false
 	}
@@ -50,7 +50,7 @@ func (s *Sandbox) CheckDone(run, index int, check sandbox.Check) bool {
 // FixSections lists the sections setup asks to fix the settings' problems,
 // or none when a problem is in no one section, so that setup asks every
 // section.
-func (s *Sandbox) FixSections() []string {
+func (s *Setup) FixSections() []string {
 	var sections []string
 	for _, problem := range s.Problems {
 		section := sandbox.ProblemSection(problem)

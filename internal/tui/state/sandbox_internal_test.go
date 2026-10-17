@@ -129,8 +129,8 @@ func TestRunningDemo(t *testing.T) {
 			known.StepEnded(i, nil)
 		}
 	}
-	if known.Launched != second {
-		t.Errorf("after the sandbox step: launched %q, want second", known.Launched)
+	if known.Demos.Launched != second {
+		t.Errorf("after the sandbox step: launched %q, want second", known.Demos.Launched)
 	}
 }
 

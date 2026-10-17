@@ -310,7 +310,7 @@ func TestFirstRunWelcome(t *testing.T) {
 	root.preflight([]sandbox.PreflightItem{{Name: sampleCheck}, {Name: sampleTools}})
 	root.Update(
 		checkDoneMsg{
-			run:   root.state.Preflight.Run,
+			run:   root.state.Setup.Preflight.Run,
 			index: 0,
 			check: sandbox.Check{Name: sampleCheck, Detail: sampleDocker},
 		},
@@ -476,7 +476,7 @@ func TestPolicyAnswerHolds(t *testing.T) {
 func TestBringUpWaitsForTheSettings(t *testing.T) {
 	t.Parallel()
 	root := testModel(t)
-	root.state.Problems = []error{sandbox.ErrSettings}
+	root.state.Setup.Problems = []error{sandbox.ErrSettings}
 	if root.Update(press("u")); root.state.Run.Job.Busy() || !strings.Contains(root.ui.Toast.Text, "Fix the settings") {
 		t.Errorf("u with a problem: running %v, notice %q; want a notice to fix the settings",
 			root.state.Run.Job.Busy(), root.ui.Toast.Text)
@@ -523,7 +523,10 @@ func TestOneJobAtATime(t *testing.T) {
 			root.Update(press("R"))
 			answerYes(root)
 		}, busyKeys()},
-		{"the setup", "Setup is open", func(root *model) { root.state.Run.Job = state.Job{Kind: state.JobSetup} }, busyKeys()},
+		{
+			"the setup", "Setup is open", func(root *model) { root.state.Run.Job = state.Job{Kind: state.JobSetup} },
+			busyKeys(),
+		},
 		{
 			"a bring-up", "bring-up is running", func(root *model) { root.state.Run.Job = state.Job{Kind: state.JobBringUp} },
 			slices.DeleteFunc(busyKeys(), func(key string) bool { return key == "u" || key == "D" }),

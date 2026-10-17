@@ -135,9 +135,9 @@ func (w *Welcome) lead(width, detail int) []string {
 func (w *Welcome) machineTitle() string {
 	theme := w.ui.Styles
 	switch {
-	case w.state.Preflight.Checking():
+	case w.state.Setup.Preflight.Checking():
 		return theme.SectionTitle.Render("This machine")
-	case w.state.Preflight.Failed() > 0:
+	case w.state.Setup.Preflight.Failed() > 0:
 		return theme.Attention.Bold(true).Render("This machine is not ready")
 	}
 	return theme.SectionTitle.Render("This machine is ready")
@@ -175,7 +175,7 @@ func (w *Welcome) setupPreview(width int) string {
 // does not need the machine, so enter works either way.
 func (w *Welcome) action(width int) string {
 	theme := w.ui.Styles
-	if w.state.Preflight.Checking() {
+	if w.state.Setup.Preflight.Checking() {
 		return theme.Running.Render(w.ui.spinner() + " Checking this machine…")
 	}
 	verb := "Start setup"
@@ -183,7 +183,7 @@ func (w *Welcome) action(width int) string {
 		verb = "Fix the settings"
 	}
 	action := theme.KeyChip.Render(component.KeyEnter) + " " + theme.Title.Render(verb)
-	if w.state.Preflight.Failed() == 0 {
+	if w.state.Setup.Preflight.Failed() == 0 {
 		return action
 	}
 	note := lipgloss.NewStyle().Width(width).Render(theme.Attention.Render(
@@ -216,7 +216,7 @@ func (w *Welcome) title() string {
 }
 
 func (w *Welcome) fixTitle() string {
-	if len(w.state.Problems) == 1 {
+	if len(w.state.Setup.Problems) == 1 {
 		return "One setting needs a fix before the next bring-up."
 	}
 	return "Some settings need a fix before the next bring-up."
@@ -242,7 +242,7 @@ func (w *Welcome) diagram() string {
 func (w *Welcome) checkList(width int) string {
 	theme := w.ui.Styles
 	wrap := lipgloss.NewStyle().Width(max(width-checkNameWidth-component.BorderCols, 1))
-	run := w.state.Preflight
+	run := w.state.Setup.Preflight
 	lines := make([]string, 0, len(run.Items))
 	for i, item := range run.Items {
 		icon, name, text := theme.Faint.Render("·"), theme.Dim.Render(item.Name), theme.Faint.Render("waiting")
@@ -287,8 +287,8 @@ func (v view) problemList(width int) string {
 	for _, step := range RailSteps() {
 		titles[step.ID] = step.Title
 	}
-	lines := make([]string, 0, len(v.state.Problems))
-	for _, problem := range v.state.Problems {
+	lines := make([]string, 0, len(v.state.Setup.Problems))
+	for _, problem := range v.state.Setup.Problems {
 		name := cmp.Or(titles[sandbox.ProblemSection(problem)], "Setup")
 		detail := strings.ReplaceAll(problem.Error(), root, "")
 		text := theme.Text.Render(detail)
@@ -305,15 +305,15 @@ func (v view) problemList(width int) string {
 // setupFailure says why the last setup failed, with what to do when
 // HintFor knows, or is "" when it did not fail.
 func (v view) setupFailure(width int) string {
-	if v.state.SetupErr == nil {
+	if v.state.Setup.Err == nil {
 		return ""
 	}
 	theme := v.ui.Styles
 	wrap := lipgloss.NewStyle().Width(max(width, 1))
 	lines := []string{
-		wrap.Render(theme.Failed.Render("✕ Setup stopped: " + component.FirstLine(v.state.SetupErr.Error()))),
+		wrap.Render(theme.Failed.Render("✕ Setup stopped: " + component.FirstLine(v.state.Setup.Err.Error()))),
 	}
-	if hint := HintFor(v.state.SetupErr); hint != "" {
+	if hint := HintFor(v.state.Setup.Err); hint != "" {
 		lines = append(lines, wrap.Render(theme.Hint.Render("→ "+hint)))
 	}
 	return strings.Join(lines, "\n")

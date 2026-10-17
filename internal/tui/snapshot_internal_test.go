@@ -146,7 +146,7 @@ func snapshotChecks() []sandbox.PreflightItem {
 // checked reports the results of the machine checks, from the first.
 func checked(root *model, checks ...sandbox.Check) {
 	for i, check := range checks {
-		root.Update(checkDoneMsg{run: root.state.Preflight.Run, index: i, check: check})
+		root.Update(checkDoneMsg{run: root.state.Setup.Preflight.Run, index: i, check: check})
 	}
 }
 
@@ -223,11 +223,11 @@ func snapshotFix(t *testing.T) *model {
 	if err == nil {
 		t.Fatal("ParseValues passed, want the error about resources[2]")
 	}
-	root.state.Problems = []error{fmt.Errorf("zone-setup.yaml: %w", err)}
-	root.Update(checkDoneMsg{run: root.state.Preflight.Run, index: 2, check: sandbox.Check{
+	root.state.Setup.Problems = []error{fmt.Errorf("zone-setup.yaml: %w", err)}
+	root.Update(checkDoneMsg{run: root.state.Setup.Preflight.Run, index: 2, check: sandbox.Check{
 		Name: sampleTools, Detail: "k3d, kubectl, helm and cloudflared, as mise.toml pins them",
 	}})
-	root.Update(checkDoneMsg{run: root.state.Preflight.Run, index: 3, check: sandbox.Check{
+	root.Update(checkDoneMsg{run: root.state.Setup.Preflight.Run, index: 3, check: sandbox.Check{
 		Name: sampleAccount, Detail: "KEYCARD_CLIENT_ID and KEYCARD_CLIENT_SECRET are set",
 	}})
 	return root
@@ -328,14 +328,14 @@ func snapshotReview(t *testing.T) *model {
 	t.Helper()
 	root := snapshotModel(t)
 	root.screen = screenReview
-	root.state.Describe = map[string]string{
+	root.state.Setup.Describe = map[string]string{
 		sandbox.SectionAccount: "api.keycard.ai, with the service account from KEYCARD_CLIENT_ID",
 		sandbox.SectionZone:    "ada@example.com, in the zone at wvqowjom3ctf3eysdimuj4h745.keycard.cloud",
 		sandbox.SectionScenario: "Check the proxy with GitHub and OpenRouter (smoke). GitHub: saved key, " +
 			"GitHub git: saved key, OpenRouter: saved key",
 		sandbox.SectionCluster: "A local cluster on this machine, reached through a Cloudflare quick tunnel",
 	}
-	root.state.Problems = nil
+	root.state.Setup.Problems = nil
 	root.setup.Rail = page.PlannedSteps()
 	for i, answers := range [][]string{
 		{sampleAPIURL},
@@ -417,7 +417,7 @@ func snapshotBringUp(t *testing.T) *model {
 func snapshotDemos(t *testing.T) *model {
 	t.Helper()
 	root := snapshotUp(t)
-	root.state.Demos = sampleDemos()
+	root.state.Demos.List = sampleDemos()
 	root.Update(press("p"))
 	return root
 }

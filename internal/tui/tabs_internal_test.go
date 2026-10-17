@@ -112,7 +112,7 @@ func upModel(t *testing.T) *model {
 	settings[sandbox.KeyUserEmail] = sampleUser
 	settings[sandbox.KeyZoneURL] = "https://wvqowjom3ctf3eysdimuj4h745.keycard.cloud"
 	root.screen = screenDashboard
-	root.state.Loaded = piScenario()
+	root.state.Demos.Loaded = piScenario()
 	root.state.Reads.Status = sandbox.Status{
 		Deployed: true, ClusterExists: true, Tunnel: sandbox.ServiceState{Running: true},
 		Mirror: sandbox.ServiceState{Running: true},
@@ -141,7 +141,7 @@ func quietModel(t *testing.T) *model {
 	writeSettings(t, root)
 	root.session.Local().Settings[sandbox.KeyKubeContext] = "keycard-test-none"
 	root.state.ResetSteps()
-	root.state.Demos = sampleDemos()
+	root.state.Demos.List = sampleDemos()
 	return root
 }
 
@@ -234,7 +234,7 @@ func sampleDemos() []*sandbox.Scenario {
 func TestDemoPicker(t *testing.T) {
 	t.Parallel()
 	root := upModel(t)
-	root.state.Demos = sampleDemos()
+	root.state.Demos.List = sampleDemos()
 	view := ansi.Strip(root.View().Content)
 	if !strings.Contains(view, "Switch to another demo: pi or slack") || !strings.Contains(view, "switch demo") {
 		t.Errorf("Home does not offer the other demos:\n%s", view)
@@ -267,7 +267,7 @@ func TestDemoPicker(t *testing.T) {
 func TestDemoPickerWhileDown(t *testing.T) {
 	t.Parallel()
 	root := testModel(t)
-	root.state.Demos = sampleDemos()
+	root.state.Demos.List = sampleDemos()
 	root.Update(press("p"))
 	if view := ansi.Strip(root.View().Content); !strings.Contains(view, "Smoke checks  ● chosen") ||
 		strings.Contains(view, "running now") {
@@ -280,7 +280,7 @@ func TestReviewLaunchesOnU(t *testing.T) {
 	t.Parallel()
 	root := testModel(t)
 	root.screen = screenReview
-	root.state.Problems = []error{sandbox.ErrSettings}
+	root.state.Setup.Problems = []error{sandbox.ErrSettings}
 	root.Update(press("u"))
 	if !strings.Contains(root.ui.Toast.Text, "Fix the settings first") {
 		t.Errorf("u on the review: notice %q, want the launch to run", root.ui.Toast.Text)

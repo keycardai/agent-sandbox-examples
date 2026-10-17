@@ -93,10 +93,10 @@ func (d *Demos) draw(compact bool) string {
 	if compact {
 		rows = append(rows, "")
 	}
-	if d.state.DemosErr != nil {
+	if d.state.Demos.Err != nil {
 		rows = append(
 			rows,
-			about.Render(theme.Attention.Render("Left out: "+component.FirstLine(d.state.DemosErr.Error()))),
+			about.Render(theme.Attention.Render("Left out: "+component.FirstLine(d.state.Demos.Err.Error()))),
 			"",
 		)
 	}
@@ -109,7 +109,7 @@ func (d *Demos) draw(compact bool) string {
 // it does not run.
 func (d *Demos) status(scenario *sandbox.Scenario) string {
 	switch {
-	case scenario.Name == d.state.Launched && d.state.Up():
+	case scenario.Name == d.state.Demos.Launched && d.state.Up():
 		return d.ui.Styles.OK.Render("  ● running now")
 	case scenario.Name == d.state.DemoName():
 		return d.ui.Styles.Muted.Render("  ● chosen")

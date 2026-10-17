@@ -29,30 +29,13 @@ type Sandbox struct {
 	Now func() time.Time
 
 	// Run is the work that changes the sandbox, Reads what the last read of
-	// it found, and Agents the agents and their pods.
+	// it found, and Agents the agents and their pods. Setup is what setting
+	// the sandbox up needs, and Demos the demos and the one that runs.
 	Run    Run
 	Reads  Reads
 	Agents Agents
-
-	// Describe says what each section of the settings holds, and Problems
-	// what would stop the bring-up. KeychainErr is why the keychain cannot
-	// keep secrets, or nil. SetupErr is why the last setup failed, until
-	// the next one starts.
-	Describe    map[string]string
-	Problems    []error
-	KeychainErr error
-	SetupErr    error
-	// Preflight is the last run of the machine checks.
-	Preflight Preflight
-
-	// Loaded is the demo the dashboard shows, once it loaded. Demos is every
-	// demo in the checkout that loads, read once, and DemosErr says why any
-	// did not load. Launched names the demo the sandbox runs, as the last
-	// bring-up deployed it, or the one the settings name when none says.
-	Loaded   *sandbox.Scenario
-	Demos    []*sandbox.Scenario
-	DemosErr error
-	Launched string
+	Setup  Setup
+	Demos  Demos
 }
 
 // Run is the job that runs, and the bring-up's steps.
@@ -83,11 +66,38 @@ type Agents struct {
 	Traffic proxylog.Store
 }
 
+// Setup is what setting the sandbox up needs to know: what the settings
+// hold and lack, whether the keychain works, and the machine checks.
+type Setup struct {
+	// Describe says what each section of the settings holds, and Problems
+	// what would stop the bring-up. KeychainErr is why the keychain cannot
+	// keep secrets, or nil. Err is why the last setup failed, until the next
+	// one starts.
+	Describe    map[string]string
+	Problems    []error
+	KeychainErr error
+	Err         error
+	// Preflight is the last run of the machine checks.
+	Preflight Preflight
+}
+
+// Demos are the checkout's demos, and the one the sandbox runs.
+type Demos struct {
+	// Loaded is the demo the dashboard shows, once it loaded. List is every
+	// demo in the checkout that loads, read once, and Err says why any did
+	// not load. Launched names the demo the sandbox runs, as the last
+	// bring-up deployed it, or the one the settings name when none says.
+	Loaded   *sandbox.Scenario
+	List     []*sandbox.Scenario
+	Err      error
+	Launched string
+}
+
 // New returns the sandbox of session. logs returns the log of a source.
 func New(session *sandbox.Session, logs func(source string) *component.Log) *Sandbox {
 	state := &Sandbox{session: session, logs: logs, Now: time.Now}
 	state.ResetSteps()
-	state.Launched = state.deployedDemo()
+	state.Demos.Launched = state.deployedDemo()
 	return state
 }
 
@@ -120,15 +130,15 @@ func (s *Sandbox) Saving() Saving {
 
 // SetSettings keeps what each section of the settings holds and their
 // problems, as read after work that changed them.
-func (s *Sandbox) SetSettings(describe map[string]string, problems []error) {
+func (s *Setup) SetSettings(describe map[string]string, problems []error) {
 	s.Describe, s.Problems = describe, problems
 }
 
-// SetupStarted forgets why the last setup failed.
-func (s *Sandbox) SetupStarted() { s.SetupErr = nil }
+// Started forgets why the last setup failed.
+func (s *Setup) Started() { s.Err = nil }
 
-// SetupFailed keeps why the setup failed, until the next one starts.
-func (s *Sandbox) SetupFailed(err error) { s.SetupErr = err }
+// Failed keeps why the setup failed, until the next one starts.
+func (s *Setup) Failed(err error) { s.Err = err }
 
 // RefreshSettings reads the settings, their problems, and whether the
 // keychain works. The store asks the keychain once and keeps the answer.
@@ -136,9 +146,9 @@ func (s *Sandbox) SetupFailed(err error) { s.SetupErr = err }
 // unlock the keyring shows before the TUI, and the screens read the answer
 // without waiting on it.
 func (s *Sandbox) RefreshSettings() {
-	s.KeychainErr = s.local().Store.KeychainErr()
-	s.Describe = s.session.Describe()
-	s.Problems = s.session.Problems()
+	s.Setup.KeychainErr = s.local().Store.KeychainErr()
+	s.Setup.Describe = s.session.Describe()
+	s.Setup.Problems = s.session.Problems()
 }
 
 // FirstRun reports whether the settings were never written.
@@ -221,8 +231,8 @@ func (s *Sandbox) DemoName() string {
 // RunningDemoName names the demo the dashboard shows: the one the sandbox
 // runs while it is up, else the one the settings name, which u brings up.
 func (s *Sandbox) RunningDemoName() string {
-	if s.Up() && s.Launched != "" {
-		return s.Launched
+	if s.Up() && s.Demos.Launched != "" {
+		return s.Demos.Launched
 	}
 	return s.DemoName()
 }
@@ -232,8 +242,8 @@ func (s *Sandbox) RunningDemoName() string {
 // for another name, or while it does not load.
 func (s *Sandbox) Demo() (*sandbox.Scenario, error) {
 	name := s.RunningDemoName()
-	if s.Loaded != nil && s.Loaded.Name == name {
-		return s.Loaded, nil
+	if s.Demos.Loaded != nil && s.Demos.Loaded.Name == name {
+		return s.Demos.Loaded, nil
 	}
 	load := s.session.Scenario
 	if name != s.DemoName() {
@@ -243,7 +253,7 @@ func (s *Sandbox) Demo() (*sandbox.Scenario, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.Loaded = scenario
+	s.Demos.Loaded = scenario
 	return scenario, nil
 }
 
@@ -257,10 +267,10 @@ func (s *Sandbox) LoadedDemo() *sandbox.Scenario {
 // DemoList returns the checkout's demos that load, read once, sorted by
 // name.
 func (s *Sandbox) DemoList() []*sandbox.Scenario {
-	if s.Demos == nil && s.DemosErr == nil {
-		s.Demos, s.DemosErr = sandbox.Scenarios(s.local().Root)
+	if s.Demos.List == nil && s.Demos.Err == nil {
+		s.Demos.List, s.Demos.Err = sandbox.Scenarios(s.local().Root)
 	}
-	return s.Demos
+	return s.Demos.List
 }
 
 // local is the session's settings and machine. The pages read the
