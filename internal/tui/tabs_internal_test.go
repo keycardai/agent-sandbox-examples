@@ -813,3 +813,68 @@ func TestTabsAgreeOnThePhase(t *testing.T) {
 		}
 	}
 }
+
+// TestPollKeepsTheLogInFront leaves the log in front to the screen that
+// shows it: a poll follows the Agents tab's agent only while that tab's
+// pane shows the agent's log, and not under the log chosen from the list.
+func TestPollKeepsTheLogInFront(t *testing.T) {
+	t.Parallel()
+	root := quietModel(t)
+	root.openTab(tabAgent)
+	root.stopStream()
+	entries := root.logs.Entries()
+	root.showLog(entries[len(entries)-1])
+	root.Update(podsMsg{rows: root.state.Agents.Pods, agents: root.state.Agents.List, mark: root.state.Reads.Mark()})
+	if source := root.ui.Logs.Source(); source != state.SourceActivity || root.stream != "" {
+		t.Errorf("under the activity log, a poll showed %q and followed %q; want the activity log", source,
+			root.stream)
+	}
+	root.closeOverlay()
+	root.follow(root.agents.FocusPane(page.AgentPaneRequests))
+	root.Update(podsMsg{rows: root.state.Agents.Pods, agents: root.state.Agents.List, mark: root.state.Reads.Mark()})
+	if source := root.ui.Logs.Source(); source != state.SourceResponse {
+		t.Errorf("with the response in the pane, a poll showed %q; want the response", source)
+	}
+}
+
+// TestLogFollowedOnceItsPodRuns follows the container of the log chosen
+// from the list once a read finds its pod, though it had none when chosen.
+func TestLogFollowedOnceItsPodRuns(t *testing.T) {
+	t.Parallel()
+	root := quietModel(t)
+	pods := root.state.Agents.Pods
+	root.state.Agents.Pods = nil
+	root.showLog(root.logs.Entries()[1])
+	if root.logs.Shown.Container != state.ProxyContainer || root.stream != "" {
+		t.Fatalf("shown %+v, stream %q; want the proxy's log, not followed yet", root.logs.Shown, root.stream)
+	}
+	root.Update(podsMsg{rows: pods, agents: root.state.Agents.List, mark: root.state.Reads.Mark()})
+	if want := state.ContainerSource(samplePod, state.ProxyContainer); root.stream != want ||
+		root.ui.Logs.Source() != want {
+		t.Errorf("after the pod came: stream %q, showing %q; want %q", root.stream, root.ui.Logs.Source(), want)
+	}
+}
+
+// TestFinishedLogFollowedAgain follows an agent's log again once its
+// container runs again, after a log that was read once because the
+// container had finished, as in a pod made anew under the same name.
+func TestFinishedLogFollowedAgain(t *testing.T) {
+	t.Parallel()
+	root := quietModel(t)
+	finished := slices.Clone(root.state.Agents.Pods)
+	for i := range finished {
+		if finished[i].Container.Name == state.AgentContainer {
+			finished[i].Container.State, finished[i].Container.Ready = state.StateTerminated, false
+		}
+	}
+	running := root.state.Agents.Pods
+	root.Update(podsMsg{rows: finished, agents: root.state.Agents.List, mark: root.state.Reads.Mark()})
+	root.openTab(tabAgent)
+	if !root.streamFinished {
+		t.Fatalf("stream %q is not read once, want it read once for a container that finished", root.stream)
+	}
+	root.Update(podsMsg{rows: running, agents: root.state.Agents.List, mark: root.state.Reads.Mark()})
+	if root.streamFinished || root.stream != state.ContainerSource(samplePod, state.AgentContainer) {
+		t.Errorf("stream %q, read once %v; want the agent's log followed again", root.stream, root.streamFinished)
+	}
+}

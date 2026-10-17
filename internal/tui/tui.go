@@ -106,10 +106,13 @@ type model struct {
 	tickPlanned bool
 	stale       bool
 	// stream names the container log the TUI follows, and streamStop stops
-	// following it. trafficStop stops following the proxy's audit log.
-	stream      string
-	streamStop  context.CancelFunc
-	trafficStop context.CancelFunc
+	// following it. streamFinished is set when the container had finished,
+	// so its log was read once. trafficStop stops following the proxy's
+	// audit log.
+	stream         string
+	streamStop     context.CancelFunc
+	streamFinished bool
+	trafficStop    context.CancelFunc
 	// The last machine checks run in preflightCtx, until preflightStop.
 	preflightCtx  context.Context //nolint:containedctx // The checks of one run go on across messages.
 	preflightStop context.CancelFunc

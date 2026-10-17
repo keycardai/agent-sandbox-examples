@@ -77,18 +77,20 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // follow follows the log of a pod's container in the log pane, when ok,
-// and stops following the one before.
+// and stops following the one before. A log read once to its end is
+// followed again once its container runs again, as in a pod that a
+// bring-up made anew under the same name.
 func (m *model) follow(row state.ContainerRow, ok bool) {
 	if !ok {
 		return
 	}
 	name := state.ContainerSource(row.Pod, row.Container.Name)
-	if m.stream != name {
+	finished := row.Container.State == state.StateTerminated
+	if m.stream != name || m.streamFinished && !finished {
 		m.stopStream()
-		m.stream = name
+		m.stream, m.streamFinished = name, finished
 		ctx, cancel := context.WithCancel(m.ctx)
 		m.streamStop = cancel
-		finished := row.Container.State == state.StateTerminated
 		session, log := m.session, m.ui.Logs.Log(name)
 		m.jobs.Go(func() { followContainer(ctx, session, row.Pod, row.Container.Name, finished, log) })
 	}
@@ -465,6 +467,21 @@ func (m *model) agentActionKeys(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		return nil, false
 	}
 	return nil, true
+}
+
+// followFront follows the container whose log the screen in front shows,
+// once its pod has it: the log chosen from the list while it shows over
+// the screen, else the Agents tab's pane, which can show a response
+// instead. The other screens show no container's log.
+func (m *model) followFront() {
+	switch {
+	case m.overlay.kind == overlayLog:
+		if m.logs.Shown.Container != "" {
+			m.follow(m.state.Container(m.logs.Shown.Container))
+		}
+	case m.tab == tabAgent:
+		m.follow(m.agents.ShowRight())
+	}
 }
 
 // showLog shows a log from the list of every log over the screen: a

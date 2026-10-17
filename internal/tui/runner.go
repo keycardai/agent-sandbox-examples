@@ -592,14 +592,10 @@ func (m *model) onPods(msg podsMsg) {
 	if len(m.state.SelectedPods()) > 0 {
 		m.startTraffic()
 	}
-	switch {
 	// The log pane keeps an action's log until the operator moves away
 	// from it, so that its outcome stays on screen.
-	case m.stream != "" || len(m.state.SelectedPods()) == 0, m.ui.Logs.Source() == state.SourceAction:
-	case m.tab == tabAgent:
-		if row, ok := m.state.Container(state.AgentContainer); ok {
-			m.follow(row, true)
-		}
+	if m.ui.Logs.Source() != state.SourceAction {
+		m.followFront()
 	}
 }
 
@@ -613,17 +609,13 @@ func (m *model) syncAgents() {
 	}
 }
 
-// agentSwitched points the tabs at the agent selected now: its log, its
-// traffic, and no request yet.
+// agentSwitched points the screens at the agent selected now: its log,
+// its traffic, and no request yet.
 func (m *model) agentSwitched() {
 	m.agents.Reset()
 	m.stopStream()
 	m.startTraffic()
-	switch m.tab {
-	case tabAgent:
-		m.follow(m.agents.ShowRight())
-	case tabHome, tabTraffic, tabCount:
-	}
+	m.followFront()
 	m.layout()
 }
 
@@ -631,7 +623,7 @@ func (m *model) stopStream() {
 	if m.streamStop != nil {
 		m.streamStop()
 	}
-	m.stream, m.streamStop = "", nil
+	m.stream, m.streamStop, m.streamFinished = "", nil, false
 }
 
 // followContainer follows a container's log until ctx ends. It follows it
