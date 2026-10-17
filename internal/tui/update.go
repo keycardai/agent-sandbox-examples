@@ -50,7 +50,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updateBackground handles the messages of background work.
 func (m *model) updateBackground(msg tea.Msg) (tea.Cmd, bool) {
 	if cmd, handled := m.updateJobs(msg); handled {
 		return cmd, true
@@ -120,7 +119,6 @@ func (m *model) keyPress(msg tea.KeyPressMsg) tea.Cmd {
 	return m.dashboardKeys(msg)
 }
 
-// overlayKeys gives a key to the open overlay, if any.
 func (m *model) overlayKeys(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	switch m.overlay.kind {
 	case overlayConfirm:
@@ -135,11 +133,8 @@ func (m *model) overlayKeys(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	return nil, false
 }
 
-// quit asks how to leave. By default the sandbox keeps running: the
-// tunnel, the mirror and the cluster stay up, and they show again next
-// time. D asks, then stops everything first. With nothing running, it
-// only asks. The dialog says what runs when it is drawn, so a job that
-// ends while it is open drops out of it.
+// quit asks how to leave. By default the sandbox keeps running. D asks,
+// then stops everything first. The dialog reads what runs when it is drawn.
 func (m *model) quit() tea.Cmd {
 	m.overlay = overlay{kind: overlayQuit, title: "Quit " + style.AppName + "?"}
 	return nil
@@ -164,9 +159,7 @@ func (m *model) quitBody() string {
 	return body
 }
 
-// anythingRunning reports whether a part of the sandbox runs that D
-// stops: a bring-up, an action, the tunnel, the mirror or the local
-// cluster.
+// anythingRunning reports whether anything runs that D stops.
 func (m *model) anythingRunning() bool {
 	status := m.state.Reads.Status
 	local := status.ClusterExists && !m.session.Local().Existing()
@@ -189,15 +182,13 @@ func (m *model) quitKeys(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
-// confirm asks a yes or no question. y sends yes to Update, which acts on
-// it then. Any other key, enter too, says no.
+// confirm asks a yes or no question. Only y or Y sends yes to Update.
 func (m *model) confirm(title, body string, yes tea.Msg) {
 	m.overlay = overlay{kind: overlayConfirm, title: title, body: body, yes: yes}
 }
 
-// confirmLater is confirm for a question from background work. While
-// another overlay is open, the question waits for it to close, so that a
-// key meant for that overlay does not answer it.
+// confirmLater is confirm for background work. It waits while another
+// overlay is open, so a key meant for that overlay does not answer it.
 func (m *model) confirmLater(title, body string, yes tea.Msg) {
 	if m.overlay.kind == overlayNone {
 		m.confirm(title, body, yes)
@@ -231,8 +222,7 @@ func (m *model) dashboardKeys(msg tea.KeyPressMsg) tea.Cmd {
 	return m.agentActionKeys(msg)
 }
 
-// actionKeys handles the keys that act on the sandbox, and reports whether
-// msg was one.
+// actionKeys handles the keys that act on the sandbox.
 func (m *model) actionKeys(msg tea.KeyPressMsg) bool {
 	keys := m.ui.Keys
 	switch {

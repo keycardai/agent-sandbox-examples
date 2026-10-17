@@ -1,8 +1,5 @@
 // Package state is what the TUI knows about the sandbox, and the rules that
-// read and change it: the bring-up's steps, the job that runs, the sandbox
-// as the last read found it, and the agents and their pods. The TUI's root
-// model changes it through its methods, and the pages read it to draw. It
-// draws nothing.
+// read and change it. The pages read it to draw, and it draws nothing.
 package state
 
 import (
@@ -38,8 +35,7 @@ type Sandbox struct {
 	Loaded *sandbox.Scenario
 }
 
-// Run is the work that changes the sandbox: the job that runs, and the
-// bring-up's steps.
+// Run is the job that runs, and the bring-up's steps.
 type Run struct {
 	// Steps are the bring-up's steps, and Cursor the one it is on.
 	Steps  []*StepRow
@@ -50,20 +46,16 @@ type Run struct {
 
 // Reads is the sandbox as the last read found it.
 type Reads struct {
-	// Status is what the last read found. Done is set once the first read
-	// came back.
+	// Done is set once the first read came back.
 	Status sandbox.Status
 	Done   bool
-	// mark moves on each time a job ends. A read takes it when it starts,
-	// so that a read from before the job can be told apart.
+	// mark moves on each time a job ends, so a stale read can be told apart.
 	mark int
 }
 
-// Agents are the agents the settings give, their pods, and what the egress
-// proxy decided for them.
+// Agents are the agents the settings give, and their pods and traffic.
 type Agents struct {
-	// List has an agent for each person the settings give one, and Pods the
-	// containers of every pod. PodsErr is the last read's error.
+	// Pods has every pod's containers, and PodsErr the last read's error.
 	List    []sandbox.Agent
 	Pods    []ContainerRow
 	PodsErr error
@@ -71,8 +63,7 @@ type Agents struct {
 	Traffic proxylog.Store
 }
 
-// New returns the sandbox of session, with the steps of its settings. logs
-// returns the log of a source, such as a step's.
+// New returns the sandbox of session. logs returns the log of a source.
 func New(session *sandbox.Session, logs func(source string) *component.Log) *Sandbox {
 	state := &Sandbox{session: session, logs: logs, Now: time.Now}
 	state.ResetSteps()
@@ -96,10 +87,8 @@ func (s *Sandbox) Record(mark, text string) {
 	s.logs(SourceActivity).Add(s.Now().Format(time.TimeOnly) + "  " + mark + " " + text)
 }
 
-// Up reports whether the sandbox runs: the zone was set up, the cluster
-// exists, and the zone reaches the cluster's issuer. When the bring-up
-// starts a tunnel, that needs the tunnel. An existing cluster, or an issuer
-// the operator publishes, needs none.
+// Up reports whether the sandbox runs: the zone is set up, the cluster
+// exists, and the tunnel runs when the bring-up starts one.
 func (s *Sandbox) Up() bool {
 	status := s.Reads.Status
 	return status.Deployed && status.ClusterExists && (status.Tunnel.Running || !s.StartsTunnel())
@@ -108,14 +97,10 @@ func (s *Sandbox) Up() bool {
 // Mark returns the mark a read that starts now takes.
 func (r *Reads) Mark() int { return r.mark }
 
-// Current reports whether a read that started with mark found the
-// sandbox as it is: no job ended since it started. The root model drops a
-// read that is not, and reads again.
+// Current reports whether no job ended since the read with mark started.
 func (r *Reads) Current(mark int) bool { return mark == r.mark }
 
-// StoppedAll forgets the bring-up and what the reads found, once
-// everything stopped. The sandbox they describe is gone, so the screens say
-// they read it until a read made after the stop comes back.
+// StoppedAll forgets the bring-up and the reads once everything stopped.
 func (s *Sandbox) StoppedAll() {
 	s.ResetSteps()
 	s.Reads.Status, s.Reads.Done = sandbox.Status{}, false
@@ -127,8 +112,7 @@ func (r *Reads) Set(status sandbox.Status) {
 	r.Status, r.Done = status, true
 }
 
-// SetPods keeps what a read of the pods found, and keeps the selection on
-// an agent in the list.
+// SetPods keeps a read of the pods, and keeps the selection in the list.
 func (s *Sandbox) SetPods(pods []ContainerRow, agents []sandbox.Agent, err error) {
 	s.Agents.Pods, s.Agents.List, s.Agents.PodsErr = pods, agents, err
 	if _, index := s.Selected(); index < 0 && len(agents) > 0 {
@@ -136,8 +120,7 @@ func (s *Sandbox) SetPods(pods []ContainerRow, agents []sandbox.Agent, err error
 	}
 }
 
-// Selected returns the agent the session has selected, and its index in
-// the list, or -1 when the list does not have it.
+// Selected returns the selected agent and its index, or -1 when unlisted.
 func (s *Sandbox) Selected() (sandbox.Agent, int) {
 	email := s.session.Selected()
 	for i, agent := range s.Agents.List {

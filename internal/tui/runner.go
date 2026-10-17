@@ -29,8 +29,7 @@ const (
 	readTimeout = 10 * time.Second
 	// pollReads is how many reads a poll makes: the services and the pods.
 	pollReads = 2
-	// streamRetry is the pause before a container's log is followed again,
-	// as when the container restarts.
+	// streamRetry is the pause before a log is followed again.
 	streamRetry = 2 * time.Second
 	// trafficTail is how many of the proxy's records the TUI starts with.
 	trafficTail = 2000
@@ -78,13 +77,11 @@ type (
 	stopAllMsg         struct{ quit bool }
 )
 
-// errPanic is a background job that panicked. The TUI reports it and keeps
-// running.
+// errPanic reports a panic in background work. The TUI keeps running.
 var errPanic = errors.New("internal error")
 
-// inBackground runs work on a goroutine Run waits for, and sends the
-// message work returns. When work panics, it sends failed's message with
-// errPanic instead.
+// inBackground runs work on a goroutine Run waits for, and sends its
+// message. A panic sends failed's message with errPanic instead.
 func (m *model) inBackground(work func() tea.Msg, failed func(err error) tea.Msg) {
 	out := m.bus
 	m.jobs.Go(func() {
@@ -105,11 +102,8 @@ func pollTick() tea.Cmd {
 	return tea.Tick(pollEvery, func(time.Time) tea.Msg { return pollMsg{} })
 }
 
-// startBringUp runs the steps from index from on, one after another, in the
-// background. With recreate, the cluster step deletes the cluster and
-// creates it again. A failed step stops the run, except the checks: the
-// sandbox is up even when a check fails. From the checks, the last step, it
-// runs the checks alone.
+// startBringUp runs the steps from index from on in the background. With
+// recreate, the cluster step deletes the cluster and creates it again.
 func (m *model) startBringUp(from int, recreate bool) {
 	if from >= len(m.state.Run.Steps) {
 		return
@@ -148,8 +142,7 @@ type bringUp struct {
 }
 
 // runSteps runs the steps from index from on, and reports each start and
-// end. It stops at a failed step other than the checks, and returns its
-// error.
+// end. It stops at a failed step other than the checks.
 func runSteps(ctx context.Context, run bringUp, from int) error {
 	for i := from; i < len(run.steps); i++ {
 		row := run.steps[i]
@@ -160,8 +153,7 @@ func runSteps(ctx context.Context, run bringUp, from int) error {
 		} else {
 			err = run.session.Run(ctx, row.Step.ID, row.Log)
 		}
-		// A tool that ctx killed fails with its own error, such as signal:
-		// killed. The step reports the stop instead.
+		// A tool ctx killed fails with its own error, such as signal: killed.
 		if err != nil && ctx.Err() != nil {
 			err = context.Canceled
 		}
@@ -173,9 +165,8 @@ func runSteps(ctx context.Context, run bringUp, from int) error {
 	return nil
 }
 
-// onStepDone marks the step, and offers to recreate a cluster that was made
-// for another tunnel URL. A step the operator stopped says so, and not why
-// it ended.
+// onStepDone marks the step, and offers to recreate a cluster that only a
+// new one fixes.
 func (m *model) onStepDone(msg stepDoneMsg) {
 	row := m.state.StepEnded(msg.index, msg.err)
 	if row.Step.ID == sandbox.StepChecks {
@@ -202,14 +193,12 @@ func (m *model) onStepDone(msg stepDoneMsg) {
 	}
 }
 
-// recreatable reports whether err is a cluster that only a new one fixes:
-// one made for another issuer, or one kubectl cannot reach.
+// recreatable reports whether err is a cluster that only a new one fixes.
 func recreatable(err error) bool {
 	return errors.Is(err, sandbox.ErrOtherIssuer) || errors.Is(err, sandbox.ErrBrokenCluster)
 }
 
-// recordStop says in the activity log and in the step's log that the
-// operator stopped the bring-up at row. recordChecks says it for the checks.
+// recordStop notes the stop at row. recordChecks notes it for the checks.
 func (m *model) recordStop(row *state.StepRow) {
 	row.Log.Add("", "○ You stopped the bring-up here.")
 	if row.Step.ID != sandbox.StepChecks {
@@ -217,8 +206,7 @@ func (m *model) recordStop(row *state.StepRow) {
 	}
 }
 
-// recordChecks records how the checks went, that they were stopped, or
-// that they did not run.
+// recordChecks records how the checks went.
 func (m *model) recordChecks(row *state.StepRow, err error) {
 	switch {
 	case errors.Is(err, context.Canceled):
@@ -232,8 +220,7 @@ func (m *model) recordChecks(row *state.StepRow, err error) {
 	}
 }
 
-// recreateReason says why the cluster must be created again, and that the
-// sandbox's Keycard setup stays.
+// recreateReason says why the cluster must be created again.
 func recreateReason(err error) string {
 	why := "The cluster was made for another issuer URL, and a cluster keeps its issuer for life.\n" +
 		"Delete it and create it again for the new URL?"
@@ -244,9 +231,8 @@ func recreateReason(err error) string {
 	return why + " It takes about a minute, and the\nsandbox's Keycard setup stays."
 }
 
-// onBringUpDone ends the run and points the operator at the agent. When
-// everything is to stop, it stops now. A run of the checks alone brings
-// nothing up, so it says nothing more than the checks did.
+// onBringUpDone ends the run and points the operator at the agent. A run
+// of the checks alone says nothing more than the checks did.
 func (m *model) onBringUpDone(msg bringUpDoneMsg) tea.Cmd {
 	ended := m.state.EndJob()
 	switch {
@@ -334,9 +320,7 @@ func (m *model) stopAllNow(quit bool) {
 }
 
 // recreateCluster deletes the cluster and brings the sandbox up again from
-// step from, while that step still failed for a cluster that only a new one
-// fixes. Once D stopped everything, or a later bring-up passed the step, the
-// question no longer applies.
+// step from, while that step still fails for a cluster only a new one fixes.
 func (m *model) recreateCluster(from int) {
 	if from >= len(m.state.Run.Steps) || m.state.Run.Steps[from].State != state.StepFailed ||
 		!recreatable(m.state.Run.Steps[from].Err) {
@@ -394,8 +378,7 @@ func (m *model) restartPod() {
 	m.runAction(job, m.session.RestartAgent)
 }
 
-// stopAll asks, then stops everything. A running bring-up or checks run
-// stops first.
+// stopAll asks, then stops everything.
 func (m *model) stopAll() {
 	if !m.state.Run.Job.RunsSteps() && m.busy() {
 		return
@@ -403,9 +386,7 @@ func (m *model) stopAll() {
 	m.askStopAll(false)
 }
 
-// askStopAll asks whether to stop everything, and with quit, to quit
-// after. On an existing cluster, the TUI did not start anything that D
-// stops, so it says so instead.
+// askStopAll asks whether to stop everything, and with quit, to quit after.
 func (m *model) askStopAll(quit bool) {
 	if m.session.Local().Existing() {
 		m.ui.Notify("On an existing cluster, there is nothing for D to stop.", false)
@@ -452,8 +433,7 @@ func (m *model) runAction(job state.Job, work func(ctx context.Context, out io.W
 }
 
 // onActionDone ends the job, and says how it went. Once everything
-// stopped, the bring-up that stopped or failed before is gone with the
-// sandbox, so its steps start over, and the screens wait for a new read.
+// stopped, the steps start over and the screens wait for a new read.
 func (m *model) onActionDone(msg actionDoneMsg) tea.Cmd {
 	ended := m.state.EndJob()
 	if msg.err != nil {
@@ -475,17 +455,14 @@ func (m *model) onActionDone(msg actionDoneMsg) tea.Cmd {
 }
 
 // poll reads the services and the pods in the background, unless a read
-// is on its way. It reads the pods only while the last read found the
-// sandbox deployed in its cluster. Once both reads come back, polled plans
-// the next poll.
+// is on its way. Once both reads come back, polled plans the next poll.
 func (m *model) poll() tea.Cmd {
 	if m.polling > 0 {
 		return nil
 	}
 	m.polling = pollReads
 	base, session, mark := m.ctx, m.session, m.state.Reads.Mark()
-	// The pods need the cluster and the zone step. Without them, kubectl
-	// has nothing to list, so the poll skips it.
+	// Without the cluster and the zone step, there are no pods to list.
 	last := m.state.Reads.Status
 	noPods := m.state.Reads.Done && (!last.ClusterExists || !last.Deployed)
 	status := func() tea.Msg {
@@ -511,9 +488,8 @@ func (m *model) poll() tea.Cmd {
 	return tea.Batch(status, pods)
 }
 
-// polled counts a read that came back, and plans the next poll pollEvery
-// after the last one, unless one is planned. A poll with a read from before
-// a job ended reads again at once.
+// polled counts a read that came back, and plans the next poll. A poll
+// with a read from before a job ended reads again at once.
 func (m *model) polled() tea.Cmd {
 	m.polling = max(m.polling-1, 0)
 	if m.polling > 0 {
@@ -530,8 +506,7 @@ func (m *model) polled() tea.Cmd {
 	return pollTick()
 }
 
-// onPods keeps what a read of the pods found, unless a job ended since it
-// started.
+// onPods keeps a read of the pods, unless a job ended since it began.
 func (m *model) onPods(msg podsMsg) {
 	if !m.state.Reads.Current(msg.mark) {
 		m.stale = true
@@ -559,12 +534,10 @@ func (m *model) agentSwitched() {
 	m.startTraffic()
 }
 
-// startTraffic follows the proxy of the selected agent's pod, once there
-// is one, and again when the pod changes.
+// startTraffic follows the proxy of the selected agent's pod, if it has one.
 func (m *model) startTraffic() {
 	target, err := m.session.Target()
 	if err != nil || target.Pod == "" {
-		// The selected agent has no pod: its traffic is empty.
 		m.stopTraffic()
 		return
 	}
@@ -701,8 +674,7 @@ func openBrowser(ctx context.Context, address string) error {
 }
 
 // openAgent hands the terminal to a command in the agent container: the
-// scenario's command, such as pi, or sh when plain is set. The screen comes
-// back when it exits.
+// scenario's command, such as pi, or sh when plain is set.
 func (m *model) openAgent(plain bool) tea.Cmd {
 	if m.busy() || m.isDown() {
 		return nil
@@ -723,16 +695,14 @@ func (m *model) openAgent(plain bool) tea.Cmd {
 	})
 }
 
-// onExecDone notes how the agent's command ended, and reads the sandbox
-// again.
+// onExecDone records how the agent's command ended, and polls again.
 func (m *model) onExecDone(msg execDoneMsg) tea.Cmd {
 	var exit *exec.ExitError
 	switch {
 	case msg.err == nil:
 		m.state.Record("✓", "Came back from the agent")
 	case msg.plain && errors.As(msg.err, &exit):
-		// sh exits with the status of the last command it ran, such as a
-		// curl the proxy refused.
+		// sh exits with its last command's status, such as a refused curl.
 		m.state.Record("•", "Came back from the shell, which exited with status "+strconv.Itoa(exit.ExitCode()))
 	default:
 		m.state.Record("✕", "The agent's command ended: "+component.FirstLine(msg.err.Error()))
@@ -741,10 +711,8 @@ func (m *model) onExecDone(msg execDoneMsg) tea.Cmd {
 	return tea.Batch(m.poll(), tea.RequestWindowSize)
 }
 
-// agentExec runs a command in the agent container with the terminal. It
-// says first what runs and how to come back, and when the command fails it
-// waits for Enter, so the error stays readable. It implements
-// tea.ExecCommand.
+// agentExec runs a command in the agent container, as a tea.ExecCommand.
+// When the command fails, it waits for Enter, so the error stays readable.
 type agentExec struct {
 	cmd    *exec.Cmd
 	title  string

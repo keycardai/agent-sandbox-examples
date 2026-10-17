@@ -20,12 +20,10 @@ const (
 )
 
 // Job is the background work that changes the sandbox. At most one runs,
-// and the zero Job means none does. The root model starts and ends it
-// through Sandbox, and the pages read it.
+// and the zero Job means none does.
 type Job struct {
 	Kind JobKind
-	// Name says what runs, in the footer and the quit dialog, such as
-	// "Restarting ada's agent's pod". A bring-up has none.
+	// Name says what runs, for the screens. A bring-up has none.
 	Name string
 	// From is the first step a bring-up runs.
 	From int
@@ -43,7 +41,6 @@ func (j Job) Busy() bool { return j.Kind != JobNone }
 func (j Job) Is(kind JobKind) bool { return j.Kind == kind }
 
 // RunsSteps reports whether the job runs steps: a bring-up, or the checks.
-// u and D stop it at the step that runs.
 func (j Job) RunsSteps() bool { return j.Kind == JobBringUp || j.Kind == JobChecks }
 
 // WaitText says what runs, for work that waits for it, or returns "".
@@ -61,7 +58,6 @@ func (j Job) WaitText() string {
 }
 
 // StartJob makes job the one that runs, with cancel to stop it, or nil.
-// While another job runs, it refuses.
 func (r *Run) StartJob(job Job, cancel context.CancelFunc) bool {
 	if r.Job.Busy() {
 		return false
@@ -75,8 +71,7 @@ func (r *Run) StartJob(job Job, cancel context.CancelFunc) bool {
 // with quit, quit after that.
 func (r *Run) StopAfterJob(quit bool) { r.Job.StopAfter, r.Job.QuitAfter = true, quit }
 
-// EndJob ends the job that runs, and returns it. A read that started
-// before is no longer current.
+// EndJob ends and returns the job. Reads started before it are not current.
 func (s *Sandbox) EndJob() Job {
 	ended := s.Run.Job
 	s.Run.Job = Job{}

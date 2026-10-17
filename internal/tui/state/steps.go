@@ -33,8 +33,7 @@ type StepRow struct {
 	Passed, Total int
 }
 
-// Stopped reports whether the bring-up ended at the step because the
-// operator stopped it, not because the step failed.
+// Stopped reports whether the operator stopped the bring-up at the step.
 func (r *StepRow) Stopped() bool {
 	return r.State == StepFailed && errors.Is(r.Err, context.Canceled)
 }

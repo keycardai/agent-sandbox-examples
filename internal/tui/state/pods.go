@@ -34,8 +34,7 @@ const (
 	PodStarting
 	// PodRunning is a pod whose agent runs.
 	PodRunning
-	// PodAgentFailed is a pod whose agent stopped, or does not come up by
-	// itself.
+	// PodAgentFailed is a pod whose agent stopped or is stuck.
 	PodAgentFailed
 )
 
@@ -63,8 +62,7 @@ func (s *Sandbox) PodState(agent sandbox.Agent) (PodState, ContainerRow) {
 	return PodStarting, row
 }
 
-// Crashed reports whether a container stopped, or does not come up by
-// itself.
+// Crashed reports whether a container stopped or is stuck.
 func Crashed(ctr sandbox.ContainerStatus) bool {
 	return ctr.State == StateTerminated || slices.Contains(
 		[]string{"CrashLoopBackOff", "ErrImagePull", "ImagePullBackOff", "CreateContainerConfigError"}, ctr.Reason,

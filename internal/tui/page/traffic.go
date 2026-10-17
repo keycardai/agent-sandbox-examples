@@ -14,10 +14,8 @@ import (
 // nameWidth and targetWidth are the columns of what Keycard did.
 const nameWidth, targetWidth = 12, 24
 
-// keycardLines says what the proxy did for each of the demo's endpoints,
-// which hosts it blocked, and how many names the agent looked up. There is
-// one line per endpoint and two more, however much traffic there is. When
-// the proxy's log cannot be read, it says why instead.
+// keycardLines says what the proxy did for each endpoint, then the blocked
+// hosts and DNS lookups. Its length does not depend on the traffic.
 func (v view) keycardLines() []string {
 	if err := v.state.Agents.Traffic.Err(); err != nil {
 		return []string{
@@ -34,13 +32,10 @@ func (v view) keycardLines() []string {
 	return append(lines, v.blockedLine(blocked), v.lookupLine(v.state.Agents.Traffic.Lookups()))
 }
 
-// useLine is one endpoint: its resource, where it is, and what came of the
-// requests to it.
+// useLine says what came of the requests to one endpoint.
 func (v view) useLine(use proxylog.EndpointUse) string {
 	theme := v.ui.Styles
 	endpoint := use.Endpoint
-	// An endpoint with a credential names its resource, then where it is.
-	// One without names only its host, across both columns.
 	where := theme.Text.Render(component.Pad(endpoint.Host(), nameWidth+1+targetWidth))
 	if endpoint.Credential {
 		where = theme.Text.Render(component.Pad(cmp.Or(endpoint.Name, endpoint.Host()), nameWidth)) + " " +
@@ -50,11 +45,8 @@ func (v view) useLine(use proxylog.EndpointUse) string {
 	return icon + " " + where + " " + detail
 }
 
-// useDetail marks what came of the requests to an endpoint, and says it:
-// how many went through, whether Keycard refused the last one's
-// credential, or that the server answered none of them. useRest says the
-// rest. A server's error comes after Keycard's part: the credential was
-// added, and the server refused the request.
+// useDetail marks and says what came of the requests to an endpoint, with
+// useRest after it.
 func (v view) useDetail(use proxylog.EndpointUse) (string, string) {
 	theme := v.ui.Styles
 	icon, detail := theme.Faint.Render("·"), theme.Dim.Render("not used yet")
@@ -75,9 +67,8 @@ func (v view) useDetail(use proxylog.EndpointUse) (string, string) {
 	return icon, detail + v.useRest(use)
 }
 
-// useRest says how many requests Keycard refused and how many the server
-// did not answer, where useDetail did not say so, what the server answered
-// the last one when that was an error, and when the last one was.
+// useRest adds the counts useDetail did not say, any server error on the
+// last request, and when the last request was.
 func (v view) useRest(use proxylog.EndpointUse) string {
 	theme := v.ui.Styles
 	rest := ""
@@ -93,14 +84,12 @@ func (v view) useRest(use proxylog.EndpointUse) string {
 	return rest
 }
 
-// refusedLast reports whether Keycard refused the credential of the last
-// request to the endpoint.
+// refusedLast reports whether the last request had its credential refused.
 func refusedLast(use proxylog.EndpointUse) bool {
 	return use.Last != nil && use.Last.RefusedCredential()
 }
 
-// serverError says what the server answered an allowed request, when that
-// was an error, or returns "".
+// serverError names the error status the server gave an allowed request.
 func serverError(record *proxylog.Record) string {
 	if record.Denied() || record.Outcome == nil || record.Outcome.Status < http.StatusBadRequest {
 		return ""
@@ -116,8 +105,7 @@ func (v view) blockedLine(blocked []proxylog.BlockedHost) string {
 		return theme.Faint.Render("·") + " " + theme.Text.Render(component.Pad("Blocked", nameWidth)) + " " +
 			theme.Dim.Render("nothing yet. A host off the allow list shows here.")
 	}
-	// The hosts go under the reason the proxy gave for each, the newest
-	// reason first.
+	// Group the hosts by reason, the newest reason first.
 	var reasons []string
 	hosts := map[string][]string{}
 	for _, host := range blocked {

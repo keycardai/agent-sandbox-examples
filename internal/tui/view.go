@@ -15,7 +15,6 @@ import (
 )
 
 const (
-	// percent turns a fraction into a progress value.
 	percent = 100
 	// progressCells is the width of the bring-up's progress bar.
 	progressCells = 12
@@ -61,8 +60,7 @@ func (m *model) band() string {
 	return component.Band(theme, m.ui.Width, label, badge)
 }
 
-// statusBadge says how the sandbox is, for the header band: a progress bar
-// while it comes up, else one word.
+// statusBadge says how the sandbox is, for the header band.
 func (m *model) statusBadge() string {
 	theme := m.ui.Styles
 	switch phase, row := m.state.Phase(); phase {
@@ -88,8 +86,7 @@ func (m *model) statusBadge() string {
 	return theme.BandDown.Render("○ down")
 }
 
-// shortBadge is the status badge for a narrow band: the steps done while it
-// comes up, else one word.
+// shortBadge is the status badge for a narrow band.
 func (m *model) shortBadge() string {
 	theme := m.ui.Styles
 	switch phase, _ := m.state.Phase(); phase {
@@ -119,8 +116,7 @@ func (m *model) progressBar(done, total int) string {
 	return fill.Render(strings.Repeat("━", filled)) + empty.Render(strings.Repeat("━", progressCells-filled))
 }
 
-// progress is the bring-up's progress for terminals that show it, such as
-// Ghostty, iTerm2 and Windows Terminal.
+// progress is the bring-up's progress for terminals that show it.
 func (m *model) progress() *tea.ProgressBar {
 	steps := m.state.Run.Steps
 	if len(steps) == 0 {
@@ -174,8 +170,7 @@ func (m *model) confirmModal() string {
 		theme.ModalTitle.Render(m.overlay.title), "", theme.Muted.Render(m.overlay.body), "", choice))
 }
 
-// quitModal asks how to leave. With nothing running, it only asks. D is
-// offered only where it stops something: not on an existing cluster.
+// quitModal asks how to leave, and offers D only where it stops something.
 func (m *model) quitModal() string {
 	theme := m.ui.Styles
 	if !m.anythingRunning() {

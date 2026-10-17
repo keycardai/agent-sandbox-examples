@@ -57,7 +57,6 @@ func (h *Home) Hints() []component.Hint {
 	return append(h.phaseHints(), component.Hint{Key: "?", Desc: wordKeys}, component.Hint{Key: "q", Desc: wordQuit})
 }
 
-// phaseHints lists the keys for how the sandbox is.
 func (h *Home) phaseHints() []component.Hint {
 	switch phase, _ := h.state.Phase(); phase {
 	case state.PhaseBringingUp, state.PhaseChecking:
@@ -81,8 +80,7 @@ func (h *Home) phaseHints() []component.Hint {
 	return []component.Hint{{Key: "u", Desc: "bring up"}}
 }
 
-// bringUp shows the steps as they run, and the end of the running step's
-// log. A run of the checks alone shows only their log.
+// bringUp shows the steps and the end of the running step's log.
 func (h *Home) bringUp() string {
 	theme := h.ui.Styles
 	current := h.state.Run.Steps[h.state.Run.Cursor]
@@ -112,8 +110,7 @@ func (h *Home) bringUp() string {
 	return strings.Join(lines, "\n")
 }
 
-// failed says where the bring-up stopped, why when a step failed, and what
-// to do.
+// failed says where the bring-up stopped, why, and what to do.
 func (h *Home) failed(row *state.StepRow) string {
 	theme := h.ui.Styles
 	lines := []string{theme.Failed.Bold(true).Render("✕ The bring-up stopped at: " + row.Step.Title)}
@@ -159,8 +156,6 @@ func (h *Home) down() string {
 	}, "\n")
 }
 
-// up shows the agent, what Keycard did for it, what to try, and what
-// happened last.
 func (h *Home) up() string {
 	theme := h.ui.Styles
 	lines := h.agentHeadline()
@@ -203,8 +198,7 @@ func (u *UI) colorActivity(lines []string) []string {
 	return out
 }
 
-// agentHeadline says whether the agent runs, who it acts as, and that it
-// does not hold any secrets.
+// agentHeadline says how the agent's pod is, and who the agent acts as.
 func (h *Home) agentHeadline() []string {
 	theme := h.ui.Styles
 	person, _ := h.state.Selected()
@@ -288,8 +282,7 @@ func (h *Home) contextLine() string {
 	return strings.Join(parts, theme.Faint.Render("  ·  "))
 }
 
-// agentContext names the selected agent's person, and how many agents
-// there are when there is more than one.
+// agentContext names the selected agent's person, with a count if several.
 func (h *Home) agentContext() string {
 	agent, _ := h.state.Selected()
 	if len(h.state.Agents.List) > 1 {
@@ -307,9 +300,7 @@ func tail(log *component.Log, rows int) []string {
 	return lines[max(len(lines)-rows, 0):]
 }
 
-// StepHint says what to do about a failed step. An issuer check that
-// cannot resolve the quick tunnel's name, and checks in which the agent
-// could not resolve a name, get their own hints.
+// StepHint says what to do about a failed step.
 func StepHint(row *state.StepRow, err error) string {
 	if row.Step.ID == sandbox.StepIssuer && strings.Contains(err.Error(), "trycloudflare.com") &&
 		strings.Contains(err.Error(), "no such host") {

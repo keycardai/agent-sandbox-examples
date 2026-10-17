@@ -1,8 +1,5 @@
-// Package page holds the TUI's screens. A page draws the sandbox's state,
-// which the state package keeps, with the UI: the styles and keys, the
-// window, the log view and the notice in the footer. It keeps only how it
-// shows the state, such as a cursor. The root model does the work, and
-// changes the state.
+// Package page holds the TUI's screens. A page keeps only how it shows the
+// state, such as a cursor. The root model changes the state.
 package page
 
 import (
@@ -34,8 +31,7 @@ const (
 	wordAgent = "agent"
 )
 
-// UI is what the pages draw with: the styles and keys, the window, the log
-// view, and the notice in the footer. The root model sets it.
+// UI is what the pages draw with. The root model sets it.
 type UI struct {
 	Styles style.Styles
 	Keys   component.KeyMap
@@ -48,8 +44,7 @@ type UI struct {
 	Toast component.Toast
 }
 
-// NewUI returns the UI before the window and the terminal's colors are
-// known.
+// NewUI returns the UI before the window and the colors are known.
 func NewUI() *UI {
 	return &UI{
 		Styles: style.New(true), Keys: component.NewKeyMap(),
@@ -62,8 +57,7 @@ func (u *UI) Notify(text string, isErr bool) {
 	u.Toast = component.Toast{Text: text, Err: isErr, Until: time.Now().Add(toastFor)}
 }
 
-// PageUnder draws a body under header and over the footer, indented, and
-// cut to the window.
+// PageUnder draws body between header and the footer, cut to the window.
 func (u *UI) PageUnder(header, body string, hints []component.Hint) string {
 	return component.Screen(u.Width, u.Height, header, body, component.Footer(u.Styles, u.Width, hints, u.Toast))
 }
@@ -99,10 +93,8 @@ func (v view) AgentActionName() string {
 	return "open agent"
 }
 
-// agentName names the selected agent in a sentence, by its person.
 func (v view) agentName() string { return AgentName(v.state) }
 
-// endpoints returns the demo's endpoints, or none.
 func (v view) endpoints() []sandbox.ScenarioEndpoint {
 	if scenario := v.state.LoadedDemo(); scenario != nil {
 		return scenario.EndpointList()
@@ -203,8 +195,7 @@ func containerDetail(ctr sandbox.ContainerStatus) string {
 	return detail
 }
 
-// shortHost shortens a zone URL for the header: a zone's host starts with
-// its long ID, so the header keeps its first characters and the domain.
+// shortHost shortens a zone URL's long ID, and keeps the domain.
 func shortHost(url string) string {
 	host := strings.TrimPrefix(url, "https://")
 	id, domain, ok := strings.Cut(host, ".")

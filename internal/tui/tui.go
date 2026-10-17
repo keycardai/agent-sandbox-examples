@@ -30,16 +30,13 @@ import (
 )
 
 const (
-	// frameEvery is how often the TUI redraws a log that changed, and turns
-	// its spinners. Log lines between frames draw together.
+	// frameEvery is how often the TUI redraws changed logs and spinners.
 	frameEvery = 120 * time.Millisecond
 	// pollEvery is how often the TUI reads the pods and the services.
 	pollEvery = 2 * time.Second
-	// busSize is how many messages background work can queue before Send
-	// waits.
+	// busSize is how many messages can queue before Send waits.
 	busSize = 1024
-	// shutdownWait bounds how long Run waits for the work in the background
-	// to end, once it cancels it.
+	// shutdownWait bounds Run's wait for the background work to end.
 	shutdownWait = 5 * time.Second
 )
 
@@ -50,34 +47,26 @@ type Options struct {
 	Session *sandbox.Session
 }
 
-// model is the root of the TUI, its controller. It routes each message and
-// key, runs the work that changes the sandbox, and keeps what that work
-// found in state, which the pages draw with ui. Update runs on one
-// goroutine. Background work writes only to logs, which lock, and sends
-// messages through bus.
+// model is the TUI's controller. Update runs on one goroutine. Background
+// work writes only to logs, which lock, and sends messages through bus.
 type model struct {
 	session *sandbox.Session
 	state   *state.Sandbox
 	ui      *page.UI
 	bus     *bus
 	help    help.Model
-	// ctx is what the work in the background runs in, and ends when Run
-	// returns. jobs counts that work's goroutines, for Run to wait for.
+	// Background work runs in ctx, and Run waits for its goroutines in jobs.
 	ctx  context.Context //nolint:containedctx // The model owns its background work, which ends with Run's context.
 	jobs sync.WaitGroup
 
 	overlay overlay
-	// waiting is a question that came from background work while another
-	// overlay was open. It opens once that overlay closes.
+	// waiting is a question that waits for the open overlay to close.
 	waiting *overlay
 
 	home *page.Home
 
-	// polling counts the reads of the sandbox on their way. The next poll
-	// starts pollEvery after the last read comes back, and tickPlanned is
-	// set while it waits, so that one poll is planned at a time. stale is
-	// set when a read that came back started before a job ended, so that
-	// the next poll starts at once.
+	// polling counts the reads on their way. tickPlanned is set while the
+	// next poll waits, and stale when a read started before a job ended.
 	polling     int
 	tickPlanned bool
 	stale       bool
@@ -106,8 +95,7 @@ const (
 	overlayQuit
 )
 
-// bus queues messages from background work for Update, so that a step
-// never waits for the TUI.
+// bus queues messages from background work for Update, so a step never waits.
 type bus struct {
 	ch chan tea.Msg
 	// done ends a wait on the bus once the TUI stops.
@@ -117,9 +105,8 @@ type bus struct {
 // busMsg is a message that came through the bus.
 type busMsg struct{ msg tea.Msg }
 
-// Run runs the TUI until the operator quits, or ctx ends. The sandbox
-// keeps running. Before it returns, Run stops the work the TUI started in
-// the background, such as a bring-up or an action, and waits for it.
+// Run runs the TUI until the operator quits, or ctx ends. The sandbox keeps
+// running. Run stops the TUI's background work and waits for it to end.
 func Run(ctx context.Context, opts Options) error {
 	ctx, cancel := context.WithCancel(ctx)
 	root := newModel(ctx, opts.Session)
@@ -130,8 +117,7 @@ func Run(ctx context.Context, opts Options) error {
 	return nil
 }
 
-// newModel returns the TUI for a session. Its work in the background runs
-// in ctx.
+// newModel returns the TUI for a session, with its background work in ctx.
 func newModel(ctx context.Context, session *sandbox.Session) *model {
 	ui := page.NewUI()
 	sandbox := state.New(session, ui.Logs.Log)

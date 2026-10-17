@@ -9,8 +9,7 @@ const (
 	PhaseReading Phase = iota
 	// PhaseBringingUp is a bring-up that runs.
 	PhaseBringingUp
-	// PhaseChecking is the checks running alone, against the sandbox as it
-	// is.
+	// PhaseChecking is the checks running alone.
 	PhaseChecking
 	// PhaseStopping is D stopping everything.
 	PhaseStopping
@@ -25,8 +24,7 @@ const (
 )
 
 // Phase says how the sandbox is, and for PhaseStopped and PhaseFailed,
-// the step the bring-up stopped at. The band and every page read it, so
-// that they agree.
+// the step the bring-up stopped at.
 func (s *Sandbox) Phase() (Phase, *StepRow) {
 	switch {
 	case s.Run.Job.Is(JobBringUp):

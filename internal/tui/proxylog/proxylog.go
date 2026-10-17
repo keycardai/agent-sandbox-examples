@@ -210,8 +210,7 @@ func ReadableLine(line string) string {
 type Store struct {
 	mu sync.Mutex
 	// records is a ring of up to maxRecords records, the oldest at start.
-	// lookups counts the DNS lookups. A routine lookup is counted and not
-	// kept, so that the lookups do not push the requests out.
+	// lookups counts every DNS lookup. records leaves out routine ones.
 	records []Record
 	start   int
 	pod     string
@@ -263,8 +262,7 @@ func (s *Store) Reset(pod string) {
 	s.version++
 }
 
-// SetErr keeps why the records stopped coming, or nil once they come
-// again.
+// SetErr keeps why the records stopped, or nil once they come again.
 func (s *Store) SetErr(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

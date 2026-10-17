@@ -510,9 +510,7 @@ func newLocal(cmd *cli.Command) (*sandbox.Local, error) {
 	return loadLocal(cmd, true, forCLI)
 }
 
-// terminalUse says who uses the terminal: a subcommand, whose steps ask on
-// it, or the TUI, which draws all of it. A step in the TUI that would ask
-// fails instead, and says what to run.
+// terminalUse says who uses the terminal: a subcommand's steps, or the TUI.
 type terminalUse int
 
 const (
@@ -538,9 +536,9 @@ func configPath(cmd *cli.Command) (string, error) {
 	return path, nil
 }
 
-// loadLocal returns the checkout and its settings, for use. With strict
-// unset, it ignores a settings file that does not parse, so init can
-// replace the file and forget can delete it.
+// loadLocal returns the checkout and its settings. With strict unset, it
+// ignores a settings file that does not parse, so init can replace the file
+// and forget can delete it.
 func loadLocal(cmd *cli.Command, strict bool, use terminalUse) (*sandbox.Local, error) {
 	root, err := pinned.Root()
 	if err != nil {
