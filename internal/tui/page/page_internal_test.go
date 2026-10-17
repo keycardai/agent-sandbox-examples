@@ -177,12 +177,7 @@ func TestNotesOfTheStep(t *testing.T) {
 	setup := wizardSetup(t, 150, 42, &Question{Kind: AskInput, Title: sampleAPITitle})
 	log := setup.ui.Logs.Log(state.SourceSetup)
 	log.Add("Using the client ID from KEYCARD_CLIENT_ID.")
-	asker := Asker{Send: func(msg any) {
-		if section, ok := msg.(SectionMsg); ok {
-			setup.OnSection(section)
-		}
-	}, Log: log}
-	asker.Section(sandbox.SectionZone)
+	setup.OnSection(SectionMsg{ID: sandbox.SectionZone, NotesFrom: log.Len()})
 	log.Add("The zone is on this machine or a private network.")
 	view := ansi.Strip(setup.WizardView())
 	if strings.Contains(view, "client ID") || !strings.Contains(view, "private network") {
@@ -193,7 +188,6 @@ func TestNotesOfTheStep(t *testing.T) {
 // answerWith asks quest in setup and gives it msgs, then the messages its
 // form's commands make, as the TUI's loop does, until it is answered.
 func answerWith(setup *Setup, quest *Question, msgs ...tea.Msg) {
-	quest.reply = make(chan answer, 1)
 	msgs = append(settle(setup.Ask(quest)), msgs...)
 	for len(msgs) > 0 && setup.Asking() {
 		cmd, _ := setup.Answer(msgs[0])
@@ -351,50 +345,6 @@ func TestResizeKeepsTheField(t *testing.T) {
 	}
 	if !slices.ContainsFunc(lines, func(line string) bool { return strings.Contains(line, "typed.example") }) {
 		t.Errorf("the typed answer is gone:\n%s", strings.Join(lines, "\n"))
-	}
-}
-
-// TestAsker sends a question to the TUI and its answer back, answers a
-// preset choice without asking, asks a preset the options lack, and
-// returns sandbox.ErrInterrupted once the setup stops.
-func TestAsker(t *testing.T) {
-	t.Parallel()
-	queue := make(chan any, 1)
-	done := make(chan struct{})
-	options := []sandbox.Option{
-		{Label: "pi coding agent (pi)", Value: "pi"},
-		{Label: "Smoke (smoke)", Value: sandbox.DefaultScenario},
-	}
-	asker := Asker{
-		Send:   func(msg any) { queue <- msg },
-		Done:   done,
-		Preset: map[string]string{sandbox.QuestionDemo: "pi"},
-	}
-	if got, err := asker.Choose(
-		t.Context(),
-		sandbox.QuestionDemo,
-		options,
-		sandbox.DefaultScenario,
-	); err != nil ||
-		got != "pi" {
-		t.Errorf("Choose = %q, %v; want the preset pi", got, err)
-	}
-	if msg, ok := (<-queue).(PresetMsg); !ok || msg.text != "pi" {
-		t.Errorf("message = %+v, want the preset for the rail", msg)
-	}
-	go func() {
-		if msg, ok := (<-queue).(AskMsg); ok {
-			msg.Question.reply <- answer{text: sandbox.DefaultScenario}
-		}
-	}()
-	asker.Preset = map[string]string{sandbox.QuestionDemo: "gone"}
-	if got, err := asker.Choose(t.Context(), sandbox.QuestionDemo, options, sandbox.DefaultScenario); err != nil ||
-		got != sandbox.DefaultScenario {
-		t.Errorf("Choose with a missing preset = %q, %v; want the question asked", got, err)
-	}
-	close(done)
-	if _, err := asker.Input(t.Context(), "Name", "", nil); !errors.Is(err, sandbox.ErrInterrupted) {
-		t.Errorf("Input after stop = %v, want sandbox.ErrInterrupted", err)
 	}
 }
 

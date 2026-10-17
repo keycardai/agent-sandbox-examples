@@ -659,7 +659,7 @@ func readRecords(stdout io.Reader, pod string, store *proxylog.Store) error {
 }
 
 // startSetup runs the wizard for the sections in the background, with
-// preset's answers. Its questions come back as page.AskMsg, its steps as
+// preset's answers. Its questions come back as askMsg, its steps as
 // page.SectionMsg, and its notes go to the setup log. Once it is done, the
 // same goroutine reads the settings again, since that reads the keychain.
 func (m *model) startSetup(preset map[string]string, ids ...string) {
@@ -671,7 +671,7 @@ func (m *model) startSetup(preset map[string]string, ids ...string) {
 	m.state.Setup.Started()
 	log := m.ui.Logs.Log(state.SourceSetup)
 	log.Reset()
-	ask := m.setup.Start(m.bus.Send, preset, log)
+	ask := m.startQuestions(preset, log)
 	session := m.session
 	m.state.Record("▸", "Setup started")
 	// The settings are read again after the setup, also after a panic.
@@ -692,7 +692,7 @@ func (m *model) onSetupDone(msg setupDoneMsg) {
 	if m.overlay.kind == overlayQuestion {
 		m.overlay = overlay{}
 	}
-	m.setup.End()
+	m.endQuestions()
 	m.state.Setup.SetSettings(msg.describe, msg.problems)
 	if ended.StopAfter {
 		m.screen = screenDashboard
@@ -738,10 +738,10 @@ func (m *model) recordSaved(msg setupDoneMsg) {
 // goes, and what the setup waits on stops. The setup's job ends once its
 // work reports back.
 func (m *model) stopSetup() {
-	if !m.state.Run.Job.Is(state.JobSetup) || !m.setup.Open() {
+	if !m.state.Run.Job.Is(state.JobSetup) || !m.asking() {
 		return
 	}
-	m.setup.Stop()
+	m.stopQuestions()
 	m.state.Run.CancelJob()
 	if m.overlay.kind == overlayQuestion {
 		m.overlay = overlay{}

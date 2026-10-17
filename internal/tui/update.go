@@ -50,8 +50,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.setup.Resize()
 	case tea.BackgroundColorMsg:
 		m.ui.Styles, m.ui.Background = style.New(msg.IsDark()), msg.Color
-	case page.AskMsg:
-		return m, m.ask(msg.Question)
+	case askMsg:
+		return m, m.ask(msg)
 	case tea.KeyPressMsg:
 		return m, m.keyPress(msg)
 	}
@@ -579,11 +579,12 @@ func (m *model) onForgetDone(msg forgetDoneMsg) {
 
 // ask shows the setup's question. A dialog that shows stays on top until it
 // closes. A question from a setup that stopped goes unanswered.
-func (m *model) ask(quest *page.Question) tea.Cmd {
-	if !m.setup.Open() {
+func (m *model) ask(msg askMsg) tea.Cmd {
+	if !m.asking() {
 		return nil
 	}
-	cmd := m.setup.Ask(quest)
+	m.replies = msg.replies
+	cmd := m.setup.Ask(msg.question)
 	if m.overlay.kind == overlayNone {
 		m.overlay = overlay{kind: overlayQuestion}
 	}
@@ -599,6 +600,8 @@ func (m *model) answer(msg tea.Msg) tea.Cmd {
 		m.stopSetup()
 		m.overlay = overlay{}
 	case page.Answered:
+		text, yes := m.setup.Reply()
+		m.replies <- reply{text: text, yes: yes}
 		m.overlay = overlay{}
 	case page.Asking:
 	}

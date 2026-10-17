@@ -67,7 +67,7 @@ type QuestionState int
 const (
 	// Asking waits for the answer.
 	Asking QuestionState = iota
-	// Answered sent the answer to the wizard.
+	// Answered has the answer, which Reply returns.
 	Answered
 	// Stopped stops the setup.
 	Stopped
@@ -96,8 +96,8 @@ type Setup struct {
 	current   string
 	notesFrom int
 	ask       *asking
-	// done ends the run's questions while it asks.
-	done chan struct{}
+	// last is the answer to the last question answered.
+	last answer
 }
 
 // NewSetup returns the setup wizard and its review.
@@ -186,7 +186,7 @@ func (s *Setup) OnSection(msg SectionMsg) {
 
 // OnPreset puts a preset answer under the current step.
 func (s *Setup) OnPreset(msg PresetMsg) {
-	s.recordAnswer(msg.question, answer{text: msg.text})
+	s.recordAnswer(msg.Question, answer{text: msg.Text})
 }
 
 // Finish marks the step setup was on as done.
@@ -251,7 +251,7 @@ func (s *Setup) Answer(msg tea.Msg) (tea.Cmd, QuestionState) {
 		quest := s.ask.question
 		got := answer{text: *s.ask.text, yes: *s.ask.yes}
 		s.recordAnswer(quest, got)
-		quest.reply <- got
+		s.last = got
 		s.ask = nil
 		return cmd, Answered
 	case huh.StateAborted:
@@ -262,36 +262,12 @@ func (s *Setup) Answer(msg tea.Msg) (tea.Cmd, QuestionState) {
 	return cmd, Asking
 }
 
+// Reply returns the answer to the last question answered: its text, and
+// for a yes-or-no question, the yes.
+func (s *Setup) Reply() (string, bool) { return s.last.text, s.last.yes }
+
 // Drop takes the question away without an answer.
 func (s *Setup) Drop() { s.ask = nil }
-
-// Start begins a run of the setup's questions, and returns the Asker that
-// sends them with send, notes in log, and answers preset's choices. Stop
-// ends the run's questions, and End forgets the run once its work is done.
-func (s *Setup) Start(send func(msg any), preset map[string]string, log *component.Log) Asker {
-	s.done = make(chan struct{})
-	return Asker{Send: send, Done: s.done, Preset: preset, Log: log}
-}
-
-// Open reports whether the run asks: it started, and was neither stopped
-// nor ended.
-func (s *Setup) Open() bool { return s.done != nil }
-
-// Stop ends the run's questions, which then return sandbox.ErrInterrupted,
-// and drops the question that shows.
-func (s *Setup) Stop() {
-	if s.done != nil {
-		close(s.done)
-		s.done = nil
-	}
-	s.Drop()
-}
-
-// End forgets the run, once its work is done.
-func (s *Setup) End() {
-	s.done = nil
-	s.Drop()
-}
 
 // Abandon forgets the steps of a setup that stopped without keeping its
 // answers, so that the review shows the settings as they are.
@@ -699,7 +675,7 @@ func questionField(quest *Question, text *string, yes *bool, width int) huh.Fiel
 	switch quest.Kind {
 	case AskSecret:
 		return huh.NewInput().Prompt("").EchoMode(huh.EchoModePassword).Value(text).
-			Validate(validator(quest.check))
+			Validate(validator(quest.Check))
 	case AskChoose:
 		quest.rows = optionRows(quest.Options, width-style.SelectorWidth)
 		return huh.NewSelect[string]().Options(options...).Value(text).
@@ -708,7 +684,7 @@ func questionField(quest *Question, text *string, yes *bool, width int) huh.Fiel
 		return huh.NewConfirm().Value(yes).Affirmative("Yes").Negative("No")
 	case AskInput:
 	}
-	return huh.NewInput().Prompt("").Value(text).Validate(validator(quest.check))
+	return huh.NewInput().Prompt("").Value(text).Validate(validator(quest.Check))
 }
 
 // optionRows counts the rows a choice's options take in a field width

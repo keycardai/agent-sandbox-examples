@@ -242,11 +242,11 @@ func writeSettings(t *testing.T, root *model) {
 
 // ask shows a setup question, as the wizard sends it while setup runs.
 func ask(root *model, quest *page.Question) {
-	if !root.setup.Open() {
+	if !root.asking() {
 		root.state.Run.Job = state.Job{Kind: state.JobSetup}
-		root.setup.Start(root.bus.Send, nil, nil)
+		root.startQuestions(nil, nil)
 	}
-	root.Update(page.AskMsg{Question: quest})
+	root.Update(askMsg{question: quest, replies: make(chan reply, 1)})
 }
 
 func snapshotWizard(t *testing.T) *model {

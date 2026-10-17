@@ -99,6 +99,10 @@ type model struct {
 	preflightStop context.CancelFunc
 	// shownPod is the selected agent's pod, which Home shows.
 	shownPod string
+	// questions ends the setup's run of questions while it asks, and
+	// replies takes the answer to the question that shows.
+	questions chan struct{}
+	replies   chan<- reply
 
 	// wizardBack is the screen to go back to when the wizard stops, and
 	// settingsBack the one the settings came from, where esc goes back to.

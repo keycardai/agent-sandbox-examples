@@ -429,7 +429,7 @@ func TestQuestionWaitsForTheDialog(t *testing.T) {
 	t.Parallel()
 	root := testModel(t)
 	root.screen, root.state.Run.Job = screenWizard, state.Job{Kind: state.JobSetup}
-	asker := root.setup.Start(root.bus.Send, nil, nil)
+	asker := root.startQuestions(nil, nil)
 	defer root.stopSetup()
 	root.Update(press("q"))
 	if view := ansi.Strip(root.View().Content); !strings.Contains(view, "Setup stops, and keeps none") {
@@ -905,13 +905,13 @@ func TestStopEverythingAfterTheSetup(t *testing.T) {
 	t.Parallel()
 	root := localQuietModel(t)
 	root.screen, root.state.Run.Job = screenWizard, state.Job{Kind: state.JobSetup}
-	root.setup.Start(root.bus.Send, nil, nil)
+	root.startQuestions(nil, nil)
 	root.Update(press("q"))
 	root.Update(press("D"))
 	answerYes(root)
-	if job := root.state.Run.Job; root.setup.Open() || !job.Is(state.JobSetup) || !job.StopAfter || !job.QuitAfter {
+	if job := root.state.Run.Job; root.asking() || !job.Is(state.JobSetup) || !job.StopAfter || !job.QuitAfter {
 		t.Errorf("after D: setup asks %v, job %+v; want the setup stopped, then a stop and a quit",
-			root.setup.Open(), job)
+			root.asking(), job)
 	}
 	root.Update(setupDoneMsg{err: sandbox.ErrInterrupted})
 	if job := root.state.Run.Job; !job.Is(state.JobStop) || !job.QuitAfter {
