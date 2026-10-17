@@ -246,6 +246,18 @@ func (s *Session) Scenario() (*Scenario, error) {
 	return s.Local().scenario()
 }
 
+// RunningScenario loads the demo the sandbox runs: the one the last
+// bring-up deployed, or the one the settings name when no bring-up says.
+// The settings can name another demo once setup picked one, until the next
+// bring-up deploys it.
+func (s *Session) RunningScenario() (*Scenario, error) {
+	local := s.Local()
+	if name := local.DeployedDemo(); name != "" {
+		return local.scenarioNamed(name)
+	}
+	return local.scenario()
+}
+
 // ContainerStatus is the state of one container of a pod.
 type ContainerStatus struct {
 	Name string
@@ -361,15 +373,15 @@ func (s *Session) LogsCommand(ctx context.Context, pod, container string, tail i
 }
 
 // ShellCommand returns a kubectl command that runs a command in the agent
-// container, attached to a terminal: the scenario's run.command, or sh when
-// the scenario has none or plain is set.
+// container, attached to a terminal: the running demo's run.command, or sh
+// when the demo has none or plain is set.
 func (s *Session) ShellCommand(ctx context.Context, plain bool) (*exec.Cmd, error) {
 	target, err := s.Target()
 	if err != nil {
 		return nil, err
 	}
 	local := s.Local()
-	scenario, err := local.scenario()
+	scenario, err := s.RunningScenario()
 	if err != nil {
 		return nil, err
 	}

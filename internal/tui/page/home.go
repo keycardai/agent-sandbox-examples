@@ -287,7 +287,7 @@ func (h *Home) contextLine() string {
 	theme := h.ui.Styles
 	parts := make([]string, 0, half*half)
 	for _, item := range [][2]string{
-		{"demo", h.state.DemoName()},
+		{"demo", h.state.RunningDemoName()},
 		{"zone", shortHost(h.state.Setting(sandbox.KeyZoneURL))},
 		{wordAgent, h.agentContext()},
 		{"cluster", cmp.Or(h.state.Setting(sandbox.KeyKubeContext), h.state.Setting(sandbox.KeyCluster))},

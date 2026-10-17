@@ -271,7 +271,9 @@ sandbox, with that person's answers. It passes each after the other values
 files. The sandbox controller does not change a pod that
 exists. When the sandbox's template changes, such as after you choose
 another demo or change a file in the scenario's directory, `run` deletes the
-pod and the controller creates it again.
+pod and the controller creates it again. Once every sandbox is created, `run`
+writes the demo's name to `local/out/demo`. The TUI shows that demo while
+the sandbox runs, even after setup picked another.
 `run` also replaces a pod whose agent exited.
 
 ## The pi scenario

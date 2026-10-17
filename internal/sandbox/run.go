@@ -180,7 +180,29 @@ func (l *Local) createSandboxes(ctx context.Context, cfg runSettings, out *zones
 			return err
 		}
 	}
-	return l.pruneSandboxes(ctx, cfg.cluster, out.K8sSandbox.Namespace, out.SandboxUserAccess)
+	if err := l.pruneSandboxes(ctx, cfg.cluster, out.K8sSandbox.Namespace, out.SandboxUserAccess); err != nil {
+		return err
+	}
+	return l.writeDeployed(cfg.scenario.Name)
+}
+
+// writeDeployed keeps the name of the demo the sandboxes run now, for
+// DeployedDemo.
+func (l *Local) writeDeployed(name string) error {
+	if err := os.WriteFile(filepath.Join(l.outDir(), deployedFile), []byte(name+"\n"), fileMode); err != nil {
+		return fmt.Errorf("writing local/out/%s: %w", deployedFile, err)
+	}
+	return nil
+}
+
+// DeployedDemo names the demo the sandboxes run, as the last bring-up
+// deployed them, or returns "" when no bring-up says.
+func (l *Local) DeployedDemo() string {
+	raw, err := os.ReadFile(filepath.Join(l.outDir(), deployedFile))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 // createSandbox creates or updates one user's sandbox, and replaces its pod
@@ -942,6 +964,10 @@ func (l *Local) waitForDNS(ctx context.Context, cluster string) error {
 	}
 	return nil
 }
+
+// deployedFile is the file under local/out that names the demo the
+// sandboxes run.
+const deployedFile = "demo"
 
 func (l *Local) outDir() string {
 	return filepath.Join(l.Root, "local", "out")

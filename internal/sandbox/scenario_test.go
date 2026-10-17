@@ -177,6 +177,29 @@ func TestLoadScenario(t *testing.T) {
 	}
 }
 
+// TestRunningScenario loads the demo the last bring-up deployed, which can
+// differ from the one the settings name once setup picked another, and the
+// settings' demo while no bring-up says.
+func TestRunningScenario(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	addScenario(t, root, agentName, agentScenario, false)
+	const second = "second"
+	addScenario(t, root, second, strings.Replace(agentScenario, "title: Agent", "title: Second", 1), false)
+	local := &sandbox.Local{Root: root, Settings: sandbox.Settings{sandbox.KeyScenario: second}}
+	session := local.NewSession("127.0.0.1:8480", 0)
+	if scenario, err := session.RunningScenario(); err != nil || scenario.Name != second {
+		t.Fatalf("with no bring-up: %v, %v; want the settings' demo", scenario, err)
+	}
+	writeFile(t, filepath.Join(root, "local", "out", "demo"), agentName+"\n")
+	if name := local.DeployedDemo(); name != agentName {
+		t.Errorf("DeployedDemo = %q, want %q", name, agentName)
+	}
+	if scenario, err := session.RunningScenario(); err != nil || scenario.Name != agentName {
+		t.Errorf("after a bring-up of %s: %v, %v; want it", agentName, scenario, err)
+	}
+}
+
 // TestScenarioValues checks the values file of a scenario with a
 // Dockerfile: its endpoints, the image `sandbox run` builds, and the agent's
 // environment with the text answer in place of {repo} and the default in

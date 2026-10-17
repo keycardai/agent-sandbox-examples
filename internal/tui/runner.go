@@ -132,7 +132,7 @@ func (m *model) startBringUp(from int, recreate bool) {
 	default:
 		m.state.Record("▸", "Bring-up started again at: "+m.state.Run.Steps[from].Step.Title)
 	}
-	m.state.StartSteps(from)
+	m.state.Run.StartSteps(from)
 	run := bringUp{session: m.session, out: m.bus, steps: slices.Clone(m.state.Run.Steps), recreate: recreate}
 	m.inBackground(func() tea.Msg {
 		defer cancel()
@@ -807,7 +807,7 @@ func (m *model) openAgent(plain bool) tea.Cmd {
 		return nil
 	}
 	title, leave := "sh in "+page.AgentName(m.state), "Type exit to come back to "+style.AppName+"."
-	if scenario, err := m.session.Scenario(); err == nil && !plain && len(scenario.Run.Command) > 0 {
+	if scenario := m.state.LoadedDemo(); scenario != nil && !plain && len(scenario.Run.Command) > 0 {
 		title = scenario.Run.Command[0] + " in " + page.AgentName(m.state)
 		leave = "Quit " + scenario.Run.Command[0] + " to come back to " + style.AppName + "."
 	}

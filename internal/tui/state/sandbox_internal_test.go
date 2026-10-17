@@ -3,6 +3,8 @@ package state
 import (
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -94,6 +96,52 @@ func TestReadMark(t *testing.T) {
 	if known.Reads.Done || known.Reads.Status.ClusterExists || known.Agents.Pods != nil {
 		t.Errorf("after StoppedAll: read %v, status %+v, pods %v; want them forgotten",
 			known.Reads.Done, known.Reads.Status, known.Agents.Pods)
+	}
+}
+
+// TestRunningDemo shows the demo the sandbox runs while it is up, though
+// the settings name another, and the settings' demo once it is down. The
+// sandbox step that deploys a demo makes it the one that runs.
+func TestRunningDemo(t *testing.T) {
+	t.Parallel()
+	const first, second = "first", "second"
+	root := t.TempDir()
+	for _, name := range []string{first, second} {
+		writeTestFile(t, filepath.Join(root, "scenarios", name, "scenario.yaml"),
+			"title: "+name+"\nagent:\n  args: [sleep, infinity]\nrun: {mode: checks}\n")
+	}
+	writeTestFile(t, filepath.Join(root, "local", "out", "demo"), first+"\n")
+	local := &sandbox.Local{Root: root, Settings: sandbox.Settings{sandbox.KeyScenario: second}, Out: io.Discard}
+	known := New(local.NewSession("127.0.0.1:8480", time.Second), component.NewLogView(nil).Log)
+	known.Reads.Status = sandbox.Status{Deployed: true, ClusterExists: true}
+	known.Reads.Status.Tunnel.Running = true
+	if scenario := known.LoadedDemo(); scenario == nil || scenario.Name != first ||
+		known.RunningDemoName() != first {
+		t.Errorf("up: demo %v, running %q; want the deployed demo", scenario, known.RunningDemoName())
+	}
+	known.Reads.Status = sandbox.Status{}
+	if scenario := known.LoadedDemo(); scenario == nil || scenario.Name != second {
+		t.Errorf("down: demo %v, want the settings' demo", scenario)
+	}
+	writeTestFile(t, filepath.Join(root, "local", "out", "demo"), second+"\n")
+	for i, row := range known.Run.Steps {
+		if row.Step.ID == sandbox.StepSandbox {
+			known.StepEnded(i, nil)
+		}
+	}
+	if known.Launched != second {
+		t.Errorf("after the sandbox step: launched %q, want second", known.Launched)
+	}
+}
+
+// writeTestFile writes body to path, with the directories it needs.
+func writeTestFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

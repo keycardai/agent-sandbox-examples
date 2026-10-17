@@ -45,10 +45,10 @@ type Sandbox struct {
 	// Preflight is the last run of the machine checks.
 	Preflight Preflight
 
-	// Loaded is the demo the settings name, once it loaded. Demos is every
+	// Loaded is the demo the dashboard shows, once it loaded. Demos is every
 	// demo in the checkout that loads, read once, and DemosErr says why any
-	// did not load. Launched names the demo the last bring-up started with,
-	// or the one the settings named when the TUI started.
+	// did not load. Launched names the demo the sandbox runs, as the last
+	// bring-up deployed it, or the one the settings name when none says.
 	Loaded   *sandbox.Scenario
 	Demos    []*sandbox.Scenario
 	DemosErr error
@@ -87,7 +87,7 @@ type Agents struct {
 func New(session *sandbox.Session, logs func(source string) *component.Log) *Sandbox {
 	state := &Sandbox{session: session, logs: logs, Now: time.Now}
 	state.ResetSteps()
-	state.Launched = state.DemoName()
+	state.Launched = state.deployedDemo()
 	return state
 }
 
@@ -218,22 +218,36 @@ func (s *Sandbox) DemoName() string {
 	return cmp.Or(s.Setting(sandbox.KeyScenario), sandbox.DefaultScenario)
 }
 
-// Demo returns the demo the settings name, or why it does not load. It
-// keeps the demo it loaded, and reads it again for another name, or while
-// it does not load.
+// RunningDemoName names the demo the dashboard shows: the one the sandbox
+// runs while it is up, else the one the settings name, which u brings up.
+func (s *Sandbox) RunningDemoName() string {
+	if s.Up() && s.Launched != "" {
+		return s.Launched
+	}
+	return s.DemoName()
+}
+
+// Demo returns the demo the dashboard shows, the one RunningDemoName names,
+// or why it does not load. It keeps the demo it loaded, and reads it again
+// for another name, or while it does not load.
 func (s *Sandbox) Demo() (*sandbox.Scenario, error) {
-	if s.Loaded != nil && s.Loaded.Name == s.DemoName() {
+	name := s.RunningDemoName()
+	if s.Loaded != nil && s.Loaded.Name == name {
 		return s.Loaded, nil
 	}
-	scenario, err := s.session.Scenario()
+	load := s.session.Scenario
+	if name != s.DemoName() {
+		load = s.session.RunningScenario
+	}
+	scenario, err := load()
 	if err != nil {
-		return nil, err //nolint:wrapcheck // The session names the scenario file that does not load.
+		return nil, err
 	}
 	s.Loaded = scenario
 	return scenario, nil
 }
 
-// LoadedDemo returns the demo the settings name, or nil when it does not
+// LoadedDemo returns the demo the dashboard shows, or nil when it does not
 // load.
 func (s *Sandbox) LoadedDemo() *sandbox.Scenario {
 	scenario, _ := s.Demo()
@@ -253,3 +267,7 @@ func (s *Sandbox) DemoList() []*sandbox.Scenario {
 // settings through Setting and the facts here, and the root model does the
 // work that changes the sandbox.
 func (s *Sandbox) local() *sandbox.Local { return s.session.Local() }
+
+// deployedDemo names the demo the last bring-up deployed, or the one the
+// settings name when no bring-up says.
+func (s *Sandbox) deployedDemo() string { return cmp.Or(s.local().DeployedDemo(), s.DemoName()) }
