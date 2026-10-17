@@ -67,7 +67,7 @@ func (m *model) statusBadge() string {
 	theme := m.ui.Styles
 	switch phase, row := m.state.Phase(); phase {
 	case state.PhaseBringingUp:
-		done := m.stepsDone()
+		done := m.state.Run.StepsDone()
 		return theme.BandBusy.Render(component.Spinner(m.ui.Frame)+" bringing up ") +
 			m.progressBar(done, len(m.state.Run.Steps)) + theme.BandLabel.Render(" "+strconv.Itoa(done)+"/"+
 			strconv.Itoa(len(m.state.Run.Steps)))
@@ -94,7 +94,7 @@ func (m *model) shortBadge() string {
 	theme := m.ui.Styles
 	switch phase, _ := m.state.Phase(); phase {
 	case state.PhaseBringingUp:
-		return theme.BandBusy.Render(component.Spinner(m.ui.Frame) + " " + strconv.Itoa(m.stepsDone()) + "/" +
+		return theme.BandBusy.Render(component.Spinner(m.ui.Frame) + " " + strconv.Itoa(m.state.Run.StepsDone()) + "/" +
 			strconv.Itoa(len(m.state.Run.Steps)))
 	case state.PhaseChecking:
 		return theme.BandBusy.Render(component.Spinner(m.ui.Frame) + " checks")
@@ -105,17 +105,6 @@ func (m *model) shortBadge() string {
 	case state.PhaseReading, state.PhaseStopping, state.PhaseUp, state.PhaseDown:
 	}
 	return m.statusBadge()
-}
-
-// stepsDone counts the bring-up's steps that are done.
-func (m *model) stepsDone() int {
-	done := 0
-	for _, row := range m.state.Run.Steps {
-		if row.State == state.StepDone {
-			done++
-		}
-	}
-	return done
 }
 
 // progressBar draws done of total as filled and empty cells.
@@ -137,7 +126,7 @@ func (m *model) progress() *tea.ProgressBar {
 	if len(steps) == 0 {
 		return nil
 	}
-	done := m.stepsDone()
+	done := m.state.Run.StepsDone()
 	switch phase, _ := m.state.Phase(); phase {
 	case state.PhaseFailed:
 		return tea.NewProgressBar(tea.ProgressBarError, done*percent/len(steps))
