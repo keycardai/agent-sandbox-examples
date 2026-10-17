@@ -158,47 +158,30 @@ func (m *model) keyPress(msg tea.KeyPressMsg) tea.Cmd {
 		m.overlay = overlay{kind: overlayHelp}
 		return nil
 	}
-	return m.screenKeys(msg)
+	return m.screenLayer().keys(msg)
 }
 
-// screenKeys gives a key to the screen that shows.
-func (m *model) screenKeys(msg tea.KeyPressMsg) tea.Cmd {
-	switch m.screen {
-	case screenWelcome:
-		return m.welcomeKeys(msg)
-	case screenWizard:
-		// A question takes the keys itself. Between questions, esc stops
-		// the setup.
-		if msg.String() == component.KeyEsc {
-			m.stopSetup()
-		}
-		return nil
-	case screenReview:
-		return m.reviewKeys(msg)
-	case screenSettings:
-		return m.settingsKeys(msg)
-	case screenDashboard:
+// wizardKeys stops the setup on esc between its questions. A question
+// takes the keys itself.
+func (m *model) wizardKeys(msg tea.KeyPressMsg) tea.Cmd {
+	if msg.String() == component.KeyEsc {
+		m.stopSetup()
 	}
-	return m.dashboardKeys(msg)
+	return nil
 }
 
 func (m *model) overlayKeys(msg tea.KeyPressMsg) (tea.Cmd, bool) {
-	switch m.overlay.kind {
-	case overlayQuestion:
-		return m.answer(msg), true
-	case overlayConfirm:
-		return m.confirmKeys(msg), true
-	case overlayQuit:
-		return m.quitKeys(msg), true
-	case overlayDemo:
-		m.demoKeys(msg)
-		return nil, true
-	case overlayHelp:
-		m.closeOverlay()
-		return nil, true
-	case overlayNone:
+	open, ok := m.overlayLayer()
+	if !ok {
+		return nil, false
 	}
-	return nil, false
+	return open.keys(msg), true
+}
+
+// closeKeys closes the overlay on any key.
+func (m *model) closeKeys(tea.KeyPressMsg) tea.Cmd {
+	m.closeOverlay()
+	return nil
 }
 
 // quit asks how to leave. By default the sandbox keeps running. D asks,
@@ -376,7 +359,7 @@ func (m *model) openDemoPicker() {
 }
 
 // demoKeys moves through the demos, and switches to the one chosen.
-func (m *model) demoKeys(msg tea.KeyPressMsg) {
+func (m *model) demoKeys(msg tea.KeyPressMsg) tea.Cmd {
 	name, pick := m.demos.Keys(msg)
 	switch pick {
 	case component.PickChosen:
@@ -386,6 +369,7 @@ func (m *model) demoKeys(msg tea.KeyPressMsg) {
 		m.overlay = overlay{}
 	case component.PickNone:
 	}
+	return nil
 }
 
 // switchDemo asks the demo's questions with the demo already chosen. Its

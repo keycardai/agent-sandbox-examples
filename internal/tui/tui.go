@@ -134,6 +134,48 @@ const (
 	overlayDemo
 )
 
+// layer is how a screen or an overlay draws, and how it takes a key.
+type layer struct {
+	view func() string
+	keys func(msg tea.KeyPressMsg) tea.Cmd
+}
+
+// screenLayer is how the screen that shows draws and takes a key.
+func (m *model) screenLayer() layer {
+	switch m.screen {
+	case screenWelcome:
+		return layer{m.welcome.View, m.welcomeKeys}
+	case screenWizard:
+		return layer{m.setup.WizardView, m.wizardKeys}
+	case screenReview:
+		return layer{m.setup.ReviewView, m.reviewKeys}
+	case screenSettings:
+		return layer{func() string { return m.settings.View(m.settingsBackWord()) }, m.settingsKeys}
+	case screenDashboard:
+	}
+	return layer{m.dashboardView, m.dashboardKeys}
+}
+
+// overlayLayer is how the open overlay draws and takes a key, or false
+// when none is open. The setup's question draws as part of the wizard's
+// screen, so it draws nothing over it.
+func (m *model) overlayLayer() (layer, bool) {
+	switch m.overlay.kind {
+	case overlayHelp:
+		return layer{m.helpModal, m.closeKeys}, true
+	case overlayConfirm:
+		return layer{m.confirmModal, m.confirmKeys}, true
+	case overlayQuit:
+		return layer{m.quitModal, m.quitKeys}, true
+	case overlayDemo:
+		return layer{m.demos.View, m.demoKeys}, true
+	case overlayQuestion:
+		return layer{func() string { return "" }, func(msg tea.KeyPressMsg) tea.Cmd { return m.answer(msg) }}, true
+	case overlayNone:
+	}
+	return layer{}, false
+}
+
 // bus queues messages from background work for Update, so a step never waits.
 type bus struct {
 	ch chan tea.Msg

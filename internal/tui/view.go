@@ -34,28 +34,13 @@ func (m *model) View() tea.View {
 				style.AppName, component.MinWidth, component.MinHeight, m.ui.Width, m.ui.Height,
 			)))
 	default:
-		content = m.withOverlay(m.screenView())
+		content = m.withOverlay(m.screenLayer().view())
 	}
 	view := tea.NewView(content)
 	view.AltScreen = true
 	view.WindowTitle = "Keycard sandbox · " + ansi.Strip(m.statusBadge())
 	view.ProgressBar = m.progress()
 	return view
-}
-
-func (m *model) screenView() string {
-	switch m.screen {
-	case screenWelcome:
-		return m.welcome.View()
-	case screenWizard:
-		return m.setup.WizardView()
-	case screenReview:
-		return m.setup.ReviewView()
-	case screenSettings:
-		return m.settings.View(m.settingsBackWord())
-	case screenDashboard:
-	}
-	return m.dashboardView()
 }
 
 // dashboardView draws Home, under the header band and over the footer
@@ -149,20 +134,14 @@ func (m *model) progress() *tea.ProgressBar {
 	return nil
 }
 
-// withOverlay draws the open overlay, if any, in the middle of base. A
-// setup question is part of the wizard's screen, and not an overlay.
+// withOverlay draws the open overlay, if any, in the middle of base.
 func (m *model) withOverlay(base string) string {
-	var modal string
-	switch m.overlay.kind {
-	case overlayHelp:
-		modal = m.helpModal()
-	case overlayConfirm:
-		modal = m.confirmModal()
-	case overlayQuit:
-		modal = m.quitModal()
-	case overlayDemo:
-		modal = m.demos.View()
-	case overlayQuestion, overlayNone:
+	open, ok := m.overlayLayer()
+	if !ok {
+		return base
+	}
+	modal := open.view()
+	if modal == "" {
 		return base
 	}
 	return component.Overlay(base, modal, m.ui.Width, m.ui.Height)
