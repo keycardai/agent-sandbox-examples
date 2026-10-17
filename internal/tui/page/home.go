@@ -246,47 +246,43 @@ func (h *Home) agentHeadline() []string {
 	if person.Email == "" {
 		name = "The agent"
 	}
-	switch pod, row := h.state.PodState(person); pod {
+	pod, row := h.state.PodState(person)
+	mark, look := h.ui.podMark(pod)
+	headline := func(text string) string { return look.Bold(true).Render(mark + " " + text) }
+	switch pod {
 	case state.PodRunning:
-		return []string{theme.OK.Bold(true).Render("● " + name + " is running"), h.ui.para(theme.Muted, about)}
+		return []string{headline(name + " is running"), h.ui.para(theme.Muted, about)}
 	case state.PodFirewallFailed:
 		return []string{
-			theme.Failed.Bold(true).Render("✕ " + name + " is not running: the firewall did not start: " +
-				containerDetail(row.Container)),
+			headline(name + " is not running: the firewall did not start: " + containerDetail(row.Container)),
 			h.ui.para(theme.Muted, "Press l to read the firewall's log, or R to restart the pod."),
 		}
 	case state.PodAgentFailed:
 		return []string{
-			theme.Failed.Bold(true).Render("✕ " + name + " is not running: " + containerDetail(row.Container)),
+			headline(name + " is not running: " + containerDetail(row.Container)),
 			h.ui.para(theme.Muted, "Press 2 to read its log, or R to restart the pod."),
 		}
 	case state.PodUnread:
 		return []string{
-			theme.Failed.Bold(true).Render("✕ Cannot read the sandbox's pods"),
+			headline("Cannot read the sandbox's pods"),
 			h.ui.para(theme.Muted, component.FirstLine(h.state.Agents.PodsErr.Error())),
 		}
 	case state.PodNone:
 		return []string{
-			theme.Dim.Bold(true).Render("○ " + name + " is not up yet"),
+			headline(name + " is not up yet"),
 			h.ui.para(theme.Muted, "Press u to bring the sandbox up again. It creates every agent's pod."),
 		}
 	case state.PodMissing:
 		return []string{
-			theme.Dim.Bold(true).Render("○ " + name + " has no pod"),
+			headline(name + " has no pod"),
 			h.ui.para(theme.Muted, "The last read found no pod for the agent. Press u to bring the sandbox up "+
 				"again. It creates every agent's pod."),
 		}
 	case state.PodComingUp:
-		return []string{
-			theme.Running.Bold(true).Render(h.ui.spinner() + " " + name + " is coming up"),
-			h.ui.para(theme.Muted, about),
-		}
+		return []string{headline(name + " is coming up"), h.ui.para(theme.Muted, about)}
 	case state.PodStarting:
 	}
-	return []string{
-		theme.Running.Bold(true).Render(h.ui.spinner() + " " + name + "'s pod is starting"),
-		h.ui.para(theme.Muted, about),
-	}
+	return []string{headline(name + "'s pod is starting"), h.ui.para(theme.Muted, about)}
 }
 
 // actions lists what to try, for how the demo runs its agent.

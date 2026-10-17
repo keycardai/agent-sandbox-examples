@@ -124,6 +124,21 @@ func (v view) endpoints() []sandbox.ScenarioEndpoint {
 
 func (u *UI) spinner() string { return component.Spinner(u.Frame) }
 
+// podMark is how a pod in state looks: its mark, and the style of the
+// mark and of what is said about it. Home and the Agents tab both use it.
+func (u *UI) podMark(pod state.PodState) (string, lipgloss.Style) {
+	switch pod {
+	case state.PodRunning:
+		return "●", u.Styles.OK
+	case state.PodFirewallFailed, state.PodAgentFailed, state.PodUnread:
+		return "✕", u.Styles.Failed
+	case state.PodNone, state.PodMissing:
+		return "○", u.Styles.Dim
+	case state.PodComingUp, state.PodStarting:
+	}
+	return u.spinner(), u.Styles.Running
+}
+
 // bodyWidth is the width of a page's body inside the indent on both sides.
 func (u *UI) bodyWidth() int { return max(u.Width-component.PageIndent*half, 1) }
 

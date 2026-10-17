@@ -403,26 +403,22 @@ func (a *Agents) agentPaneLines(width int) []string {
 
 // agentState marks how an agent's pod is, and says it in a few words.
 func (a *Agents) agentState(agent sandbox.Agent) (string, string) {
-	theme := a.ui.Styles
-	where := theme.Dim.Render(" · pod " + agent.Pod)
-	switch pod, row := a.state.PodState(agent); pod {
-	case state.PodNone:
-		return theme.Dim.Render("○"), theme.Dim.Render("not brought up yet. u brings it up")
-	case state.PodComingUp:
-		return theme.Running.Render(a.ui.spinner()), theme.Running.Render("coming up")
-	case state.PodUnread:
-		return theme.Failed.Render("✕"), theme.Failed.Render("cannot read the pods")
-	case state.PodMissing:
-		return theme.Dim.Render("○"), theme.Dim.Render("no pod. u brings it up") + where
-	case state.PodFirewallFailed:
-		return theme.Failed.Render("✕"), theme.Failed.Render("firewall failed: "+containerDetail(row.Container)) + where
-	case state.PodRunning:
-		return theme.OK.Render("●"), theme.OK.Render("running") + where
-	case state.PodAgentFailed:
-		return theme.Failed.Render("✕"), theme.Failed.Render(containerDetail(row.Container)) + where
-	case state.PodStarting:
+	pod, row := a.state.PodState(agent)
+	mark, look := a.ui.podMark(pod)
+	said := look.Render(map[state.PodState]string{
+		state.PodNone:           "not brought up yet. u brings it up",
+		state.PodComingUp:       "coming up",
+		state.PodUnread:         "cannot read the pods",
+		state.PodMissing:        "no pod. u brings it up",
+		state.PodFirewallFailed: "firewall failed: " + containerDetail(row.Container),
+		state.PodRunning:        "running",
+		state.PodAgentFailed:    containerDetail(row.Container),
+		state.PodStarting:       "starting",
+	}[pod])
+	if pod != state.PodNone && pod != state.PodComingUp && pod != state.PodUnread {
+		said += a.ui.Styles.Dim.Render(" · pod " + agent.Pod)
 	}
-	return theme.Running.Render(a.ui.spinner()), theme.Running.Render("starting") + where
+	return look.Render(mark), said
 }
 
 // requestPaneLines list the requests the agent can send, the selected one
