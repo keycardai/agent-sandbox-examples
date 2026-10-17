@@ -433,7 +433,11 @@ func (m *model) restartPod() {
 	m.stopStream()
 	m.agents.Reset()
 	m.layout()
-	job := state.Job{Kind: state.JobAction, Name: "Restarting " + page.AgentName(m.state) + "'s pod"}
+	selected, _ := m.state.Selected()
+	job := state.Job{
+		Kind: state.JobAction, Name: "Restarting " + page.AgentName(m.state) + "'s pod",
+		Agent: selected.Email,
+	}
 	m.runAction(job, m.session.RestartAgent)
 }
 

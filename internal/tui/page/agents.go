@@ -407,12 +407,13 @@ func (a *Agents) agentState(agent sandbox.Agent) (string, string) {
 	where := theme.Dim.Render(" · pod " + agent.Pod)
 	switch pod, row := a.state.PodState(agent); pod {
 	case state.PodNone:
-		if a.state.Run.Job.Agent == agent.Email {
-			return theme.Running.Render(a.ui.spinner()), theme.Running.Render("coming up")
-		}
 		return theme.Dim.Render("○"), theme.Dim.Render("not brought up yet. u brings it up")
-	case state.PodUnread, state.PodMissing:
-		return theme.Dim.Render("○"), theme.Dim.Render("not running") + where
+	case state.PodComingUp:
+		return theme.Running.Render(a.ui.spinner()), theme.Running.Render("coming up")
+	case state.PodUnread:
+		return theme.Failed.Render("✕"), theme.Failed.Render("cannot read the pods")
+	case state.PodMissing:
+		return theme.Dim.Render("○"), theme.Dim.Render("no pod. u brings it up") + where
 	case state.PodFirewallFailed:
 		return theme.Failed.Render("✕"), theme.Failed.Render("firewall failed: "+containerDetail(row.Container)) + where
 	case state.PodRunning:
@@ -491,7 +492,8 @@ func (a *Agents) noPodLines(width int) []string {
 			"The agent shows here once the first read comes back.")
 	case phase == state.PhaseStopped || phase == state.PhaseFailed:
 		return lines(theme.Title.Render("No pod for "+a.agentName()+" yet"),
-			"The bring-up stopped at: "+row.Step.Title+". Press 1 to see why, or u to start again from that step.")
+			"The bring-up stopped at: "+row.Step.Title+". Press 1 to see why, or u to start again from: "+
+				a.state.Run.Steps[a.state.ResumeIndex()].Step.Title+".")
 	case a.state.Agents.PodsErr != nil && a.state.Reads.Status.Deployed:
 		return lines(theme.Failed.Render("✕ Cannot read the pods"), component.FirstLine(a.state.Agents.PodsErr.Error()))
 	}

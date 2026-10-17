@@ -878,3 +878,34 @@ func TestFinishedLogFollowedAgain(t *testing.T) {
 		t.Errorf("stream %q, read once %v; want the agent's log followed again", root.stream, root.streamFinished)
 	}
 }
+
+// TestPodStatesAgree says the same about the agent's pod on Home and on
+// the Agents tab: a pod an action makes comes up, a read that failed
+// cannot read the pods, and a pod the read did not find is gone.
+func TestPodStatesAgree(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		setup     func(root *model)
+		home, tab string
+	}{
+		{"coming up", func(root *model) {
+			root.state.Agents.Pods = nil
+			root.state.Run.Job = state.Job{Kind: state.JobAction, Name: "Restarting", Agent: sampleUser}
+		}, "is coming up", "coming up"},
+		{
+			"unread", func(root *model) { root.state.Agents.Pods, root.state.Agents.PodsErr = nil, errRefused },
+			"Cannot read the sandbox's pods", "cannot read the pods",
+		},
+		{"missing", func(root *model) { root.state.Agents.Pods = nil }, "has no pod", "no pod. u brings it up"},
+	} {
+		root := quietModel(t)
+		tc.setup(root)
+		home := ansi.Strip(root.View().Content)
+		root.openTab(tabAgent)
+		agents := ansi.Strip(root.View().Content)
+		if !strings.Contains(home, tc.home) || !strings.Contains(agents, tc.tab) {
+			t.Errorf("%s: Home lacks %q, or the Agents tab lacks %q:\n%s\n%s", tc.name, tc.home, tc.tab, home, agents)
+		}
+	}
+}

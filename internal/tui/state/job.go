@@ -29,8 +29,8 @@ type Job struct {
 	Name string
 	// From is the first step a bring-up runs.
 	From int
-	// Agent is the person whose agent an action brings up, for the Agents
-	// tab to say it comes up.
+	// Agent is the person whose agent an action makes or restarts, for the
+	// screens to say it comes up.
 	Agent string
 	// StopAfter stops everything once the job ends. QuitAfter quits once the
 	// job, and the stop after it, end without an error.

@@ -270,7 +270,18 @@ func (h *Home) agentHeadline() []string {
 			theme.Dim.Bold(true).Render("○ " + name + " is not up yet"),
 			h.ui.para(theme.Muted, "Press u to bring the sandbox up again. It creates every agent's pod."),
 		}
-	case state.PodMissing, state.PodStarting:
+	case state.PodMissing:
+		return []string{
+			theme.Dim.Bold(true).Render("○ " + name + " has no pod"),
+			h.ui.para(theme.Muted, "The last read found no pod for the agent. Press u to bring the sandbox up "+
+				"again. It creates every agent's pod."),
+		}
+	case state.PodComingUp:
+		return []string{
+			theme.Running.Bold(true).Render(h.ui.spinner() + " " + name + " is coming up"),
+			h.ui.para(theme.Muted, about),
+		}
+	case state.PodStarting:
 	}
 	return []string{
 		theme.Running.Bold(true).Render(h.ui.spinner() + " " + name + "'s pod is starting"),

@@ -227,6 +227,16 @@ func TestPodState(t *testing.T) {
 			t.Errorf("%s: pod state %v, want %v", tc.name, got, tc.want)
 		}
 	}
+	// While an action makes the agent's pod, it comes up, with a pod or
+	// not yet.
+	const ada = "ada@example.com"
+	known := testSandbox(t, sandbox.Settings{})
+	known.Run.Job = Job{Kind: JobAction, Agent: ada}
+	for _, agent := range []sandbox.Agent{{Email: ada}, {Email: ada, Pod: pod}} {
+		if got, _ := known.PodState(agent); got != PodComingUp {
+			t.Errorf("pod %q while an action makes it: %v, want coming up", agent.Pod, got)
+		}
+	}
 }
 
 // TestStepEnded fails a step with its error, and counts the checks that

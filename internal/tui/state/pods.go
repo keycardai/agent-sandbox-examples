@@ -29,6 +29,9 @@ type PodState int
 const (
 	// PodNone is an agent without a pod: it was not brought up.
 	PodNone PodState = iota
+	// PodComingUp is a pod that an action makes for the agent now, as when
+	// the person was just added or the pod restarts.
+	PodComingUp
 	// PodUnread is a pod the last read could not list.
 	PodUnread
 	// PodMissing is a pod the last read did not find.
@@ -45,24 +48,16 @@ const (
 )
 
 // PodState says how agent's pod is, with the container that says so: the
-// firewall's when it failed, else the agent's.
+// firewall's when it failed, else the agent's. Every screen says it from
+// here, so that they agree.
 func (s *Sandbox) PodState(agent sandbox.Agent) (PodState, ContainerRow) {
-	if agent.Pod == "" {
-		return PodNone, ContainerRow{}
-	}
 	if row, failed := s.firewallFailed(agent.Pod); failed {
 		return PodFirewallFailed, row
 	}
-	index := slices.IndexFunc(s.Agents.Pods, func(row ContainerRow) bool {
-		return row.Pod == agent.Pod && row.Container.Name == AgentContainer
-	})
-	switch {
-	case index < 0 && s.Agents.PodsErr != nil:
-		return PodUnread, ContainerRow{}
-	case index < 0:
-		return PodMissing, ContainerRow{}
+	row, found := s.agentRow(agent.Pod)
+	if !found {
+		return s.noPod(agent), ContainerRow{}
 	}
-	row := s.Agents.Pods[index]
 	switch {
 	case row.Container.Ready:
 		return PodRunning, row
@@ -95,4 +90,30 @@ func (s *Sandbox) firewallFailed(pod string) (ContainerRow, bool) {
 		}
 	}
 	return ContainerRow{}, false
+}
+
+// noPod says why the last read found no agent container for agent: an
+// action makes its pod now, it was not brought up, the read failed, or the
+// pod is gone.
+func (s *Sandbox) noPod(agent sandbox.Agent) PodState {
+	switch {
+	case agent.Email != "" && s.Run.Job.Agent == agent.Email:
+		return PodComingUp
+	case agent.Pod == "":
+		return PodNone
+	case s.Agents.PodsErr != nil:
+		return PodUnread
+	}
+	return PodMissing
+}
+
+// agentRow finds the agent's container of pod in the last read.
+func (s *Sandbox) agentRow(pod string) (ContainerRow, bool) {
+	index := slices.IndexFunc(s.Agents.Pods, func(row ContainerRow) bool {
+		return pod != "" && row.Pod == pod && row.Container.Name == AgentContainer
+	})
+	if index < 0 {
+		return ContainerRow{}, false
+	}
+	return s.Agents.Pods[index], true
 }
