@@ -46,7 +46,9 @@ func TestStoreLookups(t *testing.T) {
 	store.Add("pod-1", lookup("github.com.", "allow"))
 	store.Add("pod-1", lookup("github.com.svc.cluster.local.", verdictDeny))
 	store.Add("pod-1", lookup("example.com.", verdictDeny))
-	store.Add("pod-2", lookup("example.org.", verdictDeny))
+	if store.Add("pod-2", lookup("example.org.", verdictDeny)) {
+		t.Error("Add kept a record of pod-2 in the store of pod-1")
+	}
 	records, _ := store.Snapshot()
 	if counts := store.Lookups(); counts != (Counts{Lookups: 3, LookupsDenied: 2}) {
 		t.Errorf("Lookups = %+v, want 3 with 2 refused, and none of pod-2", counts)

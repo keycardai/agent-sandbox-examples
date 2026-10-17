@@ -222,15 +222,15 @@ type Store struct {
 	err error
 }
 
-// Add keeps a record of pod's proxy. A record of another pod comes from a
-// follower that stopped, and is dropped. A DNS lookup is counted, and a
-// routine one is not kept. Once the store holds maxRecords, a record
-// replaces the oldest.
-func (s *Store) Add(pod string, record Record) {
+// Add keeps a record of pod's proxy, and reports whether the store follows
+// pod. A record of another pod comes from a follower that stopped, and is
+// dropped. A DNS lookup is counted, and a routine one is not kept. Once the
+// store holds maxRecords, a record replaces the oldest.
+func (s *Store) Add(pod string, record Record) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if pod != s.pod {
-		return
+		return false
 	}
 	s.version++
 	if record.Scope == ScopeDNS {
@@ -240,7 +240,7 @@ func (s *Store) Add(pod string, record Record) {
 		}
 	}
 	if record.RoutineLookup() {
-		return
+		return true
 	}
 	if len(s.records) < maxRecords {
 		s.records = append(s.records, record)
@@ -248,6 +248,7 @@ func (s *Store) Add(pod string, record Record) {
 		s.records[s.start] = record
 		s.start = (s.start + 1) % maxRecords
 	}
+	return true
 }
 
 // Reset drops every record, and keeps the records of pod that come after.

@@ -808,7 +808,11 @@ func readRecords(stdout io.Reader, pod string, feeds [2]*component.Log, store *p
 		if !ok {
 			return
 		}
-		store.Add(pod, record)
+		// The feeds take only what the store keeps: a follower that stopped
+		// can still read a line after the store moved to another pod.
+		if !store.Add(pod, record) {
+			return
+		}
 		row := record.Row()
 		// The feed of requests leaves out the routine lookups, and keeps a
 		// refused lookup of a host on the internet: the proxy blocks a host

@@ -650,6 +650,23 @@ func TestChecksThatDidNotRun(t *testing.T) {
 	}
 }
 
+// TestFeedsOfAnotherPod leaves the feeds alone when the store moved to
+// another pod, as a follower that stopped can still read a line.
+func TestFeedsOfAnotherPod(t *testing.T) {
+	t.Parallel()
+	var store proxylog.Store
+	store.Reset("pod-b")
+	feeds := [2]*component.Log{{}, {}}
+	line := `{"ts":"2026-10-11T03:19:20Z","scope":"request","destination":{"host":"api.github.com"},` +
+		`"request":{"method":"GET","path":"/user"},"decision":{"verdict":"allow","reason":"endpoint_allowed"}}`
+	if err := readRecords(strings.NewReader(line), "pod-a", feeds, &store); err != nil {
+		t.Fatal(err)
+	}
+	if requests, _ := feeds[0].Snapshot(); len(requests) != 0 {
+		t.Errorf("the feed took %q from another pod, want nothing", requests)
+	}
+}
+
 // TestBlockedLookupInTheFeed shows a refused lookup of a host on the
 // internet in the feed of requests, where the summary names it blocked, and
 // keeps the routine lookups to the feed with DNS.
