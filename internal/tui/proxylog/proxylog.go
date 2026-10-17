@@ -395,13 +395,10 @@ func isRequest(record *Record, method, path string) bool {
 }
 
 // standsIn reports whether record stands in for a request with no record of
-// its own: a connection, or a refused lookup.
-func standsIn(record *Record) bool {
-	if record.Scope == ScopeDNS {
-		return record.Denied()
-	}
-	return record.Request == nil
-}
+// its own: a refused connection, or a refused lookup. An allowed connection
+// is logged before the proxy asks Keycard, so it says nothing of the
+// request.
+func standsIn(record *Record) bool { return record.Request == nil && record.Denied() }
 
 // blockedHosts collects the hosts the proxy refused, each once, in the
 // order of their latest refusal.

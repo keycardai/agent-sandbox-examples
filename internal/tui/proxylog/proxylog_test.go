@@ -128,6 +128,14 @@ func TestRecordFor(t *testing.T) {
 	if _, ok := proxylog.RecordFor(records, sampleMethod, githubHost, "/user", stamp.Add(time.Hour)); ok {
 		t.Error("a record from before since was found")
 	}
+	// The proxy logs an allowed connection before it asks Keycard about the
+	// request, so it does not stand in for the request's own record.
+	connection := newRecord(stamp, "connection", "openrouter.ai", "", verdictAllow, sampleAllowed, "")
+	connection.Request, connection.Outcome = nil, nil
+	if record, ok := proxylog.RecordFor([]proxylog.Record{connection}, sampleMethod, "openrouter.ai", "/api/v1/key",
+		stamp); ok {
+		t.Errorf("an allowed connection stood in for the request: %+v", record)
+	}
 }
 
 // TestReadableLine turns the proxy's audit records and structured log
