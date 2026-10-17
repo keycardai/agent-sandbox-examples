@@ -11,13 +11,9 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/style"
 )
 
-// Init picks the first screen. With settings that have a problem, such as
-// no settings at all, it opens the welcome screen. Otherwise it shows the
-// dashboard. When the bring-up starts with the tunnel, Init brings the
-// sandbox up, unless the tunnel already runs: then the sandbox may be up
-// from before, and the TUI only shows what runs. Without a tunnel step,
-// as on an existing cluster, the bring-up waits for u. Home says what to
-// do once the first read comes back, since the sandbox may be up.
+// Init opens the welcome screen when the settings have a problem, else the
+// dashboard. It brings the sandbox up only when the bring-up starts with
+// the tunnel and no tunnel runs from before.
 func (m *model) Init() tea.Cmd {
 	cmds := []tea.Cmd{frameTick(), m.poll(), m.bus.next(), tea.RequestWindowSize, tea.RequestBackgroundColor}
 	switch {
@@ -91,8 +87,7 @@ func (m *model) updateBackground(msg tea.Msg) (tea.Cmd, bool) {
 	return nil, false
 }
 
-// updateJobs handles what the bring-up, the setup, an action and the agent
-// report.
+// updateJobs handles what the jobs and the agent report.
 func (m *model) updateJobs(msg tea.Msg) (tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case stepStartMsg:
@@ -132,8 +127,7 @@ func (m *model) updateOnboarding(msg tea.Msg) (tea.Cmd, bool) {
 	return nil, true
 }
 
-// welcomeGlint starts the sheen across the mark while the welcome screen
-// checks the machine, however the screen came to show.
+// welcomeGlint starts the sheen while the welcome screen checks the machine.
 func (m *model) welcomeGlint() tea.Cmd {
 	if m.screen != screenWelcome || !m.state.Setup.Preflight.Checking() {
 		return nil
@@ -141,9 +135,8 @@ func (m *model) welcomeGlint() tea.Cmd {
 	return m.welcome.Glint.Start()
 }
 
-// keyPress routes a key: to the overlay when one is open, else to the
-// screen. A question that waited opens once the overlay closed, or once the
-// answer it sent is handled.
+// keyPress gives a key to the open overlay, else to the screen. A question
+// that waited opens once the overlay closes or its answer is handled.
 func (m *model) keyPress(msg tea.KeyPressMsg) tea.Cmd {
 	if cmd, handled := m.overlayKeys(msg); handled {
 		if cmd == nil {
@@ -372,15 +365,12 @@ func (m *model) demoKeys(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
-// switchDemo asks the demo's questions with the demo already chosen. Its
-// credentials come next, then the review, where enter brings the sandbox
-// up with it.
+// switchDemo asks the demo's questions with the demo already chosen.
 func (m *model) switchDemo(name string) {
 	m.state.Record("▸", "Switching the demo to "+name)
 	m.startWizard(screenDashboard, map[string]string{sandbox.QuestionDemo: name}, sandbox.SectionScenario)
 }
 
-// welcomeKeys handles a key on the welcome screen.
 func (m *model) welcomeKeys(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case msg.String() == component.KeyEnter:
@@ -393,8 +383,7 @@ func (m *model) welcomeKeys(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
-// checkAgain reads the settings again, as after the keychain was unlocked,
-// and checks the machine again. With nothing left to fix, the review shows.
+// checkAgain reads the settings and checks the machine again.
 func (m *model) checkAgain() tea.Cmd {
 	m.state.RefreshSettings()
 	if len(m.state.Setup.Problems) == 0 && m.session.Local().Initialized() {
@@ -404,7 +393,6 @@ func (m *model) checkAgain() tea.Cmd {
 	return m.startPreflight()
 }
 
-// reviewKeys handles a key on the review screen.
 func (m *model) reviewKeys(msg tea.KeyPressMsg) tea.Cmd {
 	keys := m.ui.Keys
 	switch {
@@ -422,7 +410,6 @@ func (m *model) reviewKeys(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
-// settingsKeys handles a key on the settings screen.
 func (m *model) settingsKeys(msg tea.KeyPressMsg) tea.Cmd {
 	keys := m.ui.Keys
 	if m.settings.Move(msg) {
@@ -443,17 +430,14 @@ func (m *model) settingsKeys(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
-// openWelcome shows the welcome screen: for a first run, or to fix the
-// problems the settings have.
+// openWelcome shows the welcome screen and checks the machine.
 func (m *model) openWelcome() tea.Cmd {
 	m.screen = screenWelcome
 	return m.startPreflight()
 }
 
-// startWizard lays the rail out and starts the setup for the sections, or
-// for every section when there are none. preset answers choices by
-// question, without asking them. While other work runs, the screen stays
-// as it is.
+// startWizard starts the setup for the sections, or for every section when
+// there are none. preset answers choices by question without asking them.
 func (m *model) startWizard(back screen, preset map[string]string, ids ...string) {
 	if m.busy() {
 		return
@@ -464,8 +448,7 @@ func (m *model) startWizard(back screen, preset map[string]string, ids ...string
 	m.startSetup(preset, ids...)
 }
 
-// launch brings the sandbox up and shows the dashboard, when the settings
-// have no problems.
+// launch brings the sandbox up and shows the dashboard.
 func (m *model) launch() tea.Cmd {
 	if len(m.state.Setup.Problems) > 0 {
 		m.ui.Notify("Fix the settings first.", true)
@@ -479,8 +462,7 @@ func (m *model) launch() tea.Cmd {
 	return m.poll()
 }
 
-// openSettings shows the settings with the demo selected, as the setting
-// changed most.
+// openSettings shows the settings with the demo selected.
 func (m *model) openSettings() {
 	if m.busy() {
 		return
@@ -489,16 +471,13 @@ func (m *model) openSettings() {
 	m.showSettings(screenDashboard)
 }
 
-// showSettings shows the settings, and remembers from for esc to go back
-// to.
+// showSettings shows the settings, and esc goes back to from.
 func (m *model) showSettings(from screen) {
 	m.settingsBack = from
 	m.screen = screenSettings
 }
 
-// leaveSettings goes back to the screen the settings came from. The
-// welcome screen checks the machine again, and says what still needs a
-// fix. With nothing left to fix, the review shows in its place.
+// leaveSettings goes back to the screen the settings came from.
 func (m *model) leaveSettings() tea.Cmd {
 	switch {
 	case m.settingsBack != screenWelcome:
@@ -526,8 +505,7 @@ func (m *model) settingsBackWord() string {
 // forgetDoneMsg says how deleting the saved settings went.
 type forgetDoneMsg struct{ err error }
 
-// forgetSettings asks, then deletes the saved settings and the secrets in
-// the keychain, in the background. The settings last for this session.
+// forgetSettings asks whether to delete the saved settings and secrets.
 func (m *model) forgetSettings() {
 	local := m.session.Local()
 	store := local.Store
@@ -539,8 +517,7 @@ func (m *model) forgetSettings() {
 		forgetSettingsMsg{})
 }
 
-// forget deletes the saved settings and the secrets in the keychain, in the
-// background, while they are saved.
+// forget deletes the saved settings and secrets in the background.
 func (m *model) forget() tea.Cmd {
 	local := m.session.Local()
 	if !local.Store.Saved() {
@@ -576,7 +553,6 @@ func (m *model) ask(msg askMsg) tea.Cmd {
 }
 
 // answer passes msg to the setup's question, and closes it once answered.
-// Esc stops the setup.
 func (m *model) answer(msg tea.Msg) tea.Cmd {
 	cmd, state := m.setup.Answer(msg)
 	switch state {

@@ -25,9 +25,7 @@ type checkDoneMsg struct {
 // startPreflight runs the machine checks the bring-up needs.
 func (m *model) startPreflight() tea.Cmd { return m.preflight(m.state.PreflightItems()) }
 
-// preflight runs the checks in items one after another in the background,
-// so that the welcome screen shows each as it runs. It stops the checks of
-// the run before.
+// preflight stops the last run and runs the checks in items one at a time.
 func (m *model) preflight(items []sandbox.PreflightItem) tea.Cmd {
 	m.stopPreflight()
 	m.preflightCtx, m.preflightStop = context.WithCancel(m.ctx)
@@ -35,7 +33,6 @@ func (m *model) preflight(items []sandbox.PreflightItem) tea.Cmd {
 	return m.nextCheck()
 }
 
-// stopPreflight ends the machine checks that run.
 func (m *model) stopPreflight() {
 	if m.preflightStop != nil {
 		m.preflightStop()
@@ -53,8 +50,7 @@ func (m *model) onCheck(msg checkDoneMsg) tea.Cmd {
 	return m.nextCheck()
 }
 
-// nextCheck runs the first check that has no result yet. Each check shows
-// for at least minCheck, so a fast one does not flash past.
+// nextCheck runs the first check without a result, for at least minCheck.
 func (m *model) nextCheck() tea.Cmd {
 	run := m.state.Setup.Preflight
 	index := len(run.Results)

@@ -10,16 +10,12 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/page"
 )
 
-// asker is the sandbox.Asker the setup runs with in the TUI. Each question
-// goes to Update as an askMsg, and the wizard's goroutine waits for the
-// reply. Once done closes, every question returns sandbox.ErrInterrupted,
-// as the terminal's asker does on Ctrl-C. When ctx ends, it returns an
-// error that wraps ctx.Err().
+// asker is the TUI's sandbox.Asker. Each question goes to Update as an
+// askMsg. Once done closes, every question returns sandbox.ErrInterrupted.
 type asker struct {
 	send func(msg any)
 	done <-chan struct{}
-	// preset answers a choice by its question, such as the demo the picker
-	// chose, without showing it.
+	// preset answers a choice by its question, without showing it.
 	preset map[string]string
 	// log is the setup log the wizard writes its notes to.
 	log *component.Log
@@ -31,8 +27,7 @@ type askMsg struct {
 	replies  chan<- reply
 }
 
-// reply is the operator's answer to a question, or the error that ended
-// it.
+// reply is the operator's answer, or the error that ended the question.
 type reply struct {
 	text string
 	yes  bool
@@ -70,10 +65,8 @@ func (a asker) Confirm(ctx context.Context, title string, value bool) (bool, err
 	return got.yes, got.err
 }
 
-// Section tells the TUI which part of the settings the wizard asks about
-// next, for the step rail. It implements sandbox.SectionAsker. The wizard
-// writes its notes from this goroutine, so the log's length here is where
-// the part's notes start.
+// Section implements sandbox.SectionAsker. The wizard writes its notes on
+// this goroutine, so the log's length here is where id's notes start.
 func (a asker) Section(id string) {
 	from := 0
 	if a.log != nil {
@@ -95,16 +88,13 @@ func (a asker) ask(ctx context.Context, quest *page.Question) reply {
 	}
 }
 
-// startQuestions begins a run of the setup's questions, and returns the
-// asker that sends them to Update, writes notes to log, and answers
-// preset's choices.
+// startQuestions opens a run of the setup's questions and returns its asker.
 func (m *model) startQuestions(preset map[string]string, log *component.Log) asker {
 	m.questions = make(chan struct{})
 	return asker{send: m.bus.Send, done: m.questions, preset: preset, log: log}
 }
 
-// asking reports whether a run of questions is open: it started, and was
-// neither stopped nor ended.
+// asking reports whether a run of questions is open.
 func (m *model) asking() bool { return m.questions != nil }
 
 // stopQuestions ends the run's questions, which then return

@@ -138,10 +138,8 @@ func (s *Session) Steps() []Step {
 	}, deploy)
 }
 
-// Setup asks the setup's questions for the sections with ask, or every
-// section without any, and writes its notes to out. The session takes the
-// settings setup kept: after it saved them, and after saving them failed,
-// since the store keeps them for the session then too.
+// Setup runs InitSections for sections with ask and out. The session then
+// takes the settings setup kept, saved or not.
 func (s *Session) Setup(ctx context.Context, ask Asker, out io.Writer, sections ...string) (InitResult, error) {
 	result, err := s.Local().WithIO(out, ask).InitSections(ctx, sections...)
 	s.keepAfterSetup(err)
@@ -246,10 +244,8 @@ func (s *Session) Scenario() (*Scenario, error) {
 	return s.Local().scenario()
 }
 
-// RunningScenario loads the demo the sandbox runs: the one the last
-// bring-up deployed, or the one the settings name when no bring-up says.
-// The settings can name another demo once setup picked one, until the next
-// bring-up deploys it.
+// RunningScenario loads the demo the last bring-up deployed, or the one the
+// settings name when no bring-up says.
 func (s *Session) RunningScenario() (*Scenario, error) {
 	local := s.Local()
 	if name := local.DeployedDemo(); name != "" {
@@ -633,8 +629,7 @@ func (s *Session) RemoveAgent(ctx context.Context, email string, out io.Writer) 
 	return s.runZone(ctx, local)
 }
 
-// keepAfterSetup reads the settings again when setup kept them, as err
-// says.
+// keepAfterSetup reads the settings again when err says setup kept them.
 func (s *Session) keepAfterSetup(err error) {
 	if err == nil || errors.Is(err, ErrNotSaved) {
 		s.Reload()

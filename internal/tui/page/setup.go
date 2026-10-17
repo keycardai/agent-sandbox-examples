@@ -18,26 +18,21 @@ import (
 )
 
 const (
-	// railWidth is the width of the wizard's step rail.
 	railWidth = 30
 	// noteCount is how many of the wizard's notes the question shows.
 	noteCount = 5
-	// railIndent is the width left of an answer under a step: the rail's
-	// line and a space.
+	// railIndent is the width left of an answer under a step.
 	railIndent = 3
-	// reviewRailWidth is the width of the steps on the review, which shows
-	// each answer whole.
+	// reviewRailWidth is the width of the steps on the review.
 	reviewRailWidth = 46
-	// launchNumber is the width of a launch step's number and the space
-	// after it.
+	// launchNumber is the width of a launch step's number and its space.
 	launchNumber = 3
 	// railGap is the space between the wizard's steps and its question, and
 	// minPanel the narrowest question panel the steps leave room for.
 	railGap  = 6
 	minPanel = 50
-	// maxSelectHeight bounds the rows a choice shows at once. A choice's
-	// height also counts a row for its title, which huh counts whether or
-	// not there is one.
+	// maxSelectHeight bounds the rows a choice shows at once. huh counts a
+	// title row in a choice's height, even without a title.
 	maxSelectHeight, selectTitleRows = 10, 1
 )
 
@@ -82,17 +77,12 @@ type asking struct {
 	yes      *bool
 }
 
-// Setup is the setup wizard and the review after it. The wizard shows its
-// steps on a rail and asks the current step's questions beside it. The
-// review shows what was chosen at each step, and what launching does.
+// Setup is the setup wizard and the review after it.
 type Setup struct {
 	view
 
-	// Rail is the wizard's steps, with what was chosen at each.
 	Rail []*RailStep
-	// current is the step the wizard asks about, and notesFrom where its
-	// notes start in the setup log. The notes before it belong to the steps
-	// before.
+	// current is the step being asked, and notesFrom where its notes start.
 	current   string
 	notesFrom int
 	ask       *asking
@@ -105,8 +95,7 @@ func NewSetup(ui *UI, sandbox *state.Sandbox) *Setup {
 	return &Setup{ui: ui, state: sandbox}
 }
 
-// RailSteps are every step of the wizard, in plain words for someone new
-// to Keycard.
+// RailSteps are every step of the wizard.
 func RailSteps() []*RailStep {
 	sections := sandbox.Sections()
 	steps := make([]*RailStep, 0, len(sections))
@@ -117,16 +106,14 @@ func RailSteps() []*RailStep {
 }
 
 // PlannedSteps are the steps a first run's wizard shows from the start.
-// Zone policy joins only when the zone has another active policy set, and
-// Save when setup asks whether to save.
+// Zone policy and Save join only when setup asks them.
 func PlannedSteps() []*RailStep {
 	return slices.DeleteFunc(RailSteps(), func(step *RailStep) bool {
 		return step.ID == sandbox.SectionPolicy || step.ID == sandbox.SectionSave
 	})
 }
 
-// Begin lays the rail out for the sections setup asks, or for every
-// section when there are none.
+// Begin lays the rail out for the sections setup asks, or all when none.
 func (s *Setup) Begin(ids ...string) {
 	asked := map[string]bool{}
 	for _, id := range ids {
@@ -151,8 +138,7 @@ func (s *Setup) Begin(ids ...string) {
 	}
 }
 
-// Asked reports whether this setup asked the section id, rather than kept
-// it.
+// Asked reports whether this setup asked the section id, not kept it.
 func (s *Setup) Asked(id string) bool {
 	return slices.ContainsFunc(s.Rail, func(step *RailStep) bool { return step.ID == id && step.State != RailKept })
 }
@@ -160,8 +146,7 @@ func (s *Setup) Asked(id string) bool {
 // Asking reports whether a question waits for an answer.
 func (s *Setup) Asking() bool { return s.ask != nil }
 
-// OnSection marks the step setup moved on from as done, and the new one as
-// the current step. A step that was not on the rail joins it.
+// OnSection marks the step setup left as done, and msg's step as current.
 func (s *Setup) OnSection(msg SectionMsg) {
 	s.notesFrom = msg.NotesFrom
 	for _, step := range s.Rail {
@@ -202,20 +187,16 @@ func (s *Setup) Finish() {
 func (s *Setup) Ask(quest *Question) tea.Cmd {
 	text, yes := quest.Value, quest.Yes
 	width := s.panelWidth()
-	// The wizard takes esc to stop the setup, so a list does not filter:
-	// esc would stop the setup where it means to clear the filter.
+	// Esc stops the setup, so a list has no filter for esc to clear.
 	keys := huh.NewDefaultKeyMap()
 	keys.Select.Filter.SetEnabled(false)
-	// A field fits its text to its width less its theme's border and
-	// padding, so it takes the theme first. Longer text scrolls within one
-	// row.
+	// Set the theme first: the width leaves out its border and padding.
 	form := huh.NewForm(huh.NewGroup(questionField(quest, &text, &yes, width))).
 		WithKeyMap(keys).
 		WithShowHelp(false).
 		WithTheme(s.ui.Styles.FormTheme(width, quest.Kind != AskConfirm)).
 		WithWidth(width)
-	// The form lays its field out once it knows the window. Telling it now
-	// draws the whole field from the first frame.
+	// Sizing the form now draws the whole field from the first frame.
 	next, _ := form.Update(tea.WindowSizeMsg{Width: s.ui.Width, Height: s.ui.Height})
 	if sized, ok := next.(*huh.Form); ok {
 		form = sized
@@ -224,8 +205,7 @@ func (s *Setup) Ask(quest *Question) tea.Cmd {
 	return form.Init()
 }
 
-// Resize lays the question out again for the window's size, keeping what
-// is typed or chosen so far. A form keeps the width it started with.
+// Resize rebuilds the question. A form keeps the width it started with.
 func (s *Setup) Resize() tea.Cmd {
 	if s.ask == nil {
 		return nil
@@ -262,20 +242,16 @@ func (s *Setup) Answer(msg tea.Msg) (tea.Cmd, QuestionState) {
 	return cmd, Asking
 }
 
-// Reply returns the answer to the last question answered: its text, and
-// for a yes-or-no question, the yes.
+// Reply returns the last answer: its text, and whether it is yes.
 func (s *Setup) Reply() (string, bool) { return s.last.text, s.last.yes }
 
 // Drop takes the question away without an answer.
 func (s *Setup) Drop() { s.ask = nil }
 
-// Abandon forgets the steps of a setup that stopped without keeping its
-// answers, so that the review shows the settings as they are.
+// Abandon forgets the steps, so the review shows the settings as they are.
 func (s *Setup) Abandon() { s.Rail = nil }
 
-// WizardView draws the steps on the left and the current question on the
-// right, in the middle of the window. A narrow window leaves the steps out:
-// the header still says which step of how many.
+// WizardView draws the steps, when they fit, beside the current question.
 func (s *Setup) WizardView() string {
 	body := lipgloss.NewStyle().Width(s.panelWidth()).Render(lipgloss.JoinVertical(lipgloss.Left,
 		s.questionPanel()...))
@@ -285,10 +261,7 @@ func (s *Setup) WizardView() string {
 	return s.ui.Page(s.progress(), s.anchored(body), s.wizardHints())
 }
 
-// ReviewView shows what setup chose and what launching does, in the
-// middle of the window. The steps setup went through stand on the left as
-// the wizard showed them, each with what was chosen, and the launch on the
-// right. A narrow window puts each step on one line, over the launch.
+// ReviewView shows the steps with what setup chose, beside the launch.
 func (s *Setup) ReviewView() string {
 	width := s.ui.Width - component.PageIndent*half
 	beside := width - reviewRailWidth - railGap
@@ -313,9 +286,7 @@ func (s *Setup) ReviewView() string {
 	))
 }
 
-// recordAnswer puts what the operator chose under the current step, in
-// words that stand on their own: a secret by what it is, and a yes or no
-// with its question.
+// recordAnswer puts the answer under the current step, readable on its own.
 func (s *Setup) recordAnswer(quest *Question, got answer) {
 	shown := got.text
 	switch quest.Kind {
@@ -335,14 +306,12 @@ func (s *Setup) recordAnswer(quest *Question, got answer) {
 	}
 }
 
-// railFits reports whether the steps fit beside a question panel of at
-// least minPanel columns.
+// railFits reports whether the steps fit beside a question panel.
 func (s *Setup) railFits() bool {
 	return s.ui.Width-component.PageIndent*half-railWidth-railGap >= minPanel
 }
 
-// panelWidth is the question panel's width: beside the steps when they
-// fit, and never wider than a paragraph reads well.
+// panelWidth is the question panel's width, at most readWidth.
 func (s *Setup) panelWidth() int {
 	width := s.ui.Width - component.PageIndent*half
 	if s.railFits() {
@@ -351,7 +320,6 @@ func (s *Setup) panelWidth() int {
 	return max(min(width, readWidth), 1)
 }
 
-// wizardHints lists the keys the question takes.
 func (s *Setup) wizardHints() []component.Hint {
 	stop, next := component.Hint{Key: component.KeyEsc, Desc: "stop setup"},
 		component.Hint{Key: component.KeyEnter, Desc: "continue"}
@@ -382,9 +350,7 @@ func (s *Setup) progress() string {
 	return "setup · step " + strconv.Itoa(min(current, len(s.Rail))) + " of " + strconv.Itoa(len(s.Rail))
 }
 
-// railView draws the steps width wide as a stepper: a mark for each step's
-// state, a line joining them, and what was chosen under each step that is
-// done, cut to a line, or wrapped whole.
+// railView draws the steps width wide, and wraps answers or cuts them.
 func (s *Setup) railView(width int, wrap bool) string {
 	theme := s.ui.Styles
 	link := theme.Faint.Render("│")
@@ -407,8 +373,7 @@ func (s *Setup) railView(width int, wrap bool) string {
 	return lipgloss.NewStyle().Width(width).Render(strings.Join(lines, "\n"))
 }
 
-// railMark is a step's mark: done, the one asking, the one waiting on
-// Keycard, or to come.
+// railMark is a step's mark. The current step spins while setup works.
 func (s *Setup) railMark(step *RailStep) string {
 	theme := s.ui.Styles
 	switch step.State {
@@ -439,8 +404,7 @@ func (s *Setup) railTitle(step *RailStep) string {
 	return theme.Dim.Render(step.Title)
 }
 
-// questionPanel draws what the current step is for, the wizard's latest
-// notes, and the question, or a spinner while setup works.
+// questionPanel draws the current step, its notes, and the question.
 func (s *Setup) questionPanel() []string {
 	theme := s.ui.Styles
 	width := s.panelWidth()
@@ -465,7 +429,6 @@ func (s *Setup) questionPanel() []string {
 	return append(parts, s.questionBlock(width))
 }
 
-// currentStep returns the step the wizard asks about, or nil.
 func (s *Setup) currentStep() *RailStep {
 	for _, step := range s.Rail {
 		if step.ID == s.current {
@@ -475,8 +438,7 @@ func (s *Setup) currentStep() *RailStep {
 	return nil
 }
 
-// questionBlock draws the question: the sentence that asks as its title,
-// any other sentences under it, the answer's field, and how to answer.
+// questionBlock draws the question, its field, and how to answer.
 func (s *Setup) questionBlock(width int) string {
 	theme := s.ui.Styles
 	quest := s.ask.question
@@ -496,10 +458,7 @@ func (s *Setup) questionBlock(width int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
-// questionHint says how to answer: what enter does with a value already
-// there, where a secret goes, how a long list scrolls, which keys answer
-// yes or no, and how to skip the account questions. Keys show in the
-// accent.
+// questionHint says how to answer quest, with keys in the accent.
 func (s *Setup) questionHint(quest *Question) string {
 	key, text := s.ui.Styles.Accent.Render, s.ui.Styles.Dim.Render
 	var hints []string
@@ -527,8 +486,6 @@ func (s *Setup) questionHint(quest *Question) string {
 	return strings.Join(hints, text(" "))
 }
 
-// secretGoes says where a typed secret goes: in the keychain when the
-// settings are saved, else in memory until the operator quits.
 func (s *Setup) secretGoes() string {
 	switch saving := s.state.Saving(); {
 	case !saving.CanSave:
@@ -539,8 +496,7 @@ func (s *Setup) secretGoes() string {
 	return "Saving the settings puts it in your OS keychain."
 }
 
-// notes returns the wizard's latest notes, such as which zone it created,
-// without blank lines.
+// notes returns the wizard's latest notes, without blank lines.
 func (s *Setup) notes() []string {
 	lines, _ := s.ui.Logs.Log(state.SourceSetup).Snapshot()
 	notes := make([]string, 0, len(lines))
@@ -552,8 +508,7 @@ func (s *Setup) notes() []string {
 	return notes[max(len(notes)-noteCount, 0):]
 }
 
-// reviewLines puts each setting on one line, cut to width: the wizard's
-// steps with what was chosen, or else the saved settings.
+// reviewLines puts each setting on one line, cut to width.
 func (s *Setup) reviewLines(width int) string {
 	theme := s.ui.Styles
 	lines := make([]string, 0, len(sections()))
@@ -571,8 +526,7 @@ func (s *Setup) reviewLines(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-// launchPanel says the sandbox is ready, what launching does, and how to
-// launch. With a problem left, it says what to fix in their place.
+// launchPanel says what launching does and how, or what to fix first.
 func (s *Setup) launchPanel(width int) string {
 	theme := s.ui.Styles
 	para := lipgloss.NewStyle().Width(width)
@@ -606,7 +560,6 @@ func (s *Setup) launchPanel(width int) string {
 			theme.KeyChip.Render("e")+" "+theme.Text.Render("Change a setting"))...)
 }
 
-// launchClusterStep says what launching does with the cluster.
 func (s *Setup) launchClusterStep() string {
 	switch {
 	case s.state.Existing():
@@ -619,8 +572,7 @@ func (s *Setup) launchClusterStep() string {
 	return "Creates a local cluster, and a tunnel so Keycard can reach it"
 }
 
-// chosenLabel names the option a choice's answer picked, or is "" when
-// no option has the answer.
+// chosenLabel names the option that value picked, or is "" for none.
 func chosenLabel(quest *Question, value string) string {
 	for _, option := range quest.Options {
 		if option.Value == value {
@@ -638,9 +590,7 @@ func answerLines(answer string, width int, wrap bool) []string {
 	return strings.Split(strings.TrimRight(lipgloss.NewStyle().Width(width).Render(answer), " "), "\n")
 }
 
-// splitQuestion takes the sentence that asks out of a question, as its
-// title, and leaves the other sentences to say more. Without a sentence
-// that asks, the first sentence is the title.
+// splitQuestion splits the sentence that asks, as the title, from the rest.
 func splitQuestion(text string) (string, string) {
 	sentences := sentencesOf(text)
 	asks := max(slices.IndexFunc(sentences, func(s string) bool { return strings.HasSuffix(s, "?") }), 0)
@@ -687,8 +637,7 @@ func questionField(quest *Question, text *string, yes *bool, width int) huh.Fiel
 	return huh.NewInput().Prompt("").Value(text).Validate(validator(quest.Check))
 }
 
-// optionRows counts the rows a choice's options take in a field width
-// wide, each wrapped as the field wraps it.
+// optionRows counts the rows options take in a field width wide.
 func optionRows(options []sandbox.Option, width int) int {
 	inner := max(width-style.FieldFrame, 1)
 	rows := 0

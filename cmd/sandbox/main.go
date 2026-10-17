@@ -1,14 +1,9 @@
 // Command sandbox runs the sandbox demo: an agent in a Kubernetes sandbox
 // whose HTTPS goes through the Keycard egress proxy. On a terminal, with no
-// subcommand, it opens the TUI, which sets the sandbox up, brings it up and
-// shows it:
-//
-//	go run ./cmd/sandbox
-//
-// Each subcommand is one step, and each step reads its settings from
-// ~/.config/keycard/sandbox.yaml, which setup saves when you ask it to, and
-// from the environment. docs/local.md describes the steps. `up` runs them all
-// without the TUI:
+// subcommand, it opens the TUI. Each subcommand is one step, and each step
+// reads its settings from ~/.config/keycard/sandbox.yaml, which setup saves
+// when you ask it to, and from the environment. docs/local.md describes the
+// steps. `up` runs them all without the TUI:
 //
 //	go run ./cmd/sandbox up
 //
@@ -122,8 +117,7 @@ func newCommand() *cli.Command {
 }
 
 // start opens the TUI on a terminal. Elsewhere it prints intro. It refuses
-// an argument, such as a mistyped subcommand, which would otherwise open the
-// TUI.
+// an argument, such as a mistyped subcommand.
 func start(ctx context.Context, cmd *cli.Command) error {
 	if cmd.Args().Present() {
 		return fmt.Errorf("%w %q. Run go run ./cmd/sandbox --help to list the subcommands",

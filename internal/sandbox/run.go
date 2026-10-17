@@ -186,8 +186,7 @@ func (l *Local) createSandboxes(ctx context.Context, cfg runSettings, out *zones
 	return l.writeDeployed(cfg.scenario.Name)
 }
 
-// writeDeployed keeps the name of the demo the sandboxes run now, for
-// DeployedDemo.
+// writeDeployed keeps the name of the deployed demo for DeployedDemo.
 func (l *Local) writeDeployed(name string) error {
 	if err := os.WriteFile(filepath.Join(l.outDir(), deployedFile), []byte(name+"\n"), fileMode); err != nil {
 		return fmt.Errorf("writing local/out/%s: %w", deployedFile, err)
@@ -195,8 +194,7 @@ func (l *Local) writeDeployed(name string) error {
 	return nil
 }
 
-// DeployedDemo names the demo the sandboxes run, as the last bring-up
-// deployed them, or returns "" when no bring-up says.
+// DeployedDemo returns the demo the last bring-up deployed, or "" if none.
 func (l *Local) DeployedDemo() string {
 	raw, err := os.ReadFile(filepath.Join(l.outDir(), deployedFile))
 	if err != nil {
@@ -965,8 +963,7 @@ func (l *Local) waitForDNS(ctx context.Context, cluster string) error {
 	return nil
 }
 
-// deployedFile is the file under local/out that names the demo the
-// sandboxes run.
+// deployedFile is the file under local/out that names the deployed demo.
 const deployedFile = "demo"
 
 func (l *Local) outDir() string {

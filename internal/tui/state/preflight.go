@@ -6,9 +6,8 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/sandbox"
 )
 
-// Preflight is a run of the machine checks: what it checks, and the results
-// so far. Run numbers the runs, so that a late result of an earlier run is
-// dropped.
+// Preflight is a run of the machine checks and its results so far. Run
+// numbers the runs, so that a late result of an earlier run is dropped.
 type Preflight struct {
 	Items   []sandbox.PreflightItem
 	Results []sandbox.Check
@@ -47,9 +46,8 @@ func (s *Setup) CheckDone(run, index int, check sandbox.Check) bool {
 	return true
 }
 
-// FixSections lists the sections setup asks to fix the settings' problems,
-// or none when a problem is in no one section, so that setup asks every
-// section.
+// FixSections lists the sections setup asks to fix the problems. A problem
+// in no one section makes it nil, so that setup asks every section.
 func (s *Setup) FixSections() []string {
 	var sections []string
 	for _, problem := range s.Problems {

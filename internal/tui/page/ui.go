@@ -26,8 +26,7 @@ const (
 	shortID = 8
 	// half halves a size, to center or split it.
 	half = 2
-	// wordQuit, wordKeys, wordChoose and wordAgent are words several pages
-	// show.
+	// Words several pages show.
 	wordQuit   = "quit"
 	wordKeys   = "keys"
 	wordChoose = "choose"
@@ -38,8 +37,7 @@ const (
 type UI struct {
 	Styles style.Styles
 	Keys   component.KeyMap
-	// Width and Height are the window's, and Background the terminal's
-	// background, once it reports it.
+	// The window's size, and the terminal's background once it reports it.
 	Width, Height int
 	Background    color.Color
 	// Frame counts the redraws, and turns the spinners.
@@ -62,8 +60,7 @@ func (u *UI) Notify(text string, isErr bool) {
 	u.Toast = component.Toast{Text: text, Err: isErr, Until: time.Now().Add(toastFor)}
 }
 
-// Page draws a full screen: the header band with title, the body under it,
-// and the footer with the keys that apply.
+// Page draws a full screen with title in the header band.
 func (u *UI) Page(title, body string, hints []component.Hint) string {
 	return u.PageUnder(component.Band(u.Styles, u.Width, u.Styles.BandLabel.Render(title), ""), body, hints)
 }

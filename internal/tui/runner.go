@@ -324,8 +324,7 @@ func (m *model) updateAnswers(msg tea.Msg) (tea.Cmd, bool) {
 	return cmd, true
 }
 
-// stopAllNow stops everything, then quits with quit, unless D waits for
-// the job that runs.
+// stopAllNow stops everything, unless D waits for the job that runs.
 func (m *model) stopAllNow(quit bool) {
 	if m.stopAllWaits(quit) {
 		return
@@ -334,8 +333,7 @@ func (m *model) stopAllNow(quit bool) {
 }
 
 // stopAllWaits reports whether D waits for the job that runs, and says
-// which in the footer. D stops a bring-up or the checks first, and to
-// quit, the setup too. It waits for any other job.
+// which in the footer. D does not wait for a job it stops first.
 func (m *model) stopAllWaits(quit bool) bool {
 	job := m.state.Run.Job
 	stopsFirst := job.RunsSteps() || quit && job.Is(state.JobSetup)
@@ -423,9 +421,8 @@ func (m *model) askStopAll(quit bool) {
 		"What the sandbox created in your Keycard zone stays.", stopAllMsg{quit: quit})
 }
 
-// stopEverything stops the tunnel and the mirror and deletes the cluster,
-// then quits with quit. A running bring-up, checks run or setup stops
-// first, and everything stops once it has.
+// stopEverything stops the tunnel and the mirror and deletes the cluster.
+// A bring-up, checks run or setup stops first, and the rest stops after it.
 func (m *model) stopEverything(quit bool) {
 	// A question about the cluster's issuer is gone with the cluster.
 	m.waiting = nil
@@ -658,10 +655,8 @@ func readRecords(stdout io.Reader, pod string, store *proxylog.Store) error {
 	return nil
 }
 
-// startSetup runs the wizard for the sections in the background, with
-// preset's answers. Its questions come back as askMsg, its steps as
-// page.SectionMsg, and its notes go to the setup log. Once it is done, the
-// same goroutine reads the settings again, since that reads the keychain.
+// startSetup runs the wizard for the sections in the background. Then its
+// goroutine reads the settings again, since that reads the keychain.
 func (m *model) startSetup(preset map[string]string, ids ...string) {
 	ctx, cancel := context.WithCancel(m.ctx)
 	if !m.state.Run.StartJob(state.Job{Kind: state.JobSetup}, cancel) {
@@ -674,7 +669,6 @@ func (m *model) startSetup(preset map[string]string, ids ...string) {
 	ask := m.startQuestions(preset, log)
 	session := m.session
 	m.state.Record("▸", "Setup started")
-	// The settings are read again after the setup, also after a panic.
 	done := func(result sandbox.InitResult, err error) tea.Msg {
 		return setupDoneMsg{result: result, err: err, describe: session.Describe(), problems: session.Problems()}
 	}
@@ -682,10 +676,8 @@ func (m *model) startSetup(preset map[string]string, ids ...string) {
 		func(err error) tea.Msg { return done(sandbox.InitResult{}, err) })
 }
 
-// onSetupDone takes the new settings and shows the review, also when
-// saving them failed. A setup that stopped goes back where it started. The
-// answer about the zone's policy set holds until a setup looks at the zone
-// again. When D stopped the setup, everything stops now.
+// onSetupDone takes the new settings and shows the review, also when saving
+// failed. The policy-set answer holds until a setup looks at the zone again.
 func (m *model) onSetupDone(msg setupDoneMsg) {
 	m.state.Run.CancelJob()
 	ended := m.state.EndJob()
@@ -734,9 +726,8 @@ func (m *model) recordSaved(msg setupDoneMsg) {
 	}
 }
 
-// stopSetup ends the wizard without writing the settings: the question
-// goes, and what the setup waits on stops. The setup's job ends once its
-// work reports back.
+// stopSetup ends the wizard without writing the settings. The setup's job
+// ends once its work reports back.
 func (m *model) stopSetup() {
 	if !m.state.Run.Job.Is(state.JobSetup) || !m.asking() {
 		return

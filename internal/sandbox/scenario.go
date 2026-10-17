@@ -279,8 +279,7 @@ func (s *Scenario) Values(answers map[string]string) ([]byte, error) {
 // DefaultScenario, and names its image for baseImage.
 func (l *Local) scenario() (*Scenario, error) { return l.scenarioNamed(l.demo()) }
 
-// scenarioNamed loads the demo of name, with the name of the image its
-// Dockerfile builds, if it has one.
+// scenarioNamed loads the demo name, and names its image if it builds one.
 func (l *Local) scenarioNamed(name string) (*Scenario, error) {
 	scenario, err := LoadScenario(l.Root, name)
 	if err != nil || scenario.buildDir == "" {

@@ -21,8 +21,7 @@ const (
 	inputText   = "text"
 )
 
-// Demos is the list of the checkout's demos, to switch to another. Each
-// says what its agent does and what setup asks for it.
+// Demos is the list of the checkout's demos, to switch to another.
 type Demos struct {
 	view
 
@@ -52,9 +51,7 @@ func (d *Demos) Keys(msg tea.KeyPressMsg) (string, component.Pick) {
 	return demos[d.picker.Cursor].Name, pick
 }
 
-// View draws the demos: the name, what the agent does, and what setup asks
-// for it. When that does not fit the window, only the selected demo says
-// what it does.
+// View draws the demos, compact when they do not fit the window.
 func (d *Demos) View() string {
 	if modal := d.draw(false); lipgloss.Height(modal) <= d.ui.Height-component.ChromeRows {
 		return modal
@@ -105,8 +102,7 @@ func (d *Demos) draw(compact bool) string {
 	return theme.Modal.Width(component.ModalWidth(d.ui.Width)).Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
 }
 
-// status marks the demo that runs now, and the one the settings name when
-// it does not run.
+// status marks the demo that runs now and the one the settings name.
 func (d *Demos) status(scenario *sandbox.Scenario) string {
 	switch {
 	case scenario.Name == d.state.Demos.Launched && d.state.Up():
@@ -117,8 +113,6 @@ func (d *Demos) status(scenario *sandbox.Scenario) string {
 	return ""
 }
 
-// highlight puts the selection color behind each line of a block across
-// width.
 func (d *Demos) highlight(block string, width int) string {
 	lines := strings.Split(block, "\n")
 	for i, line := range lines {
@@ -141,8 +135,7 @@ func demoAbout(scenario *sandbox.Scenario) string {
 	return "It runs the checks, then stays idle. c runs them again."
 }
 
-// demoNeeds lists what setup asks for the demo: each credential, and each
-// text with no default.
+// demoNeeds lists what setup asks for, leaving out texts with a default.
 func demoNeeds(scenario *sandbox.Scenario) string {
 	needs := []string{}
 	for _, input := range scenario.Inputs {
@@ -160,8 +153,7 @@ func demoNeeds(scenario *sandbox.Scenario) string {
 	return strings.Join(needs, ", ") + "."
 }
 
-// shortPrompt keeps a question's first phrase, such as "Slack bot token"
-// of "Slack bot token (xoxb-), with the im:write scope".
+// shortPrompt keeps the first phrase of a question.
 func shortPrompt(prompt string) string {
 	if i := strings.IndexAny(prompt, "(,."); i > 0 {
 		prompt = prompt[:i]

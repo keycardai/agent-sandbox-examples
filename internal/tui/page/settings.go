@@ -15,10 +15,8 @@ import (
 	"github.com/keycardai/agent-sandbox-examples/internal/tui/state"
 )
 
-// labelWidth is the width of a setting's label.
 const labelWidth = 18
 
-// section is one part of the settings the settings screen lists.
 type section struct {
 	id, title, about string
 }
@@ -56,8 +54,7 @@ func (s *Settings) SelectDemo() {
 	s.cursor = slices.IndexFunc(sections(), func(sec section) bool { return sec.id == sandbox.SectionScenario })
 }
 
-// View lists the settings, with the one under the cursor ready to change,
-// and the problems the settings have. back names where esc goes.
+// View lists the settings and their problems. back names where esc goes.
 func (s *Settings) View(back string) string {
 	theme := s.ui.Styles
 	width := min(s.ui.Width-component.BorderCols-component.PageIndent, readWidth+checkNameWidth)
@@ -95,7 +92,6 @@ func (s *Settings) View(back string) string {
 		append(hints, component.Hint{Key: component.KeyEsc, Desc: back}, component.Hint{Key: "q", Desc: wordQuit}))
 }
 
-// savedWhere says where the settings are saved, if they are.
 func (s *Settings) savedWhere() string {
 	saving := s.state.Saving()
 	keychain := ""
@@ -113,8 +109,7 @@ func (s *Settings) savedWhere() string {
 	return "They are not saved, and last until you quit. Changing one asks whether to save them."
 }
 
-// sections are the sections the settings list: those setup can ask on
-// their own.
+// sections lists the sections setup can ask on their own.
 func sections() []section {
 	var list []section
 	for _, info := range sandbox.Sections() {

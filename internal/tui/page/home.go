@@ -271,7 +271,6 @@ func (h *Home) checksScore() string {
 	return ""
 }
 
-// otherDemos names the checkout's demos besides the current one.
 func (h *Home) otherDemos() []string {
 	names := []string{}
 	for _, scenario := range h.state.DemoList() {

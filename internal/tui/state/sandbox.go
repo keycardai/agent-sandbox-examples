@@ -28,9 +28,6 @@ type Sandbox struct {
 	// Now is the clock the steps' times come from.
 	Now func() time.Time
 
-	// Run is the work that changes the sandbox, Reads what the last read of
-	// it found, and Agents the agents and their pods. Setup is what setting
-	// the sandbox up needs, and Demos the demos and the one that runs.
 	Run    Run
 	Reads  Reads
 	Agents Agents
@@ -66,13 +63,11 @@ type Agents struct {
 	Traffic proxylog.Store
 }
 
-// Setup is what setting the sandbox up needs to know: what the settings
-// hold and lack, whether the keychain works, and the machine checks.
+// Setup is what setting the sandbox up needs to know.
 type Setup struct {
-	// Describe says what each section of the settings holds, and Problems
-	// what would stop the bring-up. KeychainErr is why the keychain cannot
-	// keep secrets, or nil. Err is why the last setup failed, until the next
-	// one starts.
+	// Describe says what each settings section holds, and Problems what
+	// would stop the bring-up. KeychainErr is why the keychain cannot keep
+	// secrets, and Err why the last setup failed.
 	Describe    map[string]string
 	Problems    []error
 	KeychainErr error
@@ -83,10 +78,8 @@ type Setup struct {
 
 // Demos are the checkout's demos, and the one the sandbox runs.
 type Demos struct {
-	// Loaded is the demo the dashboard shows, once it loaded. List is every
-	// demo in the checkout that loads, read once, and Err says why any did
-	// not load. Launched names the demo the sandbox runs, as the last
-	// bring-up deployed it, or the one the settings name when none says.
+	// Loaded is the demo the dashboard shows, and Err why a demo did not
+	// load. Launched names the demo the last bring-up deployed.
 	Loaded   *sandbox.Scenario
 	List     []*sandbox.Scenario
 	Err      error
@@ -107,16 +100,13 @@ func (s *Sandbox) Setting(key string) string { return s.local().Settings[key] }
 // StartsTunnel reports whether the bring-up starts a quick tunnel.
 func (s *Sandbox) StartsTunnel() bool { return s.local().StartsTunnel() }
 
-// Existing reports whether the settings name a cluster of the operator's,
-// which the sandbox does not create.
+// Existing reports whether the settings name the operator's own cluster.
 func (s *Sandbox) Existing() bool { return s.local().Existing() }
 
 // Root is the checkout the sandbox runs from.
 func (s *Sandbox) Root() string { return s.local().Root }
 
-// Saving is whether the settings are saved, and whether they can be: the
-// keychain must keep the secrets. File and Keychain are where they are
-// saved.
+// Saving is whether the settings are saved or can be, and where.
 type Saving struct {
 	Saved, CanSave bool
 	File, Keychain string
@@ -128,8 +118,7 @@ func (s *Sandbox) Saving() Saving {
 	return Saving{Saved: store.Saved(), CanSave: store.CanSave(), File: store.Path(), Keychain: store.KeychainWhere()}
 }
 
-// SetSettings keeps what each section of the settings holds and their
-// problems, as read after work that changed them.
+// SetSettings keeps what each settings section holds, and the problems.
 func (s *Setup) SetSettings(describe map[string]string, problems []error) {
 	s.Describe, s.Problems = describe, problems
 }
@@ -142,9 +131,6 @@ func (s *Setup) Failed(err error) { s.Err = err }
 
 // RefreshSettings reads the settings, their problems, and whether the
 // keychain works. The store asks the keychain once and keeps the answer.
-// The TUI reads the settings before it draws, so that on Linux a dialog to
-// unlock the keyring shows before the TUI, and the screens read the answer
-// without waiting on it.
 func (s *Sandbox) RefreshSettings() {
 	s.Setup.KeychainErr = s.local().Store.KeychainErr()
 	s.Setup.Describe = s.session.Describe()
@@ -229,7 +215,7 @@ func (s *Sandbox) DemoName() string {
 }
 
 // RunningDemoName names the demo the dashboard shows: the one the sandbox
-// runs while it is up, else the one the settings name, which u brings up.
+// runs while it is up, else the one the settings name.
 func (s *Sandbox) RunningDemoName() string {
 	if s.Up() && s.Demos.Launched != "" {
 		return s.Demos.Launched
@@ -237,9 +223,7 @@ func (s *Sandbox) RunningDemoName() string {
 	return s.DemoName()
 }
 
-// Demo returns the demo the dashboard shows, the one RunningDemoName names,
-// or why it does not load. It keeps the demo it loaded, and reads it again
-// for another name, or while it does not load.
+// Demo returns the demo RunningDemoName names, or why it does not load.
 func (s *Sandbox) Demo() (*sandbox.Scenario, error) {
 	name := s.RunningDemoName()
 	if s.Demos.Loaded != nil && s.Demos.Loaded.Name == name {
@@ -257,15 +241,13 @@ func (s *Sandbox) Demo() (*sandbox.Scenario, error) {
 	return scenario, nil
 }
 
-// LoadedDemo returns the demo the dashboard shows, or nil when it does not
-// load.
+// LoadedDemo returns the demo Demo returns, or nil when it does not load.
 func (s *Sandbox) LoadedDemo() *sandbox.Scenario {
 	scenario, _ := s.Demo()
 	return scenario
 }
 
-// DemoList returns the checkout's demos that load, read once, sorted by
-// name.
+// DemoList returns the checkout's demos that load, by name, read once.
 func (s *Sandbox) DemoList() []*sandbox.Scenario {
 	if s.Demos.List == nil && s.Demos.Err == nil {
 		s.Demos.List, s.Demos.Err = sandbox.Scenarios(s.local().Root)
@@ -273,11 +255,7 @@ func (s *Sandbox) DemoList() []*sandbox.Scenario {
 	return s.Demos.List
 }
 
-// local is the session's settings and machine. The pages read the
-// settings through Setting and the facts here, and the root model does the
-// work that changes the sandbox.
+// local is the session's settings and machine.
 func (s *Sandbox) local() *sandbox.Local { return s.session.Local() }
 
-// deployedDemo names the demo the last bring-up deployed, or the one the
-// settings name when no bring-up says.
 func (s *Sandbox) deployedDemo() string { return cmp.Or(s.local().DeployedDemo(), s.DemoName()) }

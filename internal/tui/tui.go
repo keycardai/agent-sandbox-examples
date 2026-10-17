@@ -4,15 +4,10 @@
 // tunnel and the mirror run as services, so quitting the TUI leaves the
 // sandbox up, and starting it again shows it.
 //
-// The TUI keeps its model, its views and its controller apart. The state
-// package holds what the TUI knows about the sandbox, and the rules that
-// read and change it. The page package draws it: each screen, with the UI
-// the pages share. The root model in this package is the controller: it
-// routes each message and key, does the work in the background, such as
-// the bring-up, the actions, the polling and the logs it follows, and
-// changes the state with what that work finds. The component package draws
-// the parts of the screen, style holds the colors, and proxylog reads the
-// egress proxy's audit log.
+// The state package holds what the TUI knows and the rules that change it,
+// and the page package draws it. The root model here is the controller: it
+// routes each message and key, runs the work in the background, and changes
+// the state with what that work finds.
 package tui
 
 import (
@@ -93,8 +88,7 @@ type model struct {
 	stale       bool
 	// trafficStop stops following the proxy's audit log.
 	trafficStop context.CancelFunc
-	// preflightCtx is what the machine checks of the last run go on in, and
-	// preflightStop ends it.
+	// The last machine checks run in preflightCtx, until preflightStop.
 	preflightCtx  context.Context //nolint:containedctx // The checks of one run go on across messages.
 	preflightStop context.CancelFunc
 	// shownPod is the selected agent's pod, which Home shows.
@@ -104,8 +98,7 @@ type model struct {
 	questions chan struct{}
 	replies   chan<- reply
 
-	// wizardBack is the screen to go back to when the wizard stops, and
-	// settingsBack the one the settings came from, where esc goes back to.
+	// The wizard and the settings go back to wizardBack and settingsBack.
 	wizardBack   screen
 	settingsBack screen
 }
@@ -192,8 +185,7 @@ func Run(ctx context.Context, opts Options) error {
 	ctx, cancel := context.WithCancel(ctx)
 	root := newModel(ctx, opts.Session)
 	defer root.shutdown(cancel)
-	// Reading the settings' problems reads the keychain, which can wait for
-	// the operator, so it runs before the program starts.
+	// The keychain can wait for the operator, so this runs before the TUI.
 	root.state.RefreshSettings()
 	if _, err := tea.NewProgram(root, tea.WithContext(ctx)).Run(); err != nil {
 		return fmt.Errorf("running the program: %w", err)
@@ -214,8 +206,7 @@ func newModel(ctx context.Context, session *sandbox.Session) *model {
 	return root
 }
 
-// shutdown cancels the work in the background with cancel, ends the setup,
-// and waits up to shutdownWait for the work to end.
+// shutdown cancels the background work, and waits up to shutdownWait for it.
 func (m *model) shutdown(cancel context.CancelFunc) {
 	cancel()
 	m.stopSetup()

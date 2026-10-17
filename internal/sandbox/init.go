@@ -87,8 +87,7 @@ type wizard struct {
 	demos map[string][]string
 	// heading is the section the asker shows the questions under.
 	heading string
-	// typed holds the secrets typed in this Init, by name. They go in the
-	// store with the settings, so that an Init that stops keeps none.
+	// typed holds the secrets typed in this Init until write stores them.
 	typed map[string]string
 }
 
@@ -210,8 +209,7 @@ func (w *wizard) run(ctx context.Context, change map[string]bool) (InitResult, e
 	return InitResult{ReplaceActive: replace, Saved: w.l.Store.Saved()}, err
 }
 
-// QuestionClientID and QuestionClientSecret are the questions Init asks
-// for the service account.
+// QuestionClientID and QuestionClientSecret ask for the service account.
 const (
 	QuestionClientID     = "Service account client ID"
 	QuestionClientSecret = "Service account client secret"
@@ -257,15 +255,13 @@ const (
 	changeNothing    = "\x00nothing"
 )
 
-// accountTitle names the Keycard service account: a section of the setup,
-// and a check of the machine.
+// accountTitle names the Keycard account in the setup and the checks.
 const accountTitle = "Keycard account"
 
 // SectionInfo is one section of the setup, as every screen names it.
 type SectionInfo struct {
 	ID string
-	// Title names the section: on the wizard's steps, the settings screen
-	// and the subcommands' headings.
+	// Title names the section on every screen.
 	Title string
 	// About says what the section asks, for someone new to Keycard.
 	About string
@@ -276,8 +272,7 @@ type SectionInfo struct {
 	Change string
 }
 
-// Sections returns every section of the setup, in the order Init asks
-// them.
+// Sections returns the setup's sections, in the order Init asks them.
 func Sections() []SectionInfo {
 	return []SectionInfo{
 		{
@@ -374,8 +369,7 @@ func allSections() map[string]bool {
 	return all
 }
 
-// summary describes the current settings, one line per section that can
-// be asked on its own, in plain words.
+// summary describes the settings, a line for each section in allSections.
 func (w *wizard) summary() string {
 	described := map[string]string{
 		SectionAccount: w.accountSummary(), SectionZone: w.zoneSummary(),
@@ -680,8 +674,7 @@ func (w *wizard) login(ctx context.Context) error {
 
 // signIn asks for the service account and signs in. It asks for the account
 // again while the token endpoint refuses it, unless the environment holds
-// the whole account. Any other error stops Init. It keeps a typed secret
-// once the sign-in succeeds.
+// the whole account. Any other error stops Init.
 func (w *wizard) signIn(ctx context.Context) error {
 	clientID := w.prev.values.ManagementServiceAccount.ClientID
 	for useSaved := true; ; useSaved = false {
@@ -1362,10 +1355,9 @@ func (w *wizard) askReplaceActive(ctx context.Context) (bool, error) {
 		false)
 }
 
-// write keeps what setup asked in the store as the config, with the
-// secrets typed in this Init, and saves it when save is set. When saving
-// fails, it returns ErrNotSaved, and the store keeps the config for the
-// session.
+// write keeps the config and the secrets typed in this Init in the store,
+// and saves them when save is set. When saving fails, it returns
+// ErrNotSaved, and the store keeps them for the session.
 func (w *wizard) write(save bool) error {
 	agents := ConfigAgents{Default: w.env[KeyUserEmail], Demos: w.demos}
 	w.answers.keepUsers(agents.everyone())

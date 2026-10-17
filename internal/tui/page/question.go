@@ -26,7 +26,6 @@ type Question struct {
 	rows int
 }
 
-// answer is the operator's answer to a question.
 type answer struct {
 	text string
 	yes  bool

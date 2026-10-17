@@ -16,25 +16,20 @@ import (
 )
 
 const (
-	// checkNameWidth is the width of a preflight check's name.
 	checkNameWidth = 18
 	// markGap is the space between the Keycard mark and the text beside it.
 	markGap = 4
-	// stepColumns is the most columns the setup's steps take on the welcome
-	// screen, and stepGap the space after each.
+	// stepColumns caps the columns of setup steps, and stepGap spaces them.
 	stepColumns = 3
 	stepGap     = 3
-	// stepIndent indents the setup's steps under their title, as the checks
-	// are.
+	// stepIndent indents the setup's steps under their title.
 	stepIndent = "  "
 	// opticalMiddle is where a centered block's top goes, as a share of the
 	// space it leaves. A block exactly in the middle reads as low.
 	opticalMiddle = 0.4
-	// anchorRows is the height the wizard's question is placed for. A
-	// longer question grows down from there.
+	// anchorRows is the height the wizard's question is placed for.
 	anchorRows = 24
-	// wordCluster names the cluster: a setup step and a setting. wordZone
-	// names the zone in the welcome's diagram.
+	// wordCluster and wordZone are the words for the cluster and the zone.
 	wordCluster = "Cluster"
 	wordZone    = "Keycard zone"
 )
@@ -47,14 +42,11 @@ const (
 	detailLeast
 )
 
-// Welcome greets a first run, or says what the settings lack. It shows
-// the Keycard mark beside what the sandbox does, checks the machine, and
-// lists the setup's steps.
+// Welcome greets a first run, or says what the settings lack.
 type Welcome struct {
 	view
 
-	// Glint is the sheen across the Keycard mark while the machine checks
-	// run.
+	// Glint is the sheen across the Keycard mark while the checks run.
 	Glint style.Glint
 }
 
@@ -63,10 +55,7 @@ func NewWelcome(ui *UI, sandbox *state.Sandbox) *Welcome {
 	return &Welcome{ui: ui, state: sandbox}
 }
 
-// View shows the Keycard mark beside what the sandbox does, checks the
-// machine, lists the setup's steps and says what to do next, in the middle
-// of the window. For settings with problems, it says what needs fixing in
-// place of what the sandbox does. A short window leaves out the diagram,
+// View draws the welcome screen. A short window leaves out the diagram,
 // then the steps, then the paragraph, so that what to do next still shows.
 func (w *Welcome) View() string {
 	width := max(min(w.textWidth(), readWidth), 1)
@@ -85,7 +74,6 @@ func (w *Welcome) View() string {
 
 // Hints lists the screen's keys.
 func (w *Welcome) Hints() []component.Hint {
-	// A first run has no settings yet, so it offers setup alone.
 	if w.state.FirstRun() {
 		return []component.Hint{
 			{Key: component.KeyEnter, Desc: "start setup"}, {Key: "r", Desc: "check again"}, {Key: "q", Desc: wordQuit},
@@ -111,8 +99,7 @@ func (w *Welcome) text(width, detail int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, append(parts, w.action(width))...)
 }
 
-// lead opens the welcome text: what the sandbox does on a first run, else
-// what the settings lack.
+// lead says what the sandbox does on a first run, else what settings lack.
 func (w *Welcome) lead(width, detail int) []string {
 	theme := w.ui.Styles
 	if !w.state.FirstRun() {
@@ -130,8 +117,7 @@ func (w *Welcome) lead(width, detail int) []string {
 	return lead
 }
 
-// machineTitle heads the machine checks, and says how they came out once
-// they all ran.
+// machineTitle heads the machine checks, with how they came out.
 func (w *Welcome) machineTitle() string {
 	theme := w.ui.Styles
 	switch {
@@ -143,8 +129,7 @@ func (w *Welcome) machineTitle() string {
 	return theme.SectionTitle.Render("This machine is ready")
 }
 
-// setupPreview lists the steps setup goes through, numbered as the wizard
-// counts them, in as many columns as fit, and what setup costs.
+// setupPreview lists the setup's steps as the wizard numbers them.
 func (w *Welcome) setupPreview(width int) string {
 	theme := w.ui.Styles
 	steps := PlannedSteps()
@@ -170,9 +155,8 @@ func (w *Welcome) setupPreview(width int) string {
 	return strings.Join(append(lines, indentLines(note, stepIndent)), "\n")
 }
 
-// action says what to do next: wait while the checks run, then press
-// enter. When a check failed, it says to fix that before the launch. Setup
-// does not need the machine, so enter works either way.
+// action says what to do next. Setup does not need the machine, so enter
+// works even when a check failed.
 func (w *Welcome) action(width int) string {
 	theme := w.ui.Styles
 	if w.state.Setup.Preflight.Checking() {
@@ -192,15 +176,13 @@ func (w *Welcome) action(width int) string {
 	return note + "\n\n" + action
 }
 
-// logoFits reports whether the Keycard mark fits beside the welcome text
-// with the diagram whole. A narrow window shows the text alone.
+// logoFits reports whether the Keycard mark fits beside the whole diagram.
 func (w *Welcome) logoFits() bool {
 	return w.ui.Width-component.PageIndent*half-style.LogoWidth(w.ui.Styles)-markGap >=
 		lipgloss.Width(w.diagram())
 }
 
-// textWidth is the width the welcome text has, beside the mark when it
-// fits.
+// textWidth is the welcome text's width, beside the mark when it fits.
 func (w *Welcome) textWidth() int {
 	if w.logoFits() {
 		return w.ui.Width - component.PageIndent*half - style.LogoWidth(w.ui.Styles) - markGap
@@ -236,9 +218,7 @@ func (w *Welcome) diagram() string {
 	return strings.Join(lines, "\n")
 }
 
-// checkList draws the machine checks: a result for each that ran, with a
-// fix under each that failed, a spinner for the one that runs, and the
-// rest waiting.
+// checkList draws the machine checks and how far they got.
 func (w *Welcome) checkList(width int) string {
 	theme := w.ui.Styles
 	wrap := lipgloss.NewStyle().Width(max(width-checkNameWidth-component.BorderCols, 1))
@@ -259,8 +239,7 @@ func (w *Welcome) checkList(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-// checkResult draws a check that ran: its mark, its name, and what it
-// found, with the fix under a failure.
+// checkResult draws a check that ran: its mark, name and what it found.
 func (w *Welcome) checkResult(check sandbox.Check) (string, string, string) {
 	theme := w.ui.Styles
 	icon, detail := theme.OK.Render("✓"), theme.Muted.Render(check.Detail)
@@ -277,8 +256,7 @@ func (w *Welcome) checkResult(check sandbox.Check) (string, string, string) {
 	return icon, theme.Text.Render(check.Name), detail
 }
 
-// problemList lists the settings' problems in words, each under the step
-// that fixes it.
+// problemList lists the settings' problems, each by the step that fixes it.
 func (v view) problemList(width int) string {
 	theme := v.ui.Styles
 	wrap := lipgloss.NewStyle().Width(max(width-checkNameWidth-component.BorderCols, 1))
@@ -302,8 +280,7 @@ func (v view) problemList(width int) string {
 	return strings.Join(lines, "\n\n")
 }
 
-// setupFailure says why the last setup failed, with what to do when
-// HintFor knows, or is "" when it did not fail.
+// setupFailure says why the last setup failed, or is "" when it did not.
 func (v view) setupFailure(width int) string {
 	if v.state.Setup.Err == nil {
 		return ""
@@ -319,23 +296,18 @@ func (v view) setupFailure(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-// centered puts a block in the middle of the page's body, a little above
-// the middle, where it reads as centered. A block that does not fit stays
-// at the top left.
+// centered puts a block in the middle of the page's body.
 func (v view) centered(block string) string {
 	return v.place(block, lipgloss.Height(block))
 }
 
-// anchored centers a block that grows and shrinks, such as the wizard's
-// question, across the page, with its top where a block of anchorRows
-// would sit centered. It stays put from one question to the next.
+// anchored places a block as if it were anchorRows tall, so it stays put.
 func (v view) anchored(block string) string {
 	return v.place(block, anchorRows)
 }
 
-// place puts a block in the middle of the page's width, with its top
-// where a block of the given height would sit centered, a little above
-// the middle.
+// place centers a block across the page, with its top where a block of
+// rows would sit centered.
 func (v view) place(block string, rows int) string {
 	free := v.ui.Height - component.ChromeRows - 1 - rows
 	top := int(float64(max(free, 0)) * opticalMiddle)
@@ -343,8 +315,7 @@ func (v view) place(block string, rows int) string {
 	return lipgloss.NewStyle().PaddingTop(top).PaddingLeft(left).Render(block)
 }
 
-// problemSummary says a problem in words, without file paths, or returns
-// "" when the error says it best.
+// problemSummary says a problem in plain words, or "" when the error does.
 func problemSummary(problem error) string {
 	switch {
 	case errors.Is(problem, sandbox.ErrNoSetup):
@@ -359,7 +330,6 @@ func problemSummary(problem error) string {
 	return ""
 }
 
-// indentLines puts indent before each line of text.
 func indentLines(text, indent string) string {
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {

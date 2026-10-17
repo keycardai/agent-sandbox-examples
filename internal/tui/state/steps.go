@@ -50,8 +50,7 @@ func (s *Sandbox) ResetSteps() {
 	s.Run.Cursor = min(s.Run.Cursor, max(len(s.Run.Steps)-1, 0))
 }
 
-// StartSteps sets the steps from index from on pending, with empty logs,
-// for a bring-up that runs them.
+// StartSteps sets the steps from index from on pending, with empty logs.
 func (r *Run) StartSteps(from int) {
 	for _, row := range r.Steps[from:] {
 		row.State, row.Err = StepPending, nil
@@ -67,9 +66,8 @@ func (s *Sandbox) StepStarted(i int) {
 	s.Run.Cursor = i
 }
 
-// StepEnded marks step i done, or failed with err. The checks step counts
-// the checks that passed. Once the sandbox step deployed the demo, it is
-// the one the sandbox runs.
+// StepEnded marks step i done, or failed with err. Once the sandbox step
+// is done, its demo is the one the sandbox runs.
 func (s *Sandbox) StepEnded(i int, err error) *StepRow {
 	row := s.Run.Steps[i]
 	row.Ended, row.Err, row.State = s.Now(), err, StepDone
