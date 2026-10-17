@@ -585,6 +585,16 @@ func (m *model) polled() tea.Cmd {
 	return pollTick()
 }
 
+// onStatus keeps what a read of the services and the cluster found,
+// unless a job ended since it started.
+func (m *model) onStatus(msg statusMsg) {
+	if !m.state.Reads.Current(msg.mark) {
+		m.stale = true
+		return
+	}
+	m.state.Reads.Set(msg.status)
+}
+
 // onPods keeps a read of the pods, unless a job ended since it began.
 func (m *model) onPods(msg podsMsg) {
 	if !m.state.Reads.Current(msg.mark) {

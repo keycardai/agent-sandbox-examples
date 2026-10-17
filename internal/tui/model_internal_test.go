@@ -747,7 +747,7 @@ func localQuietModel(t *testing.T) *model {
 	root := quietModel(t)
 	settings := root.session.Local().Settings
 	delete(settings, sandbox.KeyKubeContext)
-	settings[sandbox.KeyCluster] = "keycard-test-none"
+	settings[sandbox.KeyCluster] = missingCluster
 	root.session.Local().Tool = func(ctx context.Context, _ string, _ ...string) (*exec.Cmd, error) {
 		return exec.CommandContext(ctx, "false"), nil
 	}

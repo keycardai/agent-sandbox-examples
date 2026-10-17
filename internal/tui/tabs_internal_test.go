@@ -161,13 +161,17 @@ func upModel(t *testing.T) *model {
 	return root
 }
 
+// missingCluster names a cluster that does not exist, so that work a test
+// starts only reads, and fails.
+const missingCluster = "keycard-test-none"
+
 // quietModel is a sandbox that is up with three agents, on an existing
 // cluster that does not exist: work it starts only reads, and fails.
 func quietModel(t *testing.T) *model {
 	t.Helper()
 	root := teamModel(t)
 	writeSettings(t, root)
-	root.session.Local().Settings[sandbox.KeyKubeContext] = "keycard-test-none"
+	root.session.Local().Settings[sandbox.KeyKubeContext] = missingCluster
 	root.state.ResetSteps()
 	root.state.Demos.List = sampleDemos()
 	return root
@@ -712,7 +716,7 @@ func TestLogsListAfterFewerSteps(t *testing.T) {
 	}
 	root.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	root.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	root.session.Local().Settings[sandbox.KeyKubeContext] = "keycard-test-none"
+	root.session.Local().Settings[sandbox.KeyKubeContext] = missingCluster
 	root.state.ResetSteps()
 	root.Update(press("l"))
 	root.Update(tea.KeyPressMsg{Code: tea.KeyEnter})

@@ -116,11 +116,7 @@ func (m *model) updateBackground(msg tea.Msg) (tea.Cmd, bool) {
 		m.tickPlanned = false
 		return m.poll(), true
 	case statusMsg:
-		if m.state.Reads.Current(msg.mark) {
-			m.state.Reads.Set(msg.status)
-		} else {
-			m.stale = true
-		}
+		m.onStatus(msg)
 		return m.polled(), true
 	case podsMsg:
 		m.onPods(msg)
