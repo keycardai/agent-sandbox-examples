@@ -116,12 +116,23 @@ func (v view) blockedLine(blocked []proxylog.BlockedHost) string {
 		return theme.Faint.Render("·") + " " + theme.Text.Render(component.Pad("Blocked", nameWidth)) + " " +
 			theme.Dim.Render("nothing yet. A host off the allow list shows here.")
 	}
-	hosts := make([]string, 0, len(blocked))
+	// The hosts go under the reason the proxy gave for each, the newest
+	// reason first.
+	var reasons []string
+	hosts := map[string][]string{}
 	for _, host := range blocked {
-		hosts = append(hosts, host.Host)
+		if _, ok := hosts[host.Reason]; !ok {
+			reasons = append(reasons, host.Reason)
+		}
+		hosts[host.Reason] = append(hosts[host.Reason], host.Host)
+	}
+	parts := make([]string, 0, len(reasons))
+	for _, reason := range reasons {
+		parts = append(parts, theme.Failed.Render(strings.Join(hosts[reason], ", "))+
+			theme.Dim.Render(" · "+proxylog.ReasonText(reason)))
 	}
 	return theme.Failed.Render("✕") + " " + theme.Text.Render(component.Pad("Blocked", nameWidth)) + " " +
-		theme.Failed.Render(strings.Join(hosts, ", ")) + theme.Dim.Render(" · "+proxylog.ReasonText(blocked[0].Reason))
+		strings.Join(parts, theme.Dim.Render("; "))
 }
 
 // lookupLine counts the agent's DNS lookups.

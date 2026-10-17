@@ -256,3 +256,24 @@ func lineWith(view, text string) string {
 	}
 	return ""
 }
+
+// TestBlockedReasons names each blocked host with the reason the proxy
+// gave for it, not the newest host's reason for all of them.
+func TestBlockedReasons(t *testing.T) {
+	t.Parallel()
+	root := upModel(t)
+	stamp := time.Now()
+	root.state.Traffic.Add(samplePod, newRecord(stamp, proxylog.ScopeDNS, sampleDenied, "", verdictDeny,
+		sampleReason, ""))
+	root.state.Traffic.Add(samplePod, newRecord(stamp.Add(time.Second), scopeRequest, "pypi.org", "/simple/",
+		verdictDeny, "malformed_request", ""))
+	view := ansi.Strip(root.View().Content)
+	for _, want := range []string{
+		"pypi.org · " + proxylog.ReasonText("malformed_request"),
+		sampleDenied + " · " + proxylog.ReasonText(sampleReason),
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("Home lacks %q:\n%s", want, view)
+		}
+	}
+}
