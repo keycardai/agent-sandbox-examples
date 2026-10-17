@@ -82,6 +82,21 @@ type (
 // running.
 var errPanic = errors.New("internal error")
 
+// inBackground runs work on a goroutine Run waits for, and sends the
+// message work returns. When work panics, it sends failed's message with
+// errPanic instead.
+func (m *model) inBackground(work func() tea.Msg, failed func(err error) tea.Msg) {
+	out := m.bus
+	m.jobs.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				out.Send(failed(fmt.Errorf("%w: %v", errPanic, r)))
+			}
+		}()
+		out.Send(work())
+	})
+}
+
 func frameTick() tea.Cmd {
 	return tea.Tick(frameEvery, func(time.Time) tea.Msg { return frameMsg{} })
 }
@@ -118,7 +133,10 @@ func (m *model) startBringUp(from int, recreate bool) {
 	}
 	m.state.Run.StartSteps(from)
 	run := bringUp{session: m.session, out: m.bus, steps: slices.Clone(m.state.Run.Steps), recreate: recreate}
-	m.jobs.Go(func() { runSteps(ctx, cancel, run, from) })
+	m.inBackground(func() tea.Msg {
+		defer cancel()
+		return bringUpDoneMsg{err: runSteps(ctx, run, from)}
+	}, func(err error) tea.Msg { return bringUpDoneMsg{err: err} })
 }
 
 // bringUp is what a bring-up's goroutine needs.
@@ -130,15 +148,9 @@ type bringUp struct {
 }
 
 // runSteps runs the steps from index from on, and reports each start and
-// end, then the bring-up's end. It stops at a failed step other than the
-// checks.
-func runSteps(ctx context.Context, cancel context.CancelFunc, run bringUp, from int) {
-	defer cancel()
-	defer func() {
-		if r := recover(); r != nil {
-			run.out.Send(bringUpDoneMsg{err: fmt.Errorf("%w: %v", errPanic, r)})
-		}
-	}()
+// end. It stops at a failed step other than the checks, and returns its
+// error.
+func runSteps(ctx context.Context, run bringUp, from int) error {
 	for i := from; i < len(run.steps); i++ {
 		row := run.steps[i]
 		run.out.Send(stepStartMsg{index: i})
@@ -151,15 +163,14 @@ func runSteps(ctx context.Context, cancel context.CancelFunc, run bringUp, from 
 		// A tool that ctx killed fails with its own error, such as signal:
 		// killed. The step reports the stop instead.
 		if err != nil && ctx.Err() != nil {
-			err = ctx.Err()
+			err = context.Canceled
 		}
 		run.out.Send(stepDoneMsg{index: i, err: err})
 		if err != nil && row.Step.ID != sandbox.StepChecks {
-			run.out.Send(bringUpDoneMsg{err: err})
-			return
+			return err
 		}
 	}
-	run.out.Send(bringUpDoneMsg{})
+	return nil
 }
 
 // onStepDone marks the step, and offers to recreate a cluster that was made
@@ -435,15 +446,9 @@ func (m *model) runAction(job state.Job, work func(ctx context.Context, out io.W
 	}
 	m.state.Record("▸", job.Name)
 	m.ui.Notify(job.Name+"…", false)
-	ctx, out := m.ctx, m.bus
-	m.jobs.Go(func() {
-		defer func() {
-			if r := recover(); r != nil {
-				out.Send(actionDoneMsg{err: fmt.Errorf("%w: %v", errPanic, r)})
-			}
-		}()
-		out.Send(actionDoneMsg{err: work(ctx, io.Discard)})
-	})
+	ctx := m.ctx
+	m.inBackground(func() tea.Msg { return actionDoneMsg{err: work(ctx, io.Discard)} },
+		func(err error) tea.Msg { return actionDoneMsg{err: err} })
 }
 
 // onActionDone ends the job, and says how it went. Once everything

@@ -395,17 +395,12 @@ func TestStopWhileAToolRuns(t *testing.T) {
 	run := bringUp{session: root.session, out: newBus(t.Context()), steps: root.state.Run.Steps}
 	stop := time.AfterFunc(200*time.Millisecond, cancel)
 	defer stop.Stop()
-	runSteps(ctx, cancel, run, 0)
-	for range 3 {
-		switch msg := (<-run.out.ch).(type) {
-		case stepDoneMsg:
-			if !errors.Is(msg.err, context.Canceled) {
-				t.Errorf("the step ended with %v, want context.Canceled", msg.err)
-			}
-		case bringUpDoneMsg:
-			if !errors.Is(msg.err, context.Canceled) {
-				t.Errorf("the bring-up ended with %v, want context.Canceled", msg.err)
-			}
+	if err := runSteps(ctx, run, 0); !errors.Is(err, context.Canceled) {
+		t.Errorf("the bring-up ended with %v, want context.Canceled", err)
+	}
+	for range 2 {
+		if msg, ok := (<-run.out.ch).(stepDoneMsg); ok && !errors.Is(msg.err, context.Canceled) {
+			t.Errorf("the step ended with %v, want context.Canceled", msg.err)
 		}
 	}
 }
