@@ -52,42 +52,33 @@ func (h *Home) View() string {
 	return h.down()
 }
 
-// Hints lists Home's keys for how the sandbox is.
+// Hints lists Home's keys for how the sandbox is, then the help and quit.
 func (h *Home) Hints() []component.Hint {
+	return append(h.phaseHints(), component.Hint{Key: "?", Desc: wordKeys}, component.Hint{Key: "q", Desc: wordQuit})
+}
+
+// phaseHints lists the keys for how the sandbox is.
+func (h *Home) phaseHints() []component.Hint {
 	switch phase, _ := h.state.Phase(); phase {
 	case state.PhaseBringingUp, state.PhaseChecking:
-		return []component.Hint{
-			{Key: "u", Desc: "stop"},
-			{Key: "?", Desc: wordKeys},
-			{Key: "q", Desc: wordQuit},
-		}
+		return []component.Hint{{Key: "u", Desc: "stop"}}
 	case state.PhaseStopping:
-		return []component.Hint{{Key: "?", Desc: wordKeys}, {Key: "q", Desc: wordQuit}}
+		return nil
 	case state.PhaseStopped, state.PhaseFailed:
 		again := "try again"
 		if phase == state.PhaseStopped {
 			again = "start again"
 		}
-		return []component.Hint{
-			{Key: "u", Desc: again},
-			{Key: "?", Desc: wordKeys},
-			{Key: "q", Desc: wordQuit},
-		}
+		return []component.Hint{{Key: "u", Desc: again}}
 	case state.PhaseUp:
 		return []component.Hint{
 			{Key: "a", Desc: h.AgentActionName()},
 			{Key: "o", Desc: "zone events"},
 			{Key: "x", Desc: "shell"},
-			{Key: "?", Desc: wordKeys},
-			{Key: "q", Desc: wordQuit},
 		}
 	case state.PhaseReading, state.PhaseDown:
 	}
-	return []component.Hint{
-		{Key: "u", Desc: "bring up"},
-		{Key: "?", Desc: wordKeys},
-		{Key: "q", Desc: wordQuit},
-	}
+	return []component.Hint{{Key: "u", Desc: "bring up"}}
 }
 
 // bringUp shows the steps as they run, and the end of the running step's
