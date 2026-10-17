@@ -135,16 +135,12 @@ func snapshotModel(t *testing.T) *model {
 // sampleImages is the machine check of the sandbox's images.
 const sampleImages = "Sandbox images"
 
-// snapshotChecks are the machine checks the welcome snapshots show, in the
-// order they run.
-func snapshotChecks() []sandbox.PreflightItem {
-	return []sandbox.PreflightItem{
-		{Name: sampleCheck}, {Name: sampleImages}, {Name: sampleTools}, {Name: sampleAccount},
-	}
-}
-
-// checked reports the results of the machine checks, from the first.
+// checked starts a run of the four machine checks and reports the results
+// of the first of them.
 func checked(root *model, checks ...sandbox.Check) {
+	root.preflight([]sandbox.PreflightItem{
+		{Name: sampleCheck}, {Name: sampleImages}, {Name: sampleTools}, {Name: sampleAccount},
+	})
 	for i, check := range checks {
 		root.Update(checkDoneMsg{run: root.state.Setup.Preflight.Run, index: i, check: check})
 	}
@@ -156,9 +152,7 @@ func snapshotWelcome(t *testing.T) *model {
 	t.Helper()
 	root := snapshotModel(t)
 	root.screen = screenWelcome
-	root.preflight(snapshotChecks())
-	checked(root, sandbox.Check{Name: sampleCheck, Detail: sampleDocker},
-		sandbox.Check{Name: sampleImages, Detail: "the release v0.2.1 from ghcr.io/keycardai"})
+	checked(root, readyChecks()[:2]...)
 	root.ui.Background = snapshotBackground
 	return root
 }
@@ -182,7 +176,6 @@ func readyChecks() []sandbox.Check {
 func snapshotReady(t *testing.T) *model {
 	t.Helper()
 	root := snapshotWelcome(t)
-	root.preflight(snapshotChecks())
 	checked(root, readyChecks()...)
 	return root
 }
@@ -196,7 +189,6 @@ func snapshotNotReady(t *testing.T) *model {
 		Name: sampleCheck, State: sandbox.CheckFailed, Detail: "Docker is not running",
 		Fix: "Start OrbStack or Docker Desktop.",
 	}
-	root.preflight(snapshotChecks())
 	checked(root, checks...)
 	return root
 }
@@ -272,39 +264,36 @@ func snapshotWizard(t *testing.T) *model {
 	return root
 }
 
-// wizardAt is the wizard on its first step, with the steps a first run
-// shows.
-func wizardAt(t *testing.T, section string) *model {
+// wizardAt is the wizard, with the steps a first run shows, at each section
+// in turn, asking quest.
+func wizardAt(t *testing.T, quest *page.Question, sections ...string) *model {
 	t.Helper()
 	root := snapshotModel(t)
 	root.setup.Rail = page.PlannedSteps()
 	root.screen = screenWizard
-	root.Update(page.SectionMsg{ID: section})
+	for _, section := range sections {
+		root.Update(page.SectionMsg{ID: section})
+	}
+	ask(root, quest)
 	return root
 }
 
 func snapshotWizardInput(t *testing.T) *model {
 	t.Helper()
-	root := wizardAt(t, sandbox.SectionAccount)
-	ask(root, &page.Question{Kind: page.AskInput, Title: sampleAPITitle, Value: sampleAPIURL})
-	return root
+	return wizardAt(t, &page.Question{Kind: page.AskInput, Title: sampleAPITitle, Value: sampleAPIURL},
+		sandbox.SectionAccount)
 }
 
 func snapshotWizardSecret(t *testing.T) *model {
 	t.Helper()
-	root := wizardAt(t, sandbox.SectionAccount)
-	ask(root, &page.Question{Kind: page.AskSecret, Title: sandbox.QuestionClientSecret})
-	return root
+	return wizardAt(t, &page.Question{Kind: page.AskSecret, Title: sandbox.QuestionClientSecret}, sandbox.SectionAccount)
 }
 
 func snapshotWizardConfirm(t *testing.T) *model {
 	t.Helper()
-	root := wizardAt(t, sandbox.SectionZone)
-	root.Update(page.SectionMsg{ID: sandbox.SectionPolicy})
-	ask(root, &page.Question{Kind: page.AskConfirm, Title: `The zone's active policy set is "default". Only one ` +
-		`set can be active. Replace it with "sandbox" when the sandbox runs? Its policies will stop applying to ` +
-		`everyone in the zone.`})
-	return root
+	return wizardAt(t, &page.Question{Kind: page.AskConfirm, Title: `The zone's active policy set is "default". ` +
+		`Only one set can be active. Replace it with "sandbox" when the sandbox runs? Its policies will stop ` +
+		`applying to everyone in the zone.`}, sandbox.SectionZone, sandbox.SectionPolicy)
 }
 
 // longOptions is more zones than a choice shows at once.
@@ -312,16 +301,14 @@ const longOptions = 12
 
 func snapshotWizardLong(t *testing.T) *model {
 	t.Helper()
-	root := wizardAt(t, sandbox.SectionZone)
 	options := make([]sandbox.Option, 0, longOptions)
 	for i := range longOptions {
 		name := fmt.Sprintf("zone-%02d", i+1)
 		options = append(options, sandbox.Option{Label: name + "  https://" + name + ".keycard.cloud", Value: name})
 	}
-	ask(root, &page.Question{
+	return wizardAt(t, &page.Question{
 		Kind: page.AskChoose, Title: "Which zone does the sandbox use?", Value: "zone-01", Options: options,
-	})
-	return root
+	}, sandbox.SectionZone)
 }
 
 func snapshotReview(t *testing.T) *model {
@@ -357,14 +344,9 @@ func snapshotReview(t *testing.T) *model {
 
 func snapshotSave(t *testing.T) *model {
 	t.Helper()
-	root := snapshotModel(t)
-	root.setup.Rail = page.PlannedSteps()
-	root.screen = screenWizard
-	root.Update(page.SectionMsg{ID: sandbox.SectionSave})
-	ask(root, &page.Question{Kind: page.AskConfirm, Yes: true, Title: sandbox.QuestionSave +
+	return wizardAt(t, &page.Question{Kind: page.AskConfirm, Yes: true, Title: sandbox.QuestionSave +
 		" Yes saves them in ~/.config/keycard/sandbox.yaml, and the secrets you typed in the macOS keychain. " +
-		"No keeps them until you quit."})
-	return root
+		"No keeps them until you quit."}, sandbox.SectionSave)
 }
 
 // snapshotUp is a sandbox that is up, at the snapshots' size, with what

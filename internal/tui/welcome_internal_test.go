@@ -29,48 +29,60 @@ func welcomeModel(t *testing.T, width, height int, checks ...sandbox.Check) *mod
 }
 
 // TestWelcomeAction says what to do next: wait while the checks run, then
-// press enter, with a fix first when a check failed.
+// press enter, with a fix first when a check failed. A tall window centers
+// the text with the mark and the setup's steps. A short one keeps what to do
+// next on screen, with the text alone, without the mark and the diagram.
 func TestWelcomeAction(t *testing.T) {
 	t.Parallel()
+	const startSetup = "enter  Start setup"
 	passed := sandbox.Check{Name: sampleCheck, Detail: sampleDocker}
 	failed := sandbox.Check{Name: sampleTools, State: sandbox.CheckFailed, Detail: "helm is missing"}
+	ready := []sandbox.Check{passed, {Name: sampleTools, Detail: "k3d"}}
+	mark := ansi.Strip(strings.SplitN(style.Logo(page.NewUI().Styles, nil, style.Glint{}), "\n", 2)[0])
+	steps := page.PlannedSteps()
+	readyTall := append(make([]string, 0, len(steps)+3), "This machine is ready", startSetup, mark)
+	for _, step := range steps {
+		readyTall = append(readyTall, step.Title)
+	}
 	for _, tc := range []struct {
-		name   string
-		checks []sandbox.Check
-		want   []string
-		absent []string
+		name          string
+		width, height int
+		centered      bool
+		checks        []sandbox.Check
+		want, absent  []string
 	}{
 		{
-			"checking",
+			"checking", 150, 42, false,
 			[]sandbox.Check{passed},
 			[]string{"This machine\n", "Checking this machine…"},
 			[]string{"Start setup", "is ready"},
 		},
+		{"ready in a tall window", 150, 42, true, ready, readyTall, []string{"Checking", "Fix what failed"}},
 		{
-			"ready",
-			[]sandbox.Check{passed, {Name: sampleTools, Detail: "k3d"}},
-			[]string{"This machine is ready", "enter  Start setup"},
-			[]string{"Checking", "Fix what failed"},
-		},
-		{
-			"failed",
+			"failed", 150, 42, false,
 			[]sandbox.Check{passed, failed},
-			[]string{"This machine is not ready", "Fix what failed before you launch", "enter  Start setup"},
+			[]string{"This machine is not ready", "Fix what failed before you launch", startSetup},
 			nil,
 		},
+		{"ready in a short window", 80, 22, false, ready, []string{startSetup}, []string{"───▶", mark}},
 	} {
-		root := welcomeModel(t, 150, 42, tc.checks...)
-		view := ansi.Strip(root.View().Content)
-		for _, want := range tc.want {
-			if !strings.Contains(view, want) && !strings.Contains(trimLines(view), want) {
-				t.Errorf("%s: welcome lacks %q:\n%s", tc.name, want, view)
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			view := ansi.Strip(welcomeModel(t, tc.width, tc.height, tc.checks...).View().Content)
+			if lines := strings.Split(view, "\n"); tc.centered && strings.TrimSpace(lines[2]) != "" {
+				t.Errorf("the text starts at the top, not in the middle:\n%s", view)
 			}
-		}
-		for _, absent := range tc.absent {
-			if strings.Contains(view, absent) {
-				t.Errorf("%s: welcome has %q:\n%s", tc.name, absent, view)
+			for _, want := range tc.want {
+				if !strings.Contains(view, want) && !strings.Contains(trimLines(view), want) {
+					t.Errorf("welcome lacks %q:\n%s", want, view)
+				}
 			}
-		}
+			for _, absent := range tc.absent {
+				if strings.Contains(view, absent) {
+					t.Errorf("welcome has %q:\n%s", absent, view)
+				}
+			}
+		})
 	}
 }
 
@@ -82,37 +94,6 @@ func trimLines(text string) string {
 		lines[i] = strings.TrimRight(line, " ")
 	}
 	return strings.Join(lines, "\n")
-}
-
-// TestWelcomeLayout centers the welcome text with the setup's steps in a
-// tall window, and keeps what to do next on screen in a short one, where
-// the text stands alone without the mark and the diagram.
-func TestWelcomeLayout(t *testing.T) {
-	t.Parallel()
-	ready := []sandbox.Check{{Name: sampleCheck, Detail: sampleDocker}, {Name: sampleTools, Detail: "k3d"}}
-	tall := welcomeModel(t, 150, 42, ready...)
-	view := ansi.Strip(tall.View().Content)
-	lines := strings.Split(view, "\n")
-	if strings.TrimSpace(lines[2]) != "" {
-		t.Errorf("in a tall window, the text starts at the top, not in the middle:\n%s", view)
-	}
-	for _, step := range page.PlannedSteps() {
-		if !strings.Contains(view, step.Title) {
-			t.Errorf("the setup's steps lack %q", step.Title)
-		}
-	}
-	mark := ansi.Strip(strings.SplitN(style.Logo(tall.ui.Styles, nil, style.Glint{}), "\n", 2)[0])
-	if !strings.Contains(view, mark) {
-		t.Errorf("at 150 columns, the mark does not show:\n%s", view)
-	}
-	short := welcomeModel(t, 80, 22, ready...)
-	view = ansi.Strip(short.View().Content)
-	if !strings.Contains(view, "enter  Start setup") {
-		t.Errorf("at 80x22, what to do next is cut off:\n%s", view)
-	}
-	if strings.Contains(view, "───▶") || strings.Contains(view, mark) {
-		t.Errorf("at 80x22, the diagram or the mark shows instead of making room:\n%s", view)
-	}
 }
 
 // TestSettingsKey leaves the settings out of a first run, which has none,

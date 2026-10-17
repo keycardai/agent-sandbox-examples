@@ -331,65 +331,58 @@ func TestFirstRunWelcome(t *testing.T) {
 	}
 }
 
-// TestStoppedSetupGoesBack shows the screen the wizard started from when
-// the setup stops before it saves. A setup that failed says why there,
-// until the next setup starts.
-func TestStoppedSetupGoesBack(t *testing.T) {
+// TestSetupDone goes back to the screen the wizard started from when the
+// setup stops before it saves, without the answer it did not keep, and says
+// there why a setup failed. When saving the settings failed, it shows the
+// review, and the activity says why, whatever the result says.
+func TestSetupDone(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name string
-		err  error
-		want string
+		name, answer, says, activity string
+		back, want                   screen
+		msg                          setupDoneMsg
 	}{
-		{"stopped", sandbox.ErrInterrupted, ""},
-		{"refused", fmt.Errorf("%w: signing in: refused", sandbox.ErrSettings), "✕ Setup stopped: settings"},
+		{name: "stopped", back: screenWelcome, want: screenWelcome, msg: setupDoneMsg{err: sandbox.ErrInterrupted}},
+		{
+			name: "refused", back: screenWelcome, want: screenWelcome, says: "✕ Setup stopped: settings",
+			msg: setupDoneMsg{err: fmt.Errorf("%w: signing in: refused", sandbox.ErrSettings)},
+		},
+		{
+			name: "stopped from the review", back: screenReview, want: screenReview,
+			answer: "Your existing cluster prod-ctx", msg: setupDoneMsg{err: sandbox.ErrInterrupted},
+		},
+		{
+			name: "not saved", back: screenWelcome, want: screenReview,
+			activity: "✕ the settings are not saved: the keychain is locked", msg: setupDoneMsg{
+				result: sandbox.InitResult{Saved: true}, err: fmt.Errorf("%w: the keychain is locked", sandbox.ErrNotSaved),
+			},
+		},
 	} {
-		root := testModel(t)
-		root.screen, root.wizardBack = screenWizard, screenWelcome
-		root.Update(setupDoneMsg{err: tc.err})
-		view := ansi.Strip(root.View().Content)
-		if root.screen != screenWelcome || strings.Contains(view, "✕ Setup stopped") != (tc.want != "") ||
-			!strings.Contains(view, tc.want) {
-			t.Errorf("%s: screen %v; want the welcome screen, with %q:\n%s", tc.name, root.screen, tc.want, view)
-		}
-	}
-}
-
-// TestReviewAfterAStoppedSetup shows the settings as they are on the
-// review once a setup stopped, and not the answer it did not keep.
-func TestReviewAfterAStoppedSetup(t *testing.T) {
-	t.Parallel()
-	root := testModel(t)
-	root.screen, root.wizardBack = screenWizard, screenReview
-	root.setup.Begin(sandbox.SectionCluster)
-	root.setup.OnSection(page.SectionMsg{ID: sandbox.SectionCluster})
-	for _, step := range root.setup.Rail {
-		if step.ID == sandbox.SectionCluster {
-			step.Answers = []string{"Your existing cluster prod-ctx"}
-		}
-	}
-	root.Update(setupDoneMsg{err: sandbox.ErrInterrupted})
-	if view := ansi.Strip(root.View().Content); root.screen != screenReview || strings.Contains(view, "prod-ctx") ||
-		strings.Contains(view, "Your existing cluster") {
-		t.Errorf("screen %v; want the review, without the answer the stopped setup did not keep:\n%s",
-			root.screen, view)
-	}
-}
-
-// TestSetupNotSaved shows the review when saving the settings failed, as
-// for settings kept for the session, and the activity says why, whatever
-// the result says.
-func TestSetupNotSaved(t *testing.T) {
-	t.Parallel()
-	root := testModel(t)
-	root.screen, root.wizardBack = screenWizard, screenWelcome
-	root.Update(setupDoneMsg{
-		result: sandbox.InitResult{Saved: true}, err: fmt.Errorf("%w: the keychain is locked", sandbox.ErrNotSaved),
-	})
-	activity, _ := root.ui.Logs.Log(state.SourceActivity).Snapshot()
-	if root.screen != screenReview || len(activity) == 0 ||
-		!strings.Contains(activity[len(activity)-1], "✕ the settings are not saved: the keychain is locked") {
-		t.Errorf("screen %v, activity %q; want the review, and the activity to say why", root.screen, activity)
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := testModel(t)
+			root.screen, root.wizardBack = screenWizard, tc.back
+			if tc.answer != "" {
+				root.setup.Begin(sandbox.SectionCluster)
+				root.setup.OnSection(page.SectionMsg{ID: sandbox.SectionCluster})
+				cluster := slices.IndexFunc(root.setup.Rail, func(step *page.RailStep) bool {
+					return step.ID == sandbox.SectionCluster
+				})
+				root.setup.Rail[cluster].Answers = []string{tc.answer}
+			}
+			root.Update(tc.msg)
+			view := ansi.Strip(root.View().Content)
+			if root.screen != tc.want || strings.Contains(view, "✕ Setup stopped") != (tc.says != "") ||
+				!strings.Contains(view, tc.says) || strings.Contains(view, "prod-ctx") ||
+				strings.Contains(view, "Your existing cluster") {
+				t.Errorf("screen %v; want %v, with %q, and without the answer the setup did not keep:\n%s",
+					root.screen, tc.want, tc.says, view)
+			}
+			activity, _ := root.ui.Logs.Log(state.SourceActivity).Snapshot()
+			if !strings.HasSuffix(strings.Join(activity, "\n"), tc.activity) {
+				t.Errorf("activity %q, want its last line to end with %q", activity, tc.activity)
+			}
+		})
 	}
 }
 
