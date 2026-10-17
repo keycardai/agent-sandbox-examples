@@ -555,12 +555,12 @@ func (s *Setup) questionHint(quest *Question) string {
 // settings are saved, else in memory until the operator quits.
 func (s *Setup) secretGoes() string {
 	switch saving := s.state.Saving(); {
+	case !saving.CanSave:
+		return "It stays in memory until you quit."
 	case saving.Saved:
 		return "Setup saves it in your OS keychain."
-	case saving.CanSave:
-		return "Saving the settings puts it in your OS keychain."
 	}
-	return "It stays in memory until you quit."
+	return "Saving the settings puts it in your OS keychain."
 }
 
 // notes returns the wizard's latest notes, such as which zone it created,

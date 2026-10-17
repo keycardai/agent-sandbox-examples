@@ -449,3 +449,22 @@ func TestSettingsSayWhyNotSaved(t *testing.T) {
 		t.Errorf("the settings do not say why they are not saved:\n%s", view)
 	}
 }
+
+// TestSavedSettingsWithoutAKeychain says that changes last until the quit
+// when the settings were saved before but the keychain does not work now,
+// since setup then saves nothing.
+func TestSavedSettingsWithoutAKeychain(t *testing.T) {
+	t.Parallel()
+	pageUI, sandboxState := testViewWith(t, &sandbox.Local{
+		Root: t.TempDir(), Settings: sandbox.Settings{}, Out: io.Discard,
+		Store: sandbox.NewStore(filepath.Join(t.TempDir(), "sandbox.yaml"), &sandbox.Config{}, brokenKeychain{}),
+	}, 150, 42)
+	sandboxState.RefreshSettings()
+	words := strings.Join(strings.Fields(ansi.Strip(NewSettings(pageUI, sandboxState).View("back"))), " ")
+	if !strings.Contains(words, "and changes last until you quit") || strings.Contains(words, "with the secrets in") {
+		t.Errorf("the settings say the secrets are kept, though the keychain does not work:\n%s", words)
+	}
+	if goes := NewSetup(pageUI, sandboxState).secretGoes(); goes != "It stays in memory until you quit." {
+		t.Errorf("a typed secret goes: %q, want it to stay in memory", goes)
+	}
+}

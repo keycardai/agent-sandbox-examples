@@ -98,15 +98,17 @@ func (s *Settings) View(back string) string {
 // savedWhere says where the settings are saved, if they are.
 func (s *Settings) savedWhere() string {
 	saving := s.state.Saving()
-	if saving.Saved {
-		return "They are saved in " + sandbox.HomeRelative(saving.File) + ", with the secrets in " + saving.Keychain + "."
+	keychain := ""
+	if err := s.state.KeychainErr; err != nil {
+		keychain = " The keychain cannot keep the secrets: " + component.FirstLine(err.Error()) + "."
 	}
-	if !saving.CanSave {
-		why := "They are not saved, and last until you quit."
-		if err := s.state.KeychainErr; err != nil {
-			why += " The keychain cannot keep the secrets: " + component.FirstLine(err.Error()) + "."
-		}
-		return why
+	switch {
+	case saving.Saved && saving.CanSave:
+		return "They are saved in " + sandbox.HomeRelative(saving.File) + ", with the secrets in " + saving.Keychain + "."
+	case saving.Saved:
+		return "They are saved in " + sandbox.HomeRelative(saving.File) + ", and changes last until you quit." + keychain
+	case !saving.CanSave:
+		return "They are not saved, and last until you quit." + keychain
 	}
 	return "They are not saved, and last until you quit. Changing one asks whether to save them."
 }
