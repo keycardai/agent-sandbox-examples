@@ -1,2 +1,5 @@
 # The agent-sandbox release manifest, which go generate ./internal/install downloads.
 install/agent-sandbox/sandbox-with-extensions.yaml linguist-generated=true
+
+# NOTICE, which scripts/notice.sh generates from the build list.
+NOTICE linguist-generated=true

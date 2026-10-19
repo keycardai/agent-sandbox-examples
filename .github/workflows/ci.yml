@@ -56,3 +56,5 @@ jobs:
           cache-dependency-path: go.sum
       - run: make vuln
       - run: make check-tidy
+      - run: make check-licenses
+      - run: make check-notice
