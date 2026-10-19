@@ -27,7 +27,7 @@ fmt:
 	$(GO) tool golangci-lint fmt ./...
 
 .PHONY: checks
-checks: vuln check-tidy
+checks: vuln check-tidy check-licenses check-notice
 
 .PHONY: vuln
 vuln:
@@ -36,3 +36,15 @@ vuln:
 .PHONY: check-tidy
 check-tidy:
 	$(GO) mod tidy -diff
+
+.PHONY: check-licenses
+check-licenses:
+	GO=$(GO) ./scripts/check-licenses.sh
+
+.PHONY: check-notice
+check-notice:
+	GO=$(GO) ./scripts/notice.sh --check
+
+.PHONY: notice
+notice:
+	GO=$(GO) ./scripts/notice.sh
