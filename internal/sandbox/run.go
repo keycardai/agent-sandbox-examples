@@ -500,10 +500,42 @@ func (l *Local) importImages(ctx context.Context, cluster, tag string, scenario 
 		return nil
 	}
 	l.step("Importing the images into the cluster")
-	if err := l.k3d(ctx, l.Out, slices.Concat([]string{"image", "import", "--cluster", cluster}, all)...); err != nil {
+	if err := l.importIntoNode(ctx, cluster, all); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(l.Out, "Imported %s into the k3d cluster %s.\n", strings.Join(all, ", "), cluster)
+	return nil
+}
+
+// importIntoNode saves images from Docker and imports them with ctr in the
+// cluster's server node, the only node Bootstrap creates. It does not use
+// `k3d image import`, which exits 0 when the import fails. ctr imports only
+// the node's platform. A pulled image holds only Docker's platform, and ctr
+// --all-platforms refuses it.
+func (l *Local) importIntoNode(ctx context.Context, cluster string, all []string) error {
+	tarball := filepath.Join(l.outDir(), "images.tar")
+	defer func() { _ = os.Remove(tarball) }()
+	cmd, err := l.Tool(ctx, "docker", slices.Concat([]string{"save", "--output", tarball}, all)...)
+	if err != nil {
+		return err
+	}
+	if _, err = pinned.Run(cmd, nil); err != nil {
+		return fmt.Errorf("%w: %w", ErrImages, err)
+	}
+	file, err := os.Open(tarball) //nolint:gosec // G304: the path is under local/out.
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrImages, err)
+	}
+	defer func() { _ = file.Close() }()
+	node := "k3d-" + cluster + "-server-0"
+	if cmd, err = l.Tool(ctx, "docker", "exec", "--interactive", node,
+		"ctr", "--namespace", "k8s.io", "images", "import", "-"); err != nil {
+		return err
+	}
+	cmd.Stdin = file
+	if _, err = pinned.Run(cmd, nil); err != nil {
+		return fmt.Errorf("%w: importing into %s: %w", ErrImages, node, err)
+	}
 	return nil
 }
 

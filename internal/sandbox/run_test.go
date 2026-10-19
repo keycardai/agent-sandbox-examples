@@ -83,6 +83,8 @@ type fakeSandbox struct {
 	tlsFailOnce bool
 	// missingImage is an image docker image inspect does not find.
 	missingImage string
+	// importFails makes ctr in the node refuse the images.
+	importFails bool
 	// coreDNS is what kubectl prints for the CoreDNS pod's IP and liveness
 	// probe port.
 	coreDNS string
@@ -103,6 +105,10 @@ func healthy() fakeSandbox {
 // cluster, the cluster's issuer and tokens name testIssuer, and the sandbox
 // namespace enforces privileged.
 func (f fakeSandbox) script() string {
+	importExit := 0
+	if f.importFails {
+		importExit = 1
+	}
 	tlsFail := ""
 	if f.tlsFailOnce {
 		tlsFail = `[[ -f "$CALLS.tls" ]] || { touch "$CALLS.tls"; exit 60; }`
@@ -110,6 +116,10 @@ func (f fakeSandbox) script() string {
 	return clusterTool(present, testIssuer, testIssuer) + fmt.Sprintf(`
 case "$FAKE_TOOL $*" in
 "docker image inspect %[1]s") exit 1 ;;
+"docker save --output "*) printf images >"$3" ;;
+"docker exec --interactive k3d-"*" ctr --namespace k8s.io images import -")
+	[[ $(cat) == images ]] || { echo "stdin is not the saved images" >&2; exit 2; }
+	[[ %[16]d == 0 ]] || { echo "ctr: content digest sha256:08e6: not found" >&2; exit %[16]d; } ;;
 *"exec %[2]s -c agent -- curl"*"https://pypi.org/simple/") %[3]s
 	printf '\n__sandbox_status__:%[4]s' ;;
 *"exec %[2]s -c agent -- sh -c"*"openrouter.ai"*) printf '%%s\n__sandbox_status__:%%s' '%[10]s' '%[11]s' ;;
@@ -127,7 +137,7 @@ case "$FAKE_TOOL $*" in
 *" apply "*) echo "applied" ;;
 esac
 `, f.missingImage, userID, tlsFail, f.allowed, f.githubBody, f.githubStatus, f.deniedExit, f.logs, f.serviceAccount,
-		f.openRouterBody, f.openRouterStatus, namespace, f.coreDNS, f.probeExit, coreDNS)
+		f.openRouterBody, f.openRouterStatus, namespace, f.coreDNS, f.probeExit, coreDNS, importExit)
 }
 
 // TestCheck runs the checks against a fake sandbox. A failing check prints
@@ -450,6 +460,13 @@ func TestCheckTargetFor(t *testing.T) {
 	}
 }
 
+// saveCall and ctrCall import images into the cluster's node. The tarball's
+// path is under the test's root, which checkRun replaces with @ROOT@.
+const (
+	saveCall = "docker KUBERC= save --output @ROOT@/local/out/images.tar "
+	ctrCall  = "docker KUBERC= exec --interactive k3d-asp-server-0 ctr --namespace k8s.io images import -\n"
+)
+
 // TestRun runs the whole flow against fake tools and the zone-setup output
 // of an earlier run. The pinned helm renders the repository's sandbox chart.
 // A run that fails must make exactly the calls in wantCalls, so each row
@@ -471,7 +488,7 @@ func TestRun(t *testing.T) {
 		inspects   = "docker KUBERC= image inspect ghcr.io/keycardai/egress-netsetup:local\n" +
 			"docker KUBERC= image inspect ghcr.io/keycardai/egress-proxy:local\n" +
 			"docker KUBERC= image inspect ghcr.io/keycardai/sandbox-base:local\n"
-		importCall   = "k3d KUBERC= image import --cluster asp " + images + "\n"
+		importCall   = saveCall + images + "\n" + ctrCall
 		kube         = "kubectl KUBERC=off --context k3d-asp --namespace agents "
 		bootstrapped = dockerCall + listCall + discoveryCall + mintCalls
 		imported     = bootstrapped + inspects + importCall
@@ -497,6 +514,14 @@ func TestRun(t *testing.T) {
 			want:      []error{sandbox.ErrImages},
 			wantText:  "ghcr.io/keycardai/egress-proxy:local. Build them in the egress-proxy repository",
 			wantCalls: []string{dockerCall + listCall + discoveryCall + mintCalls + inspects},
+		},
+		{
+			name:      "import fails",
+			tag:       devTag,
+			sandbox:   with(func(f *fakeSandbox) { f.importFails = true }),
+			want:      []error{sandbox.ErrImages},
+			wantText:  "images import -: exit status 1: ctr: content digest sha256:08e6: not found",
+			wantCalls: []string{imported},
 		},
 		{
 			name:      "no zone-setup output",
@@ -538,7 +563,7 @@ func TestRun(t *testing.T) {
 					"deployment/coredns --timeout=300s\n" +
 					kube + "exec " + userID + " -c agent -- curl",
 			},
-			notCalls:     []string{"docker KUBERC= image", "image import", "docker KUBERC= build"},
+			notCalls:     []string{"docker KUBERC= image", "docker KUBERC= save", "images import", "docker KUBERC= build"},
 			wantManifest: append(imageLines(pinnedImages()), "user: x-access-token\n"),
 		},
 		{
@@ -561,7 +586,7 @@ func TestRun(t *testing.T) {
 			wantCalls: []string{
 				bootstrapped + "docker KUBERC= build --tag " + image + " --build-arg BASE_IMAGE=" +
 					pinnedImages()[2] + " ",
-				"/scenarios/agent\nk3d KUBERC= image import --cluster asp " + image + "\n",
+				"/scenarios/agent\n" + saveCall + image + "\n" + ctrCall,
 			},
 			wantOut: []string{
 				"Built the image " + image + ".\n",
@@ -582,7 +607,7 @@ func TestRun(t *testing.T) {
 			wantCalls: []string{
 				inspects + "docker KUBERC= build --tag " + imageAtTag +
 					" --build-arg BASE_IMAGE=ghcr.io/keycardai/sandbox-base:" + devTag + " ",
-				"k3d KUBERC= image import --cluster asp " + images + " " + imageAtTag + "\n",
+				saveCall + images + " " + imageAtTag + "\n" + ctrCall,
 			},
 			wantManifest: []string{"image: " + imageAtTag + "\n"},
 		},
@@ -726,7 +751,10 @@ func checkRun(t *testing.T, tc *runTest) {
 	}
 	err := local.Run(t.Context(), sandbox.RunOptions{SkipZoneSetup: true})
 	checkErr(t, err, tc.want, tc.wantText)
-	got := readCalls(t, calls)
+	got := strings.ReplaceAll(readCalls(t, calls), local.Root, "@ROOT@")
+	if _, err := os.Stat(filepath.Join(local.Root, "local", "out", "images.tar")); !os.IsNotExist(err) {
+		t.Errorf("local/out/images.tar: %v, want it removed", err)
+	}
 	if tc.want != nil {
 		if want := strings.Join(tc.wantCalls, ""); got != want {
 			t.Fatalf("calls = %q, want %q", got, want)
