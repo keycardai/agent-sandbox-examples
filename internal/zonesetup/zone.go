@@ -3,6 +3,7 @@ package zonesetup
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -617,26 +619,49 @@ func refuseRedirect(*http.Request, []*http.Request) error {
 	return errRedirect
 }
 
-// requestError returns what a failed request may safely report. A response
-// body can repeat the bearer token and a redirect target can carry a
-// credential, so neither reaches the caller.
+// requestError returns what a failed request may safely report: the status
+// and request IDs of a response, or the kind of failure when there is no
+// response. A response body can repeat the bearer token and a redirect target
+// can hold a credential. NEVER return either one.
 func requestError(err error) error {
 	var apiErr *keycard.Error
 	var opErr *net.OpError
 	var urlErr *url.Error
+	var certErr *tls.CertificateVerificationError
 	switch {
 	case errors.Is(err, errRedirect):
 		return errRedirect
 	case errors.As(err, &apiErr):
-		return fmt.Errorf("%w %d", errStatus, apiErr.StatusCode)
+		return fmt.Errorf("%w %d%s", errStatus, apiErr.StatusCode, requestIDs(apiErr.Response))
 	case errors.Is(err, context.Canceled):
 		return context.Canceled
 	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &urlErr) && urlErr.Timeout():
 		return context.DeadlineExceeded
 	case errors.As(err, &opErr):
 		return opErr
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return errClosed
+	case errors.As(err, &certErr):
+		return certErr
 	default:
+		return unreadable(err)
+	}
+}
+
+// unreadable returns errUnreadable with the type of the innermost error, such
+// as http2.StreamError. The text of the error is left out, because it can
+// hold bytes the server sent. A type that names no particular failure is left
+// out too.
+func unreadable(err error) error {
+	inner := err
+	for next := errors.Unwrap(inner); next != nil; next = errors.Unwrap(inner) {
+		inner = next
+	}
+	switch name := fmt.Sprintf("%T", inner); name {
+	case "*errors.errorString", "*fmt.wrapError", "*fmt.wrapErrors":
 		return errUnreadable
+	default:
+		return fmt.Errorf("%w (%s)", errUnreadable, name)
 	}
 }
 
@@ -644,8 +669,31 @@ var (
 	errRedirect   = errors.New("refused a redirect")
 	errStatus     = errors.New("returned HTTP status")
 	errNoPage     = errors.New("the response holds no complete page")
+	errClosed     = errors.New("the server closed the connection before it answered")
 	errUnreadable = errors.New("the request failed or its response could not be read")
 )
+
+// requestIDShape keeps other text the server sends out of the error.
+var requestIDShape = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+
+// requestIDs returns the request IDs of res as " (x-request-id ID, cf-ray
+// ID)", or "" when it has none. Keycard support finds a request by these
+// headers. Keycard sets x-request-id and Cloudflare sets cf-ray.
+func requestIDs(res *http.Response) string {
+	if res == nil {
+		return ""
+	}
+	var ids []string
+	for _, name := range []string{"X-Request-ID", "Cf-Ray"} {
+		if id := res.Header.Get(name); requestIDShape.MatchString(id) {
+			ids = append(ids, strings.ToLower(name)+" "+id)
+		}
+	}
+	if len(ids) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(ids, ", ") + ")"
+}
 
 // keycard-go sends this exchange to https://api.keycard.ai whatever the base
 // URL, so the exchange happens here.
@@ -673,10 +721,14 @@ func serviceAccountToken(
 		return "", fmt.Errorf("%w: %w", ErrAuth, requestError(err))
 	}
 	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode >= http.StatusInternalServerError {
+		return "", fmt.Errorf("%w: the token endpoint returned HTTP %d%s, a Keycard server error",
+			ErrAuth, res.StatusCode, requestIDs(res))
+	}
 	if res.StatusCode != http.StatusOK {
-		err = fmt.Errorf("%w: the token endpoint returned HTTP %d for client %s. "+
+		err = fmt.Errorf("%w: the token endpoint returned HTTP %d%s for client %s. "+
 			"The client must be an organization service account",
-			ErrAuth, res.StatusCode, clientID)
+			ErrAuth, res.StatusCode, requestIDs(res), clientID)
 		// RFC 6749 section 5.2: a token endpoint refuses a request with 400.
 		// When client authentication fails, it may answer 401, and must when
 		// the client used the Authorization header.

@@ -142,6 +142,7 @@ func (f *fakeAPI) serve(t *testing.T) string {
 		mux.ServeHTTP(w, r)
 	}))
 	if f.tls {
+		server.EnableHTTP2 = true
 		server.StartTLS()
 		f.roots = x509.NewCertPool()
 		f.roots.AddCert(server.Certificate())
@@ -439,6 +440,30 @@ func badRedirect(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusTemporaryRedirect)
 }
 
+// serverError answers 502 with the request IDs Keycard and Cloudflare send.
+func serverError(requestID string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Request-ID", requestID)
+		w.Header().Set("Cf-Ray", "a4d1e46d9b09fa32-SJC")
+		http.Error(w, `{"error":"`+fakeToken+`"}`, http.StatusBadGateway)
+	}
+}
+
+// hangUp writes reply on the raw connection and closes it, so the client
+// gets no valid response.
+func hangUp(reply string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		conn, buf, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_, _ = buf.WriteString(reply)
+		_ = buf.Flush()
+		_ = conn.Close()
+	}
+}
+
 func echoToken(w http.ResponseWriter, _ *http.Request) {
 	http.Error(w, `{"error":"`+fakeToken+`"}`, http.StatusInternalServerError)
 }
@@ -477,20 +502,7 @@ func TestConnect(t *testing.T) {
 		{zoneD, "https://d.keycard.cloud"},
 		{"zone-e", "https://e.keycard.cloud"},
 	}
-	cases := []struct {
-		name       string
-		zones      []fakeItem
-		zoneURL    string
-		zoneID     string
-		secret     string
-		failPath   string
-		failStatus int
-		handlers   map[string]http.HandlerFunc
-		tls        bool
-		wantZone   string
-		wantErr    error
-		wantCalls  map[string]int
-	}{
+	cases := []connectCase{
 		{
 			name:  "a trailing slash on the issuer still matches",
 			zones: []fakeItem{{"zone-s", "https://s.keycard.cloud/"}}, zoneURL: "https://s.keycard.cloud", wantZone: "zone-s",
@@ -631,41 +643,132 @@ func TestConnect(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			fake := &fakeAPI{
-				zones: zones, failPath: tc.failPath, failStatus: tc.failStatus, handlers: tc.handlers, tls: tc.tls,
-			}
-			if tc.zones != nil {
-				fake.zones = tc.zones
-			}
-			values := &zonesetup.Values{
-				ManagementAPIURL:         fake.serve(t),
-				ZoneURL:                  tc.zoneURL,
-				ZoneID:                   tc.zoneID,
-				ManagementServiceAccount: zonesetup.ManagementServiceAccountValues{ClientID: fakeClientID},
-			}
-			secret := fakeSecret
-			if tc.secret != "" {
-				secret = tc.secret
-			}
-			session, err := zonesetup.Connect(t.Context(), values,
-				&zonesetup.Secrets{ManagementClientSecret: secret}, fake.roots)
-			refuseLeaks(t, err)
-			switch {
-			case tc.wantErr != nil:
-				if !errors.Is(err, tc.wantErr) {
-					t.Errorf("err = %v, want %v", err, tc.wantErr)
-				}
-			case err != nil:
-				t.Errorf("err = %v", err)
-			case session.Zone.ID != tc.wantZone:
-				t.Errorf("zone = %s, want %s", session.Zone.ID, tc.wantZone)
-			}
-			for call, want := range tc.wantCalls {
-				if got := fake.count(call); got != want {
-					t.Errorf("%s sent %d times, want %d", call, got, want)
-				}
-			}
+			runConnect(t, zones, tc)
 		})
+	}
+}
+
+// TestConnectErrorText checks what a failed request reports: the request IDs
+// of a response, and the kind of failure when there is no response. It never
+// reports text the server sent.
+func TestConnectErrorText(t *testing.T) {
+	t.Parallel()
+	zones := []fakeItem{{zoneA, issuerA}}
+	cases := []connectCase{
+		{
+			name: "a token server error names the request", zoneID: zoneA,
+			handlers: map[string]http.HandlerFunc{tokenPath: serverError("ef76ac46-4aa3-9d14-ba4b-d9f2c2fff41a")},
+			wantErr:  zonesetup.ErrAuth,
+			wantText: "service account token: the token endpoint returned HTTP 502 " +
+				"(x-request-id ef76ac46-4aa3-9d14-ba4b-d9f2c2fff41a, cf-ray a4d1e46d9b09fa32-SJC), a Keycard server error",
+		},
+		{
+			name: "a zone server error names the request, without a request ID that is not one", zoneID: zoneA,
+			handlers: map[string]http.HandlerFunc{getAPath: serverError("req 1")},
+			wantErr:  zonesetup.ErrAPI,
+			wantText: "zone zone-a: returned HTTP status 502 (cf-ray a4d1e46d9b09fa32-SJC)",
+		},
+		{
+			name: "a token request the server hangs up on", zoneID: zoneA,
+			handlers: map[string]http.HandlerFunc{tokenPath: hangUp("")},
+			wantErr:  zonesetup.ErrAuth,
+			wantText: "service account token: the server closed the connection before it answered",
+		},
+		{
+			name: "a malformed token response does not report what the server sent", zoneID: zoneA,
+			handlers: map[string]http.HandlerFunc{tokenPath: hangUp("HTTP/1.1 " + fakeToken + "\r\n\r\n")},
+			wantErr:  zonesetup.ErrAuth,
+			wantText: "service account token: the request failed or its response could not be read",
+		},
+		{
+			name: "a reset HTTP/2 stream names its type", zoneID: zoneA, tls: true,
+			handlers: map[string]http.HandlerFunc{getAPath: func(http.ResponseWriter, *http.Request) {
+				panic(http.ErrAbortHandler)
+			}},
+			wantErr:  zonesetup.ErrAPI,
+			wantText: "zone zone-a: the request failed or its response could not be read (http2.StreamError)",
+		},
+		{
+			name: "an API certificate the client does not trust", zoneID: zoneA, tls: true, untrusted: true,
+			wantErr:  zonesetup.ErrAuth,
+			wantText: "tls: failed to verify certificate: x509: certificate signed by unknown authority",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			runConnect(t, zones, tc)
+		})
+	}
+}
+
+// connectCase is a Connect call against fakeAPI and what it must return.
+type connectCase struct {
+	name       string
+	zones      []fakeItem
+	zoneURL    string
+	zoneID     string
+	secret     string
+	failPath   string
+	failStatus int
+	handlers   map[string]http.HandlerFunc
+	tls        bool
+	// untrusted leaves the TLS server's certificate out of the roots.
+	untrusted bool
+	wantZone  string
+	wantErr   error
+	// wantText is a part of the error text.
+	wantText  string
+	wantCalls map[string]int
+}
+
+// runConnect runs tc against a fakeAPI that serves zones, or tc.zones when
+// it is set.
+func runConnect(t *testing.T, zones []fakeItem, tc connectCase) {
+	t.Helper()
+	fake := &fakeAPI{
+		zones: zones, failPath: tc.failPath, failStatus: tc.failStatus, handlers: tc.handlers, tls: tc.tls,
+	}
+	if tc.zones != nil {
+		fake.zones = tc.zones
+	}
+	values := &zonesetup.Values{
+		ManagementAPIURL:         fake.serve(t),
+		ZoneURL:                  tc.zoneURL,
+		ZoneID:                   tc.zoneID,
+		ManagementServiceAccount: zonesetup.ManagementServiceAccountValues{ClientID: fakeClientID},
+	}
+	secret := fakeSecret
+	if tc.secret != "" {
+		secret = tc.secret
+	}
+	roots := fake.roots
+	if tc.untrusted {
+		roots = nil
+	}
+	session, err := zonesetup.Connect(t.Context(), values, &zonesetup.Secrets{ManagementClientSecret: secret}, roots)
+	checkConnected(t, session, err, tc.wantErr, tc.wantText, tc.wantZone)
+	for call, want := range tc.wantCalls {
+		if got := fake.count(call); got != want {
+			t.Errorf("%s sent %d times, want %d", call, got, want)
+		}
+	}
+}
+
+// checkConnected requires err to wrap wantErr and hold wantText, or, when
+// wantErr is nil, the session to be for wantZone. err must not hold a secret.
+func checkConnected(t *testing.T, session *zonesetup.Session, err, wantErr error, wantText, wantZone string) {
+	t.Helper()
+	refuseLeaks(t, err)
+	switch {
+	case wantErr != nil:
+		if !errors.Is(err, wantErr) || !strings.Contains(err.Error(), wantText) {
+			t.Errorf("err = %v, want %v with %q", err, wantErr, wantText)
+		}
+	case err != nil:
+		t.Errorf("err = %v", err)
+	case session.Zone.ID != wantZone:
+		t.Errorf("zone = %s, want %s", session.Zone.ID, wantZone)
 	}
 }
 
