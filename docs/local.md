@@ -353,8 +353,8 @@ The cluster must:
 - Pull images from `ghcr.io/keycardai`. The images are public, so the
   cluster does not need a pull secret. With `KEYCARD_LOCAL_IMAGE_TAG` set, the
   cluster pulls the images at that tag instead of the ones the charts pin.
-  Nothing publishes the images of scenarios with a Dockerfile, so `run`
-  refuses those scenarios on an existing cluster.
+  For a scenario with a Dockerfile, publish its agent image and configure
+  `demo.images` as described below.
 - Enforce NetworkPolicy. `sandbox check` fails when the cluster does not.
   The sandbox steps do not change the cluster's network setup.
 - Allow the privileged Pod Security level in the sandbox namespace. The
@@ -363,6 +363,34 @@ The cluster must:
 `init` also asks for the cluster's pod and service ranges and saves them in
 `KEYCARD_LOCAL_CLUSTER_CIDRS`. The sandbox NetworkPolicy and the proxy
 block these ranges.
+
+To run pi or Slack, build its `scenarios/<name>/Dockerfile` with `BASE_IMAGE`
+set to `images.agent` from `install/values.yaml`, or the sandbox-base tag
+selected by `KEYCARD_LOCAL_IMAGE_TAG`. Publish the image for the cluster's
+architecture to a registry it can pull from. Add its reference to the
+settings file under `demo.images`:
+
+```yaml
+demo:
+  name: pi
+  images:
+    pi: registry.example.com/sandbox-pi@sha256:<digest>
+    slack: registry.example.com/sandbox-slack@sha256:<digest>
+```
+
+`run` selects only the current demo's entry. Setup preserves every entry
+when you change demos or answers. This map has no environment override.
+Without an entry, `run` refuses a scenario with a Dockerfile on an existing
+cluster. k3d continues to build and import its local image.
+
+The selected reference must start with an ASCII letter or digit and use
+only ASCII letters, digits and `. / : @ _ -`. `run` checks these characters
+before calling the cluster. The cluster validates the reference and pulls
+the image; `run` does not check registry access from your machine. Use a
+digest so publishing a changed image changes the template and replaces the
+pod. Rebuild and update the reference after changing the scenario's files.
+Answers such as the repository, model or Slack member ID remain runtime
+settings and do not require an image rebuild.
 
 With an existing cluster, `sandbox up` runs only `check-issuer` and `run`.
 In checks mode it stops after the checks. In shell mode it stops when you

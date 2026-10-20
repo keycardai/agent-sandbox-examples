@@ -67,7 +67,7 @@ spec:
         # drop NET_ADMIN from its bounding set when it is done. The namespace
         # runs at the privileged Pod Security level to admit these.
         - name: egress-netsetup
-          image: {{ .Values.images.netsetup }}
+          image: {{ .Values.images.netsetup | quote }}
           args:
             {{- toYaml .Values.netsetup.args | nindent 12 }}
           securityContext:
@@ -92,7 +92,7 @@ spec:
         # The proxy runs as a native sidecar. An init container with
         # restartPolicy Always starts before the agent and stops after it.
         - name: egress-proxy
-          image: {{ .Values.images.proxy }}
+          image: {{ .Values.images.proxy | quote }}
           restartPolicy: Always
           args:
             - --config={{ .Values.proxy.configPath }}
@@ -149,7 +149,7 @@ spec:
             {{- end }}
       containers:
         - name: agent
-          image: {{ .Values.images.agent }}
+          image: {{ .Values.images.agent | quote }}
           {{- with .Values.agent.command }}
           command:
             {{- toYaml . | nindent 12 }}

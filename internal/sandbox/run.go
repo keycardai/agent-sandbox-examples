@@ -44,6 +44,7 @@ var (
 )
 
 var (
+	imageToken   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9./:@_-]*$`)
 	zoneURLShape = regexp.MustCompile(`^https://[a-z0-9.-]+$`)
 	ipv4         = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$`)
 )
@@ -119,8 +120,8 @@ type runSettings struct {
 //
 // For an existing cluster, Run does not create the cluster or import
 // images. The issuer comes from the cluster's discovery document. Run
-// refuses a scenario with a Dockerfile there, because the cluster cannot
-// pull an image built on this machine.
+// requires demo.images to name a prebuilt registry image for a scenario
+// with a Dockerfile there.
 func (l *Local) Run(ctx context.Context, opts RunOptions) error {
 	cfg, err := l.runSettings(ctx)
 	if err != nil {
@@ -419,9 +420,6 @@ func (l *Local) zoneOnHost() (bool, error) {
 	}
 }
 
-// existingSettings adds the cluster's ranges for an existing cluster, and
-// returns cfg unchanged for k3d. KEYCARD_LOCAL_ZONE_ON_HOST and a scenario
-// with a Dockerfile work only with k3d.
 func (l *Local) existingSettings(cfg runSettings) (runSettings, error) {
 	if !l.Existing() {
 		return cfg, nil
@@ -429,10 +427,25 @@ func (l *Local) existingSettings(cfg runSettings) (runSettings, error) {
 	if cfg.zoneOnHost {
 		return cfg, fmt.Errorf("%w: %s is for a k3d cluster", ErrExisting, KeyZoneOnHost)
 	}
-	if cfg.scenario.Image != "" {
+	var image string
+	if config := l.config(); config != nil {
+		image = config.Demo.Images[cfg.scenario.Name]
+	}
+	switch {
+	case image != "":
+		if !imageToken.MatchString(image) {
+			return cfg, fmt.Errorf("%w: demo.images.%s must start with a letter or digit and contain only "+
+				"ASCII letters, digits and . / : @ _ - (got %q)", ErrSettings, cfg.scenario.Name, image)
+		}
+		cfg.scenario.Image = image
+		var err error
+		if cfg.scenarioValues, err = cfg.scenario.Values(cfg.answers.forUser(cfg.email)); err != nil {
+			return cfg, err
+		}
+	case cfg.scenario.Image != "":
 		return cfg, fmt.Errorf("%w: the scenario %s runs %s, which is built on this machine. "+
-			"An existing cluster pulls its images from a registry, so run this scenario on a k3d cluster",
-			ErrExisting, cfg.scenario.Name, cfg.scenario.Image)
+			"Set demo.images.%s to a prebuilt registry image, or run this scenario on a k3d cluster",
+			ErrExisting, cfg.scenario.Name, cfg.scenario.Image, cfg.scenario.Name)
 	}
 	var bad string
 	if cfg.clusterCIDRs, bad = parseCIDRs(l.Settings[KeyClusterCIDRs]); bad != "" {

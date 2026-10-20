@@ -46,6 +46,12 @@ agents:
 # The demo: a directory under scenarios. KEYCARD_LOCAL_SCENARIO.
 demo:
   name: smoke
+  # Prebuilt agent images for an existing cluster, by scenario name. Publish
+  # each image to a registry the cluster can pull from, then set its reference
+  # here. Use a digest so an image update replaces the pod. For example:
+  #   pi: registry.example.com/sandbox-pi@sha256:<digest>
+  # k3d builds from the scenario's Dockerfile instead. No environment override.
+  images: {}
   # The answers to the demo's text questions, by input id.
   answers: {}
   # Each person's answers to the demo's per-person questions, by email,

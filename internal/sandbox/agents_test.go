@@ -57,6 +57,10 @@ func TestInitAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkUsers(t, local, teamName)
+	images := map[string]string{agentName: "registry.example.com/agent:demo", teamName: "registry.example.com/team:demo"}
+	editConfig(t, initRun{local: local, keychain: keychain}, func(config *sandbox.Config) {
+		config.Demo.Images = images
+	})
 
 	path := local.Store.Path()
 	writeFile(t, path, strings.Replace(readFile(t, path), "    default: "+email+"\n",
@@ -75,6 +79,10 @@ func TestInitAgents(t *testing.T) {
 		local.Ask = ask
 		if _, err := local.Init(t.Context()); err != nil {
 			t.Fatal(err)
+		}
+		reload(t, local, keychain)
+		if got := local.Store.Config().Demo.Images; !maps.Equal(got, images) {
+			t.Errorf("demo images = %v, want %v", got, images)
 		}
 		return ask
 	}

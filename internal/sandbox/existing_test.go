@@ -117,6 +117,21 @@ func TestRunExistingSettings(t *testing.T) {
 			}
 		})
 	}
+	t.Run("scenario image contains YAML", func(t *testing.T) {
+		t.Parallel()
+		settings := existing()
+		settings[sandbox.KeyScenario] = agentName
+		local, calls := newLocal(t, settings, eksTool(healthy()))
+		addScenario(t, local.Root, agentName, agentScenario, true)
+		withAnswers(local, map[string]string{repoID: agentRepo})
+		local.Store.Config().Demo.Images = map[string]string{
+			agentName: "registry.example.com/agent:demo\nhostNetwork: true",
+		}
+		checkErr(t, local.Run(t.Context(), sandbox.RunOptions{}), []error{sandbox.ErrSettings}, "demo.images."+agentName)
+		if got := readCalls(t, calls); got != "" {
+			t.Fatalf("calls = %q, want none", got)
+		}
+	})
 }
 
 // TestRunExisting runs the whole flow on an existing cluster. It checks that
@@ -125,7 +140,10 @@ func TestRunExistingSettings(t *testing.T) {
 // images the charts pin.
 func TestRunExisting(t *testing.T) {
 	t.Parallel()
+	registryImage := "123456789012.dkr.ecr.us-west-2.amazonaws.com/sandbox-agent@sha256:" + strings.Repeat("a", 64)
 	local, calls := newLocal(t, existing(), eksTool(healthy()))
+	withAnswers(local, nil)
+	local.Store.Config().Demo.Images = map[string]string{agentName: registryImage}
 	linkCharts(t, local.Root)
 	writeFile(t, filepath.Join(local.Root, "local", "out", "zone-setup.yaml"), zoneSetupOutput)
 	if err := local.Run(t.Context(), sandbox.RunOptions{SkipZoneSetup: true}); err != nil {
@@ -155,6 +173,32 @@ func TestRunExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkContains(t, "sandbox.yaml", string(manifest), imageLines(pinnedImages()))
+}
+
+func TestRunExistingScenario(t *testing.T) {
+	t.Parallel()
+	registryImage := "123456789012.dkr.ecr.us-west-2.amazonaws.com/sandbox-agent@sha256:" + strings.Repeat("a", 64)
+	settings := existing()
+	settings[sandbox.KeyScenario] = agentName
+	local, calls := newLocal(t, settings, eksTool(healthy()))
+	linkCharts(t, local.Root)
+	addScenario(t, local.Root, agentName, agentScenario, true)
+	withAnswers(local, map[string]string{repoID: agentRepo})
+	local.Store.Config().Demo.Images = map[string]string{agentName: registryImage, teamName: "unused\nimage"}
+	writeFile(t, filepath.Join(local.Root, "local", "out", "zone-setup.yaml"), zoneSetupOutput)
+	if err := local.Run(t.Context(), sandbox.RunOptions{SkipZoneSetup: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := readCalls(t, calls); strings.Contains(got, "k3d ") || strings.Contains(got, "docker ") {
+		t.Errorf("calls = %q, want no k3d or docker", got)
+	}
+	values := readFile(t, filepath.Join(local.Root, "local", "out", "scenario.values.yaml"))
+	checkContains(t, "scenario.values.yaml", values, []string{registryImage, "https://github.com/" + agentRepo + ".git"})
+	manifest := readFile(t, filepath.Join(local.Root, "local", "out", "agents", userID, "sandbox.yaml"))
+	images := pinnedImages()
+	images[2] = registryImage
+	checkContains(t, "sandbox.yaml", manifest, append(imageLines(images),
+		"https://github.com/"+agentRepo+".git", "- infinity", "api.example.com"))
 }
 
 // TestUpExistingPrint prints only check-issuer and run for an existing

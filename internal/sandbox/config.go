@@ -97,6 +97,8 @@ func (a *ConfigAgents) everyone() []string {
 // ConfigDemo is the demo, its answers and its credentials.
 type ConfigDemo struct {
 	Name string `yaml:"name"`
+	// Images overrides the agent image by scenario name on existing clusters.
+	Images map[string]string `yaml:"images,omitempty"`
 	// Answers holds the answers to the demo's questions, by input id, and
 	// People each person's own answers, by email.
 	Answers     map[string]string            `yaml:"answers,omitempty"`

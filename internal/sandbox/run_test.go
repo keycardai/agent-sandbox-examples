@@ -568,7 +568,7 @@ func TestRun(t *testing.T) {
 				"Imported " + image + " into the k3d cluster asp.\n",
 			},
 			wantManifest: []string{
-				"image: " + image + "\n",
+				fmt.Sprintf("image: %q\n", image),
 				"- name: \"REPO\"\n", "value: \"https://github.com/octo/demo.git\"\n",
 				"url: https://api.example.com\n",
 			},
@@ -763,7 +763,7 @@ func checkCalls(t *testing.T, got string, want, absent []string) {
 func imageLines(images []string) []string {
 	lines := make([]string, 0, len(images))
 	for _, image := range images {
-		lines = append(lines, "image: "+image+"\n")
+		lines = append(lines, fmt.Sprintf("image: %q\n", image))
 	}
 	return lines
 }
