@@ -6,7 +6,7 @@ use_versions_host_track = false
 
 [tools]
 cloudflared = "2026.10.0"
-go = "1.27.2"
+go = "1.27.3"
 helm = "4.3.0"
 k3d = "5.9.0"
 kubectl = "1.37.1"
