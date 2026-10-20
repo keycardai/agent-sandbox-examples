@@ -128,7 +128,8 @@ rbac:
 network:
   # This cluster's pod and service ranges. Each is added to the ranges the
   # sandbox NetworkPolicy blocks, in its own address family. They are usually
-  # already inside a private range.
+  # already inside a private range. When set, only these address families
+  # receive public HTTPS rules; empty keeps rules for both families.
   clusterCIDRs: []
   # Single hosts in the private ranges the NetworkPolicy blocks, such as a
   # gateway to a zone on a private address. The sandbox can reach each one on
