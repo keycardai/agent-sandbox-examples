@@ -5,8 +5,8 @@ import (
 	"strings"
 )
 
-// release returns the tag of a pinned image reference, such as v0.2.1 for
-// ghcr.io/keycardai/sandbox-base:v0.2.1@sha256:...
+// release returns the tag of a pinned image reference, such as v0.2.2 for
+// ghcr.io/keycardai/sandbox-base:v0.2.2@sha256:...
 func release(ref string) string {
 	ref, _, _ = strings.Cut(ref, "@")
 	if i := strings.LastIndex(ref, ":"); i >= 0 && !strings.Contains(ref[i:], "/") {

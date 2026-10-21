@@ -24,7 +24,7 @@ func TestPreflightImages(t *testing.T) {
 		state           sandbox.CheckState
 		detail, fix     string
 	}{
-		{name: "pinned release", detail: "the release v0.2.1 from ghcr.io/keycardai"},
+		{name: "pinned release", detail: "the release v0.2.2 from ghcr.io/keycardai"},
 		{
 			name: "ghcr.io refuses", tool: noAccess,
 			state: sandbox.CheckFailed, detail: "exit status 1: denied", fix: "Fix what Docker says",
