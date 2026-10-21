@@ -22,7 +22,7 @@ zone fetches `<issuer>/.well-known/openid-configuration` and compares its
   management API can't create users. Add one in the Keycard console, or
   have the person sign in to the zone.
 - Docker able to reach `ghcr.io`. The charts pin the egress-proxy release
-  `v0.2.1` of the three images (`ghcr.io/keycardai/egress-netsetup`,
+  `v0.2.2` of the three images (`ghcr.io/keycardai/egress-netsetup`,
   `ghcr.io/keycardai/egress-proxy` and `ghcr.io/keycardai/sandbox-base`)
   by digest, and the cluster pulls them. They are public, so Docker pulls
   them without `docker login`.

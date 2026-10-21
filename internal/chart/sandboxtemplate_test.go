@@ -45,12 +45,12 @@ func TestInstallSandboxTemplate(t *testing.T) {
 	var tmpl sandboxTemplate
 	const disabled, sharedCA, egressRun = "disabled", "shared-ca", "egress-run"
 	const (
-		netsetupImage = "ghcr.io/keycardai/egress-netsetup:v0.2.1" +
-			"@sha256:cff8c7a98ebfadfb514ccc0840cfb7a67994711f7e7c405d309613e4611b5b33"
-		proxyImage = "ghcr.io/keycardai/egress-proxy:v0.2.1" +
-			"@sha256:79684cf9b059d8e2f1719b108a05251bb47ef3bebb39759fd1811ec36b9ff7d2"
-		baseImage = "ghcr.io/keycardai/sandbox-base:v0.2.1" +
-			"@sha256:555ef77f07de9e186e594aa3b0aa4805cfe7149ace065ca97d40fbc0e02c1cce"
+		netsetupImage = "ghcr.io/keycardai/egress-netsetup:v0.2.2" +
+			"@sha256:9aedd628c613a601e9000d623ff6113776ed4e2bf93374f79d08711e4b333d6a"
+		proxyImage = "ghcr.io/keycardai/egress-proxy:v0.2.2" +
+			"@sha256:622c95f17abbca45627cb06cfd6a672e12dc7e138ba83863623a9e5c0865422d"
+		baseImage = "ghcr.io/keycardai/sandbox-base:v0.2.2" +
+			"@sha256:48829d1953ac8f3d6931ea6078c583236fdcf31a092c33c156731cedfb41666f"
 	)
 	probe := func(route string) *corev1.ExecAction {
 		return &corev1.ExecAction{Command: []string{"/ko-app/egress-proxy", "probe", route}}
