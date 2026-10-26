@@ -161,21 +161,34 @@ func TestInstall(t *testing.T) {
 
 func TestInstallClusterCIDRs(t *testing.T) {
 	t.Parallel()
-	clusterCIDRs := filepath.Join(t.TempDir(), "values.yaml")
-	if err := os.WriteFile(
-		clusterCIDRs,
-		[]byte("network:\n  clusterCIDRs: [198.18.0.0/15, \"2001:db8:42::/56\"]\n"),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-	var policy networkingv1.NetworkPolicy
-	decode(t, render(t, clusterCIDRs), "NetworkPolicy/keycard-sandbox-egress", &policy)
-	for i, want := range []string{"198.18.0.0/15", "2001:db8:42::/56"} {
-		block := policy.Spec.Egress[0].To[i].IPBlock
-		if got := block.Except[len(block.Except)-1]; got != want {
-			t.Errorf("%s except ends with %q, want %q", block.CIDR, got, want)
-		}
+	for name, ranges := range map[string][]string{
+		"dual stack": {"198.18.0.0/15", "2001:db8:42::/56"},
+		"IPv4":       {"198.18.0.0/15"},
+		"IPv6":       {"2001:db8:42::/56"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			values, err := yaml.Marshal(map[string]any{"network": map[string]any{"clusterCIDRs": ranges}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			clusterCIDRs := filepath.Join(t.TempDir(), "values.yaml")
+			if err := os.WriteFile(clusterCIDRs, values, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var policy networkingv1.NetworkPolicy
+			decode(t, render(t, clusterCIDRs), "NetworkPolicy/keycard-sandbox-egress", &policy)
+			blocks := policy.Spec.Egress[0].To
+			if len(blocks) != len(ranges) {
+				t.Fatalf("public HTTPS peers = %v, want one for each cluster address family in %v", blocks, ranges)
+			}
+			for i, want := range ranges {
+				block := blocks[i].IPBlock
+				if got := block.Except[len(block.Except)-1]; got != want {
+					t.Errorf("%s except ends with %q, want %q", block.CIDR, got, want)
+				}
+			}
+		})
 	}
 }
 
