@@ -1274,7 +1274,11 @@ func (w *wizard) write(save bool) error {
 	if store == nil {
 		return fmt.Errorf("%w: there is no store for the settings", ErrSettings)
 	}
-	store.setConfig(configFrom(w.env, &w.out, w.answers, w.demos))
+	config := configFrom(w.env, &w.out, w.answers, w.demos)
+	if previous := store.Config(); previous != nil {
+		config.Demo.Images = maps.Clone(previous.Demo.Images)
+	}
+	store.setConfig(config)
 	if !save {
 		_, _ = fmt.Fprintln(w.l.Out, "Kept the settings for this session. Nothing was saved.")
 		return nil
