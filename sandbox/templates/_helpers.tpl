@@ -36,6 +36,14 @@ another subject would fail every exchange with access_denied.
 {{- $user -}}
 {{- end }}
 
+{{/*
+Where the proxy reads the client secret. The client-secret init container
+copies it there.
+*/}}
+{{- define "keycard-sandbox-user.clientSecretFile" -}}
+{{- printf "%s/client-secret" (trimSuffix "/" .Values.proxy.tokenPath) -}}
+{{- end }}
+
 {{- define "keycard-sandbox-user.proxyConfigMap" -}}
 {{- printf "%s-proxy-config" .Release.Name -}}
 {{- end }}
@@ -66,10 +74,15 @@ query.
   {{- $_ := set $doc "tls" (dict "upstream_ca_files" (list
         (printf "%s/%s" (trimSuffix "/" $root.Values.zoneTrust.mountPath) $root.Values.zoneTrust.key))) -}}
 {{- end -}}
-{{- $_ := set $doc "identity" (dict
+{{- $identity := dict
       "zone_url" (required "zoneURL is required: the zone that decides every token exchange" $root.Values.zoneURL)
-      "client_id" (required "clientID is required: the workload-identity credential, from the sandbox_user_access outputs" $root.Values.clientID)
-      "workload_token_file" (printf "%s/token" (trimSuffix "/" $root.Values.proxy.tokenPath))
-      "impersonate" (dict "user" (include "keycard-sandbox-user.userID" $root))) -}}
+      "client_id" (required "clientID is required: the application credential, from the sandbox_user_access outputs" $root.Values.clientID)
+      "impersonate" (dict "user" (include "keycard-sandbox-user.userID" $root)) -}}
+{{- if $root.Values.clientSecret.secretName -}}
+  {{- $_ := set $identity "client_secret_file" (include "keycard-sandbox-user.clientSecretFile" $root) -}}
+{{- else -}}
+  {{- $_ := set $identity "workload_token_file" (printf "%s/token" (trimSuffix "/" $root.Values.proxy.tokenPath)) -}}
+{{- end -}}
+{{- $_ := set $doc "identity" $identity -}}
 {{- toYaml $doc -}}
 {{- end }}

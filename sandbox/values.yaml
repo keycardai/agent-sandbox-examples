@@ -22,8 +22,18 @@ userEmail: ""
 # system:serviceaccount:<namespace>:<userID>.
 serviceAccount: ""
 # The id of the workload-identity credential. The proxy sends it as
-# client_id in the token exchange.
+# client_id in the token exchange. With clientSecret.secretName, it is the
+# client ID of the Application's client secret.
 clientID: ""
+
+# The Secret in the release namespace that holds the Application's client
+# secret under clientSecret.key. When secretName is set, the proxy
+# authenticates with the client secret instead of the ServiceAccount token.
+# Every sandbox shares the secret, and the zone cannot tell them apart. Use
+# it only for a demo. docs/client-secret.md describes it.
+clientSecret:
+  secretName: ""
+  key: client-secret
 
 policy:
   # This cluster's pod and service ranges. The proxy adds them to its

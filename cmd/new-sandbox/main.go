@@ -95,6 +95,11 @@ func identityFlags() []cli.Flag {
 			Usage: "the application's well-known identifier (k8s_sandbox.application_identifier)",
 		},
 		&cli.StringFlag{
+			Name: "client-secret-name",
+			Usage: "the Secret that holds the application's client secret under the key client-secret. " +
+				"The proxy then authenticates with it instead of the ServiceAccount token",
+		},
+		&cli.StringFlag{
 			Name:  "zone-url",
 			Usage: "the zone that decides every token exchange, if the values file does not set it",
 		},
@@ -134,6 +139,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 			ServiceAccount:        cmd.String("service-account"),
 			ClientID:              cmd.String("client-id"),
 			ZoneURL:               cmd.String("zone-url"),
+			ClientSecret:          clientSecret(cmd.String("client-secret-name")),
 		},
 		ChartDir:    cmd.String("chart"),
 		Name:        cmd.String("name"),
@@ -160,4 +166,13 @@ func kubectl(kubeContext string) newsandbox.Runner {
 		}
 		return pinned.Output(ctx, stdin, "kubectl", args...)
 	}
+}
+
+// clientSecret returns the chart value for the Secret name, or nil when the
+// name is empty.
+func clientSecret(name string) *newsandbox.ClientSecret {
+	if name == "" {
+		return nil
+	}
+	return &newsandbox.ClientSecret{SecretName: name}
 }

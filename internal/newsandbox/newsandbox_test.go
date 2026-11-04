@@ -16,6 +16,12 @@ const (
 	userID    = "igmua2g0fwapl21qll7tczdw7t"
 	subject   = "system:serviceaccount:agents:igmua2g0fwapl21qll7tczdw7t"
 	clientID  = "cred_01hzx"
+	// secretName is the Secret that holds the client secret.
+	secretName = "egress-proxy-client-secret" //nolint:gosec // G101: a Secret's name, not a secret.
+	// otherSubject is the subject of another user's ServiceAccount.
+	otherSubject = "system:serviceaccount:agents:someone-else"
+	// bindsText is the error text for a ServiceAccount this sandbox does not bind.
+	bindsText = "this sandbox binds"
 )
 
 // valid holds the inputs for one enrolled user.
@@ -66,12 +72,48 @@ func TestInputsValidate(t *testing.T) {
 		{
 			"subject from another namespace",
 			func(in *newsandbox.Inputs) { in.ServiceAccount = "system:serviceaccount:other:" + userID },
-			"this sandbox binds",
+			bindsText,
 		},
 		{
 			"subject from another user",
-			func(in *newsandbox.Inputs) { in.ServiceAccount = "system:serviceaccount:agents:someone-else" },
-			"this sandbox binds",
+			func(in *newsandbox.Inputs) { in.ServiceAccount = otherSubject },
+			bindsText,
+		},
+		{
+			"client secret without a service account",
+			func(in *newsandbox.Inputs) {
+				in.ServiceAccount = ""
+				in.ClientSecret = &newsandbox.ClientSecret{SecretName: secretName}
+			},
+			"",
+		},
+		{
+			"client secret with the bound subject",
+			func(in *newsandbox.Inputs) {
+				in.ClientSecret = &newsandbox.ClientSecret{SecretName: secretName}
+			},
+			"",
+		},
+		{
+			"client secret with another subject",
+			func(in *newsandbox.Inputs) {
+				in.ServiceAccount = otherSubject
+				in.ClientSecret = &newsandbox.ClientSecret{SecretName: secretName}
+			},
+			bindsText,
+		},
+		{
+			"client secret without a name",
+			func(in *newsandbox.Inputs) { in.ClientSecret = &newsandbox.ClientSecret{} },
+			"--client-secret-name must not be empty",
+		},
+		{
+			"client secret still needs a client id",
+			func(in *newsandbox.Inputs) {
+				in.ServiceAccount, in.ClientID = "", ""
+				in.ClientSecret = &newsandbox.ClientSecret{SecretName: secretName}
+			},
+			"--client-id is required",
 		},
 	}
 	for _, tc := range cases {
@@ -184,7 +226,7 @@ func TestRunRefusesInvalidInputs(t *testing.T) {
 	t.Parallel()
 	kube := &fakeKube{}
 	cmd := command(t, kube, true)
-	cmd.Inputs.ServiceAccount = "system:serviceaccount:agents:someone-else"
+	cmd.Inputs.ServiceAccount = otherSubject
 	if _, err := cmd.Run(t.Context()); !errors.Is(err, newsandbox.ErrInputs) {
 		t.Fatalf("err = %v, want an ErrInputs", err)
 	}

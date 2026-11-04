@@ -121,14 +121,22 @@ func (l *Local) Up(ctx context.Context, opts UpOptions) error {
 // does on a k3d cluster, where it keeps the tunnel and the mirror serving the
 // issuer, and for a scenario in any mode other than checks.
 func (l *Local) servesAfterRun(scenario *Scenario) bool {
-	return !l.Existing() || scenario.Run.Mode != ModeChecks
+	return (!l.Existing() && !l.ClientSecret()) || scenario.Run.Mode != ModeChecks
 }
 
 // upSteps returns Up's steps for the settings. An existing cluster
-// publishes its own issuer and needs only check-issuer and run.
+// publishes its own issuer and needs only check-issuer and run. A client
+// secret run does not need the issuer, so it runs only bootstrap on k3d,
+// and run.
 func (l *Local) upSteps(opts UpOptions) []upStep {
 	listen := []string{"--listen", opts.Listen}
 	runStep := l.upRunStep(opts)
+	if l.ClientSecret() {
+		if l.Existing() {
+			return []upStep{runStep}
+		}
+		return []upStep{{args: []string{"bootstrap"}, run: l.upBootstrap}, runStep}
+	}
 	if l.Existing() {
 		return []upStep{{args: []string{"check-issuer"}, run: l.upCheckIssuer}, runStep}
 	}

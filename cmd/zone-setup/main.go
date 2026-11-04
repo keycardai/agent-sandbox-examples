@@ -42,6 +42,11 @@ func newCommand() *cli.Command {
 				Name:  issuerURLFlag,
 				Usage: "the cluster's OIDC issuer. It replaces issuer_url in the values file",
 			},
+			&cli.StringFlag{
+				Name: "client-secret-file",
+				Usage: "with application_credential client_secret, the file that keeps the client ID and secret. " +
+					"zone-setup creates it, readable by its owner alone",
+			},
 			&cli.BoolFlag{Name: "dry-run", Usage: "change nothing and print what would change"},
 			&cli.BoolFlag{
 				Name: zonesetup.ReplaceActiveFlag,
@@ -64,9 +69,10 @@ func setup(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	opts := &zonesetup.Options{
-		DryRun:        cmd.Bool("dry-run"),
-		ReplaceActive: cmd.Bool(zonesetup.ReplaceActiveFlag),
-		Log:           cmd.ErrWriter,
+		DryRun:           cmd.Bool("dry-run"),
+		ReplaceActive:    cmd.Bool(zonesetup.ReplaceActiveFlag),
+		Log:              cmd.ErrWriter,
+		ClientSecretFile: cmd.String("client-secret-file"),
 	}
 	out, err := zonesetup.Run(ctx, values, secrets, opts)
 	if err != nil {

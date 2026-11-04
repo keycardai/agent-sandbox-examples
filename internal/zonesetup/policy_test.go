@@ -142,6 +142,65 @@ permit (
 	}
 }
 
+// TestClientSecretPolicies pins the Cedar of the client secret policies. They
+// share the names and ids of UserPolicies, so a run in one mode replaces the
+// other mode's policies in place.
+func TestClientSecretPolicies(t *testing.T) {
+	t.Parallel()
+	user := keycard.User{ID: adaID, Identifier: adaIdentifier, Email: "grace@example.com"}
+	type policy struct{ name, description, cedar string }
+	want := []policy{
+		{
+			name: "Sandbox impersonation: grace@example.com",
+			description: "Permits Sandbox Egress Proxy to act on behalf of grace@example.com on resources " +
+				"listed in its dependencies, for requests authenticated with its client secret",
+			cedar: `@id("sandbox-impersonation-user-1")
+permit (
+  principal is Keycard::Application,
+  action,
+  resource
+) when {
+  principal.identifier == "urn:keycard:sandbox-proxy:agents" &&
+  principal has credential_type && principal.credential_type == Keycard::CredentialType::"password" &&
+  context has impersonate && context.impersonate == true &&
+  context has subject && context.subject.identifier == "ada-identifier" &&
+  principal.dependencies.contains(resource)
+};`,
+		},
+		{
+			name:        "Sandbox access: grace@example.com",
+			description: "Permits grace@example.com's sandbox to act on their behalf through Sandbox Egress Proxy",
+			cedar: `@id("sandbox-access-user-1")
+permit (
+  principal is Keycard::User,
+  action,
+  resource
+) when {
+  principal.identifier == "ada-identifier"
+};`,
+		},
+	}
+	policies := zonesetup.ClientSecretPolicies("agents", zonesetup.ApplicationName, user)
+	workload := zonesetup.UserPolicies("agents", "https://oidc.example.com", zonesetup.ApplicationName, user)
+	if len(policies) != len(want) {
+		t.Fatalf("got %d policies, want %d", len(policies), len(want))
+	}
+	for i, got := range policies {
+		if got.Name != want[i].name {
+			t.Errorf("policy %d name = %q, want %q", i, got.Name, want[i].name)
+		}
+		if got.Name != workload[i].Name {
+			t.Errorf("policy %d name = %q, want the workload identity name %q", i, got.Name, workload[i].Name)
+		}
+		if got.Description != want[i].description {
+			t.Errorf("policy %d description = %q, want %q", i, got.Description, want[i].description)
+		}
+		if got.Cedar != want[i].cedar {
+			t.Errorf("policy %d Cedar =\n%s\nwant\n%s", i, got.Cedar, want[i].cedar)
+		}
+	}
+}
+
 // TestFindPolicy runs each listing through SandboxPolicies, FindPolicy and
 // FindPolicySet. SandboxPolicies matches the namespace's name prefixes, and
 // FindPolicy and FindPolicySet the exact name. All three ignore archived

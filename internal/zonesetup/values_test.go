@@ -18,6 +18,8 @@ const openRouterKey = "OPENROUTER_API_KEY"
 // one credential source.
 const exactlyOneSource = "resources[0]: set exactly one"
 
+const eksIssuer = "https://oidc.eks.us-west-2.amazonaws.com/id/EXAMPLE"
+
 const minimal = `
 management_api_url: https://api.keycard.ai
 zone_url: https://acme.keycard.cloud
@@ -312,6 +314,74 @@ func TestParseValues(t *testing.T) {
 			}
 			if !tc.check(got) {
 				t.Errorf("values = %+v", got)
+			}
+		})
+	}
+}
+
+// TestParseApplicationCredential checks application_credential and the
+// issuer_url it requires. A client secret run does not need the issuer, but
+// an issuer it is given must still be valid.
+func TestParseApplicationCredential(t *testing.T) {
+	t.Parallel()
+	withoutIssuer := strings.Replace(minimal, "issuer_url: "+eksIssuer+"\n", "", 1)
+	cases := []struct {
+		name, doc string
+		// wantClientSecret is ClientSecret() on success.
+		wantClientSecret bool
+		wantIssuer       string
+		wantErr          string
+	}{
+		{name: "the default is workload identity", doc: minimal, wantIssuer: eksIssuer},
+		{
+			name:       "workload identity by name",
+			doc:        minimal + "application_credential: workload_identity\n",
+			wantIssuer: eksIssuer,
+		},
+		{
+			name:             "a client secret without an issuer",
+			doc:              withoutIssuer + "application_credential: client_secret\n",
+			wantClientSecret: true,
+		},
+		{
+			name:             "a client secret with an issuer",
+			doc:              minimal + "application_credential: client_secret\n",
+			wantClientSecret: true, wantIssuer: eksIssuer,
+		},
+		{
+			name:    "a client secret with an issuer that sets a port",
+			doc:     strings.Replace(minimal, ".com/", ".com:8443/", 1) + "application_credential: client_secret\n",
+			wantErr: "issuer_url must not set a port",
+		},
+		{
+			name:    "workload identity without an issuer",
+			doc:     withoutIssuer + "application_credential: workload_identity\n",
+			wantErr: "issuer_url is required",
+		},
+		{
+			name:    "an unknown application_credential",
+			doc:     minimal + "application_credential: password\n",
+			wantErr: "application_credential must be workload_identity or client_secret",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := zonesetup.ParseValues(strings.NewReader(tc.doc))
+			if tc.wantErr != "" {
+				if !errors.Is(err, zonesetup.ErrValues) || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want ErrValues naming %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.ClientSecret() != tc.wantClientSecret {
+				t.Errorf("ClientSecret() = %t, want %t", got.ClientSecret(), tc.wantClientSecret)
+			}
+			if got.IssuerURL != tc.wantIssuer {
+				t.Errorf("issuer_url = %q, want %q", got.IssuerURL, tc.wantIssuer)
 			}
 		})
 	}

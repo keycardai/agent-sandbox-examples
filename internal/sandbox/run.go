@@ -161,6 +161,11 @@ func (l *Local) deploy(ctx context.Context, cfg runSettings, out *zonesetup.Outp
 	if err := l.install(ctx, cfg.cluster, namespace); err != nil {
 		return err
 	}
+	if l.ClientSecret() {
+		if err := l.applyClientSecret(ctx, cfg.cluster, namespace); err != nil {
+			return err
+		}
+	}
 	if err := l.createSandboxes(ctx, cfg, out); err != nil {
 		return err
 	}
@@ -600,9 +605,12 @@ func (l *Local) zoneSetup(ctx context.Context, cfg runSettings, opts RunOptions)
 	if err != nil {
 		return nil, err
 	}
-	out, err := zonesetup.Run(ctx, values, secrets, &zonesetup.Options{
-		ReplaceActive: opts.ReplaceActive, Log: l.Out, Roots: roots,
-	})
+	setupOpts := &zonesetup.Options{ReplaceActive: opts.ReplaceActive, Log: l.Out, Roots: roots}
+	if l.ClientSecret() {
+		values.ApplicationCredential = zonesetup.CredentialClientSecret
+		setupOpts.ClientSecretFile = l.clientSecretFile()
+	}
+	out, err := zonesetup.Run(ctx, values, secrets, setupOpts)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrZoneSetup, err)
 	}
@@ -633,33 +641,40 @@ func (l *Local) readZoneSetup() (*zonesetup.Output, error) {
 	if err = yaml.UnmarshalStrict(raw, &out); err != nil {
 		return nil, fmt.Errorf("%w: %s: %w", ErrZoneSetup, outFile, err)
 	}
-	if key := missingField(&out); key != "" {
+	if key := missingField(&out, l.ClientSecret()); key != "" {
 		return nil, fmt.Errorf("%w: %s has no %s", ErrZoneSetup, outFile, key)
 	}
 	return &out, nil
 }
 
 // missingField returns the YAML key of the first empty field in out, or "".
-func missingField(out *zonesetup.Output) string {
+// A client secret run has no provider and no ServiceAccount subject.
+func missingField(out *zonesetup.Output, clientSecret bool) string {
 	type field struct{ key, value string }
-	for _, required := range []field{
+	sandbox := []field{
 		{"k8s_sandbox.application_id", out.K8sSandbox.ApplicationID},
 		{"k8s_sandbox.application_identifier", out.K8sSandbox.ApplicationIdentifier},
 		{"k8s_sandbox.namespace", out.K8sSandbox.Namespace},
-		{"k8s_sandbox.provider_id", out.K8sSandbox.ProviderID},
-	} {
+	}
+	if !clientSecret {
+		sandbox = append(sandbox, field{"k8s_sandbox.provider_id", out.K8sSandbox.ProviderID})
+	}
+	for _, required := range sandbox {
 		if required.value == "" {
 			return required.key
 		}
 	}
 	for i, access := range out.SandboxUserAccess {
-		for _, required := range []field{
+		user := []field{
 			{"user_email", access.UserEmail},
 			{"user_id", access.UserID},
-			{"service_account", access.ServiceAccount},
 			{"client_id", access.ClientID},
 			{"namespace", access.Namespace},
-		} {
+		}
+		if !clientSecret {
+			user = append(user, field{"service_account", access.ServiceAccount})
+		}
+		for _, required := range user {
 			if required.value == "" {
 				return fmt.Sprintf("sandbox_user_access[%d].%s", i, required.key)
 			}
@@ -788,6 +803,7 @@ func (l *Local) newSandbox(
 			UserID:                access.UserID,
 			ServiceAccount:        access.ServiceAccount,
 			ClientID:              access.ClientID,
+			ClientSecret:          l.chartClientSecret(),
 		},
 		ChartDir: filepath.Join(l.Root, "sandbox"),
 		ValuesFiles: []string{

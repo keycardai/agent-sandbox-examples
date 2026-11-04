@@ -45,6 +45,18 @@ const (
 	fileMode = 0o600
 )
 
+// The client secret mode. docs/client-secret.md describes it.
+const (
+	// KeyClientSecret set to true makes the proxy authenticate with a client
+	// secret instead of the ServiceAccount token. Only the environment sets
+	// it.
+	KeyClientSecret = "KEYCARD_LOCAL_CLIENT_SECRET" //nolint:gosec // G101: a setting's name, not a secret.
+	// clientSecretIssuer is the k3d cluster's issuer in a client secret run
+	// when KEYCARD_LOCAL_ISSUER is empty. The zone never reads it, so it does
+	// not need to be on the internet.
+	clientSecretIssuer = "https://kubernetes.default.svc.cluster.local" //nolint:gosec // G101: an issuer URL.
+)
+
 // Errors the steps wrap.
 var (
 	// ErrSettings is a settings file that is missing or has a line that is
@@ -74,7 +86,7 @@ func settingKeys() []string {
 	return []string{
 		KeyCluster, KeyIssuer, KeyTunnel, KeyZoneURL, KeyZoneOnHost,
 		KeyZoneSetupValues, KeyUserEmail, KeyGitHubLogin, KeyCAFile,
-		KeyKubeContext, KeyImageTag, KeyClusterCIDRs, KeyScenario,
+		KeyKubeContext, KeyImageTag, KeyClusterCIDRs, KeyScenario, KeyClientSecret,
 	}
 }
 
@@ -128,6 +140,11 @@ func (l *Local) Existing() bool {
 	return l.Settings[KeyKubeContext] != ""
 }
 
+// ClientSecret reports whether the proxy authenticates with a client secret.
+func (l *Local) ClientSecret() bool {
+	return l.Settings[KeyClientSecret] == settingTrue
+}
+
 // cluster returns flag, or the setting when flag is empty. For an existing
 // cluster, the name is a kubeconfig context from KEYCARD_LOCAL_KUBE_CONTEXT.
 // Otherwise it is a k3d cluster from KEYCARD_LOCAL_CLUSTER: at most 32
@@ -147,12 +164,16 @@ func (l *Local) cluster(flag string) (string, error) {
 	return name, nil
 }
 
-// issuer returns flag, else KEYCARD_LOCAL_ISSUER, else the URL in
-// QuickIssuerFile. It refuses the file when no running tunnel has it locked,
-// because the tunnel behind that URL is not running.
+// issuer returns flag, else KEYCARD_LOCAL_ISSUER, else clientSecretIssuer in
+// a client secret run, else the URL in QuickIssuerFile. It refuses the file
+// when no running tunnel has it locked, because the tunnel behind that URL
+// is not running.
 func (l *Local) issuer(flag string) (string, error) {
 	if url := cmp.Or(flag, l.Settings[KeyIssuer]); url != "" {
 		return url, nil
+	}
+	if l.ClientSecret() {
+		return clientSecretIssuer, nil
 	}
 	url, running, err := readQuickIssuer(l.QuickIssuerFile())
 	switch {
