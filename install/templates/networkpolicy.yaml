@@ -2,6 +2,15 @@
 # SandboxTemplate left at networkPolicyManagement: Managed.
 # The install SandboxTemplate sets networkPolicyManagement: Unmanaged, so this
 # is the only policy.
+{{- $ipv4 := empty .Values.network.clusterCIDRs }}
+{{- $ipv6 := $ipv4 }}
+{{- range .Values.network.clusterCIDRs }}
+{{- if contains ":" . }}
+{{- $ipv6 = true }}
+{{- else }}
+{{- $ipv4 = true }}
+{{- end }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -28,6 +37,7 @@ spec:
     # TODO(ACC-1096): on EKS the cluster's public API endpoint is a public
     # address on 443, so it stays reachable.
     - to:
+        {{- if $ipv4 }}
         - ipBlock:
             cidr: 0.0.0.0/0
             except:
@@ -43,6 +53,8 @@ spec:
               - {{ . | quote }}
               {{- end }}
               {{- end }}
+        {{- end }}
+        {{- if $ipv6 }}
         - ipBlock:
             cidr: "::/0"
             except:
@@ -58,6 +70,7 @@ spec:
               - {{ . | quote }}
               {{- end }}
               {{- end }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: 443
