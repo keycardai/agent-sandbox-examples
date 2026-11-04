@@ -378,6 +378,9 @@ func TestRunSettings(t *testing.T) {
 
 // zoneSetupOutput is the zone-setup output of an earlier run, for
 // ada@example.com.
+// clientSecretFile is local/out/client-secret.json in a client secret run.
+const clientSecretFile = `{"client_id":"client-1","client_secret":"secret-1"}` //nolint:gosec // G101: a test value.
+
 const zoneSetupOutput = `k8s_sandbox:
   application_id: app-1
   application_identifier: urn:keycard:sandbox:agents
@@ -542,6 +545,27 @@ func TestRun(t *testing.T) {
 			wantManifest: append(imageLines(pinnedImages()), "user: x-access-token\n"),
 		},
 		{
+			name:    "client secret",
+			sandbox: healthy(),
+			output: strings.NewReplacer("  provider_id: provider-1\n", "",
+				"  service_account: system:serviceaccount:agents:"+userID+"\n", "").Replace(zoneSetupOutput),
+			clientSecret: clientSecretFile,
+			// Capture the stdin of the Secret's apply. The fake answers every
+			// apply the same way.
+			tool: `case "$FAKE_TOOL $*" in
+*" apply "*) in=$(cat); [[ $in == *'"kind":"Secret"'* ]] && printf '%s\n' "$in" >> "$CALLS.secret" ;;
+esac
+`,
+			wantSecret: `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"egress-proxy-client-secret",` +
+				`"namespace":"agents"},"type":"Opaque","stringData":{"client-secret":"secret-1"}}` + "\n",
+			wantOut: []string{"Storing the client secret client-1 in the Secret egress-proxy-client-secret\n"},
+			wantManifest: []string{
+				"client_secret_file: /var/run/secrets/keycard/client-secret\n",
+				"secretName: egress-proxy-client-secret\n",
+				"- name: client-secret\n",
+			},
+		},
+		{
 			name:      "images at a tag",
 			tag:       devTag,
 			sandbox:   healthy(),
@@ -691,6 +715,12 @@ type runTest struct {
 	wantOut      []string
 	wantManifest []string
 	notCalls     []string
+	// clientSecret turns on KEYCARD_LOCAL_CLIENT_SECRET and writes it as
+	// local/out/client-secret.json.
+	clientSecret string
+	// wantSecret is the Secret manifest kubectl apply reads, when one is
+	// applied.
+	wantSecret string
 }
 
 // checkRun runs tc on a new checkout and checks the calls, the output and
@@ -724,8 +754,16 @@ func checkRun(t *testing.T, tc *runTest) {
 	if tc.output != "" {
 		writeFile(t, filepath.Join(local.Root, "local", "out", "zone-setup.yaml"), tc.output)
 	}
+	if tc.clientSecret != "" {
+		local.Settings[sandbox.KeyClientSecret] = settingOn
+		writeFile(t, filepath.Join(local.Root, "local", "out", "client-secret.json"), tc.clientSecret)
+	}
 	err := local.Run(t.Context(), sandbox.RunOptions{SkipZoneSetup: true})
 	checkErr(t, err, tc.want, tc.wantText)
+	secret, _ := os.ReadFile(calls + ".secret") //nolint:gosec // G304: the test's own file.
+	if string(secret) != tc.wantSecret {
+		t.Errorf("Secret applied = %q, want %q", secret, tc.wantSecret)
+	}
 	got := readCalls(t, calls)
 	if tc.want != nil {
 		if want := strings.Join(tc.wantCalls, ""); got != want {

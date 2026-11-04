@@ -28,6 +28,10 @@ type Options struct {
 	// Roots are the CA certificates Run trusts for the management API. If
 	// Roots is nil, Run trusts the system roots.
 	Roots *x509.CertPool
+	// ClientSecretFile is where Run keeps the Application's client ID and
+	// secret, as JSON, when application_credential is client_secret. Run
+	// needs it in that mode.
+	ClientSecretFile string
 }
 
 // Output holds the k8s_sandbox and sandbox_user_access values a sandbox
@@ -63,6 +67,11 @@ type UserAccess struct {
 // one policy set version with each user's impersonation and access policies,
 // and activates it.
 //
+// With application_credential client_secret, Run does not need the issuer
+// or create the provider. It gives the Application one password credential
+// that every user's sandbox shares, and the policies match on the credential
+// type instead of the ServiceAccount.
+//
 // With opts.DryRun it does not change the zone. The Output then has an empty
 // id for each entity that does not exist yet.
 func Run(ctx context.Context, values *Values, secrets *Secrets, opts *Options) (*Output, error) {
@@ -71,9 +80,11 @@ func Run(ctx context.Context, values *Values, secrets *Secrets, opts *Options) (
 		return nil, fmt.Errorf("resolving the zone: %w", err)
 	}
 	opts.sayf("zone %s issues %s", session.Zone.ID, session.Zone.Protocols.Oauth2.Issuer)
-	providerID, err := ensureProvider(ctx, opts, session, values.IssuerURL)
-	if err != nil {
-		return nil, err
+	var providerID string
+	if !values.ClientSecret() {
+		if providerID, err = ensureProvider(ctx, opts, session, values.IssuerURL); err != nil {
+			return nil, err
+		}
 	}
 	identifier := ApplicationIdentifier(values.Namespace)
 	application, err := ensureApplication(ctx, opts, session, identifier, values.Namespace)
@@ -342,12 +353,26 @@ func ensureUserAccess(
 	values *Values,
 ) ([]UserAccess, error) {
 	access := make([]UserAccess, 0, len(values.Users))
+	var clientID string
+	if values.ClientSecret() && len(values.Users) > 0 {
+		var err error
+		if clientID, err = ensureClientSecret(ctx, opts, session, applicationID); err != nil {
+			return nil, err
+		}
+	}
 	for _, user := range values.Users {
 		found, err := session.FindUser(ctx, user.Email)
 		if err != nil {
 			return nil, fmt.Errorf("finding the user %s: %w", user.Email, err)
 		}
 		opts.sayf("found user %s for %s", found.ID, user.Email)
+		if values.ClientSecret() {
+			access = append(access, UserAccess{
+				UserEmail: user.Email, UserID: found.ID, ClientID: clientID,
+				Namespace: values.Namespace, UserIdentifier: found.Identifier,
+			})
+			continue
+		}
 		subject := ServiceAccountSubject(values.Namespace, found.ID)
 		credentialID, err := ensureTokenCredential(ctx, opts, session, applicationID, providerID, subject)
 		if err != nil {
@@ -424,6 +449,10 @@ func ensurePolicies(
 	var policies []UserPolicy
 	for _, user := range access {
 		policyUser := keycard.User{ID: user.UserID, Identifier: user.UserIdentifier, Email: user.UserEmail}
+		if values.ClientSecret() {
+			policies = append(policies, ClientSecretPolicies(values.Namespace, applicationName, policyUser)...)
+			continue
+		}
 		policies = append(policies,
 			UserPolicies(values.Namespace, values.IssuerURL, applicationName, policyUser)...)
 	}

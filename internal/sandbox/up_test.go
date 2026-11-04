@@ -25,6 +25,9 @@ const (
 	listen     = "127.0.0.1:8480"
 )
 
+// settingOn is the value of a setting that is on.
+const settingOn = "true"
+
 // TestUpPrint checks that --print prints the commands and does not run any
 // tool.
 func TestUpPrint(t *testing.T) {
@@ -63,6 +66,16 @@ func TestUpPrint(t *testing.T) {
 			name:     "issuer published another way",
 			settings: sandbox.Settings{sandbox.KeyIssuer: testIssuer},
 			want:     rest,
+		},
+		{
+			name:     "client secret needs no tunnel, mirror or issuer check",
+			settings: sandbox.Settings{sandbox.KeyClientSecret: settingOn},
+			want:     cmd + "bootstrap\n" + cmd + "run\n",
+		},
+		{
+			name:     "client secret on an existing cluster",
+			settings: sandbox.Settings{sandbox.KeyClientSecret: settingOn, sandbox.KeyKubeContext: "prod"},
+			want:     cmd + "run\n",
 		},
 		{
 			name:   "settings file and run flags",

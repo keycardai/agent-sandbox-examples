@@ -13,6 +13,8 @@ zone fetches `<issuer>/.well-known/openid-configuration` and compares its
 `issuer` with the `iss` of each token, byte for byte. k3s mints
 `https://kubernetes.default.svc.cluster.local` unless told otherwise, and
 `--service-account-issuer` can only be set when the cluster is created.
+To run the demo without the zone reading the issuer, see
+[Running the sandbox with a client secret](client-secret.md).
 
 ## Before you start
 

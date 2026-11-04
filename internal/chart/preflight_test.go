@@ -25,6 +25,7 @@ func TestPreflight(t *testing.T) {
 	}{
 		{"install", installDir, release, []string{filepath.Join(installDir, "values.example.yaml")}},
 		{"sandbox", sandboxDir(t), sandboxUserID, sandboxValues(t)},
+		{"sandbox with a client secret", sandboxDir(t), sandboxUserID, clientSecretValues(t)},
 	}
 	for _, r := range renders {
 		t.Run(r.name, func(t *testing.T) {

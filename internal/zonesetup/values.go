@@ -119,8 +119,12 @@ type Values struct {
 	// ManagementServiceAccount is the organization service account zone-setup
 	// authenticates with. It is NEVER the sidecar's identity.
 	ManagementServiceAccount ManagementServiceAccountValues `yaml:"management_service_account"`
-	// IssuerURL is the cluster's OIDC issuer, kept byte for byte.
+	// IssuerURL is the cluster's OIDC issuer, kept byte for byte. It is
+	// optional when ApplicationCredential is CredentialClientSecret.
 	IssuerURL string `yaml:"issuer_url,omitempty"`
+	// ApplicationCredential is how the egress proxy authenticates to the
+	// zone. Empty means CredentialWorkloadIdentity.
+	ApplicationCredential string `yaml:"application_credential,omitempty"`
 	// Namespace is the sandbox namespace. It defaults to DefaultNamespace.
 	Namespace string `yaml:"namespace,omitempty"`
 	// PolicySet names the zone-wide policy set the per-user policies go in.
@@ -130,6 +134,23 @@ type Values struct {
 	Users []UserValues `yaml:"users"`
 	// Resources are the destinations the proxy mints credentials for.
 	Resources []ResourceValues `yaml:"resources,omitempty"`
+}
+
+// The values of application_credential.
+const (
+	// CredentialWorkloadIdentity binds each user's ServiceAccount token to the
+	// Application with a token credential.
+	CredentialWorkloadIdentity = "workload_identity"
+	// CredentialClientSecret gives the Application one client ID and secret,
+	// which every sandbox shares. The zone cannot tell one sandbox from
+	// another, so any holder of the secret can act as any enrolled user. Use
+	// it only for a demo. docs/client-secret.md describes it.
+	CredentialClientSecret = "client_secret"
+)
+
+// ClientSecret reports whether the proxy authenticates with a client secret.
+func (v *Values) ClientSecret() bool {
+	return v.ApplicationCredential == CredentialClientSecret
 }
 
 // ManagementServiceAccountValues is the organization service account.
@@ -461,8 +482,16 @@ func checkSecretFile(key, path string) error {
 }
 
 func (v *Values) checkSandbox() error {
-	if err := checkIssuer("issuer_url", v.IssuerURL); err != nil {
-		return err
+	switch v.ApplicationCredential {
+	case "", CredentialWorkloadIdentity, CredentialClientSecret:
+	default:
+		return onField("application_credential", fmt.Errorf("%w: application_credential must be %s or %s",
+			ErrValues, CredentialWorkloadIdentity, CredentialClientSecret))
+	}
+	if !v.ClientSecret() || v.IssuerURL != "" {
+		if err := checkIssuer("issuer_url", v.IssuerURL); err != nil {
+			return err
+		}
 	}
 	if v.Namespace == "" {
 		v.Namespace = DefaultNamespace

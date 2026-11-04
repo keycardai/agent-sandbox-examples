@@ -56,21 +56,28 @@ type Inputs struct {
 	// ZoneURL is the zone that decides every token exchange. When it is
 	// empty, the value in the admin's values file applies.
 	ZoneURL string `json:"zoneURL,omitempty"`
+	// ClientSecret names the Secret that holds the Application's client
+	// secret. When it is set, the proxy authenticates with the client secret
+	// and ServiceAccount is optional.
+	ClientSecret *ClientSecret `json:"clientSecret,omitempty"`
+}
+
+// ClientSecret is the sandbox chart's clientSecret value.
+type ClientSecret struct {
+	SecretName string `json:"secretName"`
 }
 
 // Validate returns an error for the first invalid input. ServiceAccount must
 // be system:serviceaccount:<Namespace>:<UserID>, the subject the credential
 // is bound to. A sandbox with any other subject would fail every exchange
-// with access_denied.
+// with access_denied. With a client secret, ServiceAccount may be empty.
 func (in Inputs) Validate() error {
-	for _, required := range []struct{ flag, value string }{
-		{"namespace", in.Namespace},
-		{"user-id", in.UserID},
-		{"client-id", in.ClientID},
-		{"service-account", in.ServiceAccount},
-	} {
-		if required.value == "" {
-			return fmt.Errorf("%w: --%s is required", ErrInputs, required.flag)
+	if in.ClientSecret != nil && in.ClientSecret.SecretName == "" {
+		return fmt.Errorf("%w: --client-secret-name must not be empty", ErrInputs)
+	}
+	for _, field := range in.required() {
+		if field.value == "" {
+			return fmt.Errorf("%w: --%s is required", ErrInputs, field.flag)
 		}
 	}
 	for _, label := range []struct{ flag, value string }{
@@ -81,11 +88,34 @@ func (in Inputs) Validate() error {
 			return fmt.Errorf("%w: --%s %q is not a DNS label", ErrInputs, label.flag, label.value)
 		}
 	}
-	if subject := zonesetup.ServiceAccountSubject(in.Namespace, in.UserID); in.ServiceAccount != subject {
+	return in.checkSubject()
+}
+
+// checkSubject refuses a ServiceAccount other than the subject this sandbox
+// binds. With a client secret, an empty ServiceAccount is allowed.
+func (in Inputs) checkSubject() error {
+	subject := zonesetup.ServiceAccountSubject(in.Namespace, in.UserID)
+	if in.ClientSecret != nil && in.ServiceAccount == "" {
+		return nil
+	}
+	if in.ServiceAccount != subject {
 		return fmt.Errorf("%w: --service-account is %q, but this sandbox binds %q",
 			ErrInputs, in.ServiceAccount, subject)
 	}
 	return nil
+}
+
+// required returns the inputs that must not be empty, by flag.
+func (in Inputs) required() []struct{ flag, value string } {
+	fields := []struct{ flag, value string }{
+		{"namespace", in.Namespace},
+		{"user-id", in.UserID},
+		{"client-id", in.ClientID},
+	}
+	if in.ClientSecret == nil {
+		fields = append(fields, struct{ flag, value string }{"service-account", in.ServiceAccount})
+	}
+	return fields
 }
 
 // Runner runs a command with the standard input and arguments given and

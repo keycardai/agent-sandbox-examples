@@ -64,6 +64,34 @@ spec:
               mountPath: /run
             - name: egress-run
               mountPath: /run/egress
+        {{- if .Values.clientSecret.secretName }}
+        # Copies the client secret into keycard-token, owned by the proxy's
+        # uid with mode 0400. The proxy refuses a secret file that a group or
+        # another user can read, and the kubelet makes a Secret volume's
+        # files owned by root.
+        - name: client-secret
+          image: {{ .Values.images.agent }}
+          command:
+            - install
+            - -m
+            - "0400"
+            - /client-secret/{{ .Values.clientSecret.key }}
+            - {{ include "keycard-sandbox-user.clientSecretFile" . }}
+          securityContext:
+            runAsUser: {{ .Values.proxy.uid }}
+            runAsGroup: {{ .Values.proxy.uid }}
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: client-secret
+              mountPath: /client-secret
+              readOnly: true
+            - name: keycard-token
+              mountPath: {{ .Values.proxy.tokenPath }}
+        {{- end }}
         - name: egress-proxy
           image: {{ .Values.images.proxy }}
           restartPolicy: Always
@@ -171,6 +199,20 @@ spec:
           configMap:
             name: {{ .Values.zoneTrust.configMap }}
         {{- end }}
+        {{- if .Values.clientSecret.secretName }}
+        - name: keycard-token
+          emptyDir:
+            medium: Memory
+        # Only the client-secret init container mounts it. Mode 0444 lets
+        # that container read the file as the proxy's uid.
+        - name: client-secret
+          secret:
+            secretName: {{ .Values.clientSecret.secretName }}
+            defaultMode: 0444
+            items:
+              - key: {{ .Values.clientSecret.key }}
+                path: {{ .Values.clientSecret.key }}
+        {{- else }}
         - name: keycard-token
           projected:
             sources:
@@ -178,3 +220,4 @@ spec:
                   path: token
                   audience: {{ $zoneURL | quote }}
                   expirationSeconds: {{ .Values.proxy.tokenExpirationSeconds }}
+        {{- end }}

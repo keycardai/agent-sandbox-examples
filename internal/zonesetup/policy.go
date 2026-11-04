@@ -101,6 +101,42 @@ func ImpersonationPolicy(namespace, issuer, applicationName string, user keycard
 };`, ApplicationIdentifier(namespace), user.Identifier, issuer, ServiceAccountSubject(namespace, user.ID)))
 }
 
+// ClientSecretPolicies returns the impersonation and access policies for one
+// user when the proxy authenticates with the Application's client secret.
+// They have the names and `@id`s of UserPolicies, so a run in either mode
+// replaces the other mode's policies.
+//
+// A client secret exchange has no actor token, so the policies cannot name
+// the user's ServiceAccount. The impersonation policy requires a password
+// credential instead, and any holder of the secret can act as every enrolled
+// user.
+func ClientSecretPolicies(namespace, applicationName string, user keycard.User) []UserPolicy {
+	impersonation := newUserPolicy(impersonationKind, namespace, user,
+		fmt.Sprintf("Permits %s to act on behalf of %s on resources listed in its dependencies, "+
+			"for requests authenticated with its client secret", applicationName, user.Email),
+		fmt.Sprintf(`permit (
+  principal is Keycard::Application,
+  action,
+  resource
+) when {
+  principal.identifier == %q &&
+  principal has credential_type && principal.credential_type == Keycard::CredentialType::"password" &&
+  context has impersonate && context.impersonate == true &&
+  context has subject && context.subject.identifier == %q &&
+  principal.dependencies.contains(resource)
+};`, ApplicationIdentifier(namespace), user.Identifier))
+	access := newUserPolicy(accessKind, namespace, user,
+		fmt.Sprintf("Permits %s's sandbox to act on their behalf through %s", user.Email, applicationName),
+		fmt.Sprintf(`permit (
+  principal is Keycard::User,
+  action,
+  resource
+) when {
+  principal.identifier == %q
+};`, user.Identifier))
+	return []UserPolicy{impersonation, access}
+}
+
 // newUserPolicy names a policy by its kind, namespace and user's email, and
 // adds the `@id` annotation to body. The zone keys the policy by its `@id` in
 // the Cedar JSON it stores.

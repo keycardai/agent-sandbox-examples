@@ -33,6 +33,14 @@ management_service_account:
 #   AKS   https://<region>.oic.prod-aks.azure.com/<tenant>/<id>/
 issuer_url: https://oidc.eks.us-west-2.amazonaws.com/id/EXAMPLE
 
+# How the egress proxy authenticates to the zone. workload_identity, the
+# default, binds each user's ServiceAccount token to the Application.
+# client_secret gives the Application one client ID and secret that every
+# sandbox shares, and issuer_url is then optional. Run zone-setup with
+# --client-secret-file in that mode. Use client_secret only for a demo:
+# docs/client-secret.md says why.
+# application_credential: workload_identity
+
 # The namespace the sandboxes run in, a DNS-1123 label. Defaults to agents.
 namespace: agents
 
