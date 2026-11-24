@@ -21,7 +21,7 @@ require (
 	github.com/keycardai/keycard-go v0.24.0
 	github.com/urfave/cli/v3 v3.14.0
 	github.com/zalando/go-keyring v0.2.8
-	go.yaml.in/yaml/v3 v3.0.5
+	go.yaml.in/yaml/v3 v3.0.6
 	k8s.io/api v0.37.1
 	k8s.io/apimachinery v0.37.1
 	sigs.k8s.io/json v0.0.0-20260909141634-11ed52e25bc5
